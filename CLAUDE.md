@@ -60,7 +60,7 @@ KiCAD PCB editor -> thin Python IPC plugin (kipy) -> board snapshot -> native C+
 ## Licensing and sources
 
 - The project is MIT. **Clean-room rule:** the mature FDTD/EM codes (openEMS, MEEP, gprMax) are GPL. Run them for validation and read their docs for behaviour, but never copy, translate or use their source as an implementation template. Write kernels from the papers in `docs/PLAN.md` References.
-- When adding a dependency, check its LICENSE file and add it to the Licensing table in `docs/PLAN.md`. Build-time-only tools are noted as such.
+- When adding a dependency, check its LICENSE file, add it to the Licensing table in `docs/PLAN.md` and to `CREDITS.md`, and install its licence text in `cmake/Package.cmake`. Build-time-only tools are noted as such.
 - When choosing a numerical method, cite a peer-reviewed source in References (with a verified DOI), and say if its contents have not been read.
 - Do not implement a conformal/subcell PEC scheme before the patent check in `docs/PLAN.md`. `../bomu-hardware` is the user's own design, used read-only; by their instruction nothing from it is copied or committed here.
 

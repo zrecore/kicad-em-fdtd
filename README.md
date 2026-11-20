@@ -1,5 +1,7 @@
 # kicad-em-fdtd
 
+[![ci](https://github.com/zrecore/kicad-em-fdtd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zrecore/kicad-em-fdtd/actions/workflows/ci.yml)
+
 Real-time 3D electromagnetic wave simulator for KiCAD boards: an FDTD solver of Maxwell's equations (Vulkan GPU, MoltenVK on macOS, plus a CPU reference) with an animated field viewer, packaged as a cross-platform (macOS, Windows, Linux) KiCAD IPC plugin.
 
 Status: working prototype on macOS (Apple silicon, KiCAD 10). A board snapshot goes through the voxelizer to the solver (CPML absorbing boundary, lumped ports) and comes out as S11 (Touchstone) plus an animated field view. The KiCAD plugin entry point exists but is untested inside KiCAD. Windows and Linux builds come later. See [docs/PLAN.md](docs/PLAN.md) for decisions and measurements and [docs/ux.md](docs/ux.md) for the interface.
@@ -47,4 +49,4 @@ The field slice and 3D volume cannot be panned or rotated from the keyboard yet.
 
 **Checking it.** `emfdtd SNAPSHOT.json --ui-screenshot out.png --ui-a11y-dump tree.txt` writes what a screen reader is told and exits 1 if any control has no name. Not yet tried with VoiceOver itself (Cmd+F5 on macOS).
 
-License: MIT (see LICENSE). Dependency licences, including AccessKit, are listed in docs/PLAN.md.
+License: MIT (see LICENSE). Credits, dependency licences and data sources are in [CREDITS.md](CREDITS.md); the reasoning is in docs/PLAN.md.

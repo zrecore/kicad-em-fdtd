@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (credits)
+- `CREDITS.md`; release archives ship it with the licence texts of ImGui, GLFW, nlohmann/json and AccessKit (`share/doc/emfdtd/licenses/`).
+
 ### Changed
 - The Settings panel starts collapsed (the button reads "Settings >>"; open it to read "<< Hide settings"). For screenshots, `--ui-hide-settings` became `--ui-show-settings`.
 - 3D volume: right-drag, middle-drag or Shift+drag pans; double-click refits the view. The camera's look-at point is now honoured by the renderer (auto-fit follows the field's activity).

@@ -1,0 +1,54 @@
+# Credits and third-party notices
+
+kicad-em-fdtd is MIT-licensed (see `LICENSE`). It stands on the work below. Licence texts for everything
+linked into a release binary ship in the release archive under `share/doc/emfdtd/licenses/`. The decisions
+behind each choice, and what was and was not checked, are in `docs/PLAN.md` (Licensing, References).
+
+## Libraries in the binary
+
+| Component | Version | Licence | Copyright |
+|---|---|---|---|
+| [Dear ImGui](https://github.com/ocornut/imgui) (with its bundled `stb_rect_pack`, `stb_textedit`, `stb_truetype`) | 1.91.9 | MIT | 2014-2025 Omar Cornut |
+| [GLFW](https://www.glfw.org) | 3.4 | zlib/libpng | 2002-2006 Marcus Geelnard, 2006-2019 Camilla Löwy |
+| [nlohmann/json](https://github.com/nlohmann/json) | 3.12.0 | MIT | 2013-2025 Niels Lohmann |
+| [AccessKit](https://github.com/AccessKit/accesskit-c) C bindings (prebuilt; macOS only for now) | 0.23.2 | MIT OR Apache-2.0, plus BSD-3-Clause for Chromium-derived code | The AccessKit contributors; The Chromium Authors |
+
+## Runtime, not bundled
+
+[Vulkan loader](https://github.com/KhronosGroup/Vulkan-Loader) (Apache-2.0) and
+[MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache-2.0) are installed by the user (Homebrew on
+macOS). If a future release bundles them, their licence and NOTICE files must ship with it.
+
+## Build and test only (not shipped)
+
+[Catch2](https://github.com/catchorg/Catch2) (BSL-1.0), [shaderc / glslc](https://github.com/google/shaderc)
+(Apache-2.0), Vulkan-Headers (Apache-2.0 OR MIT), pytest, pytest-bdd and ruff (MIT).
+The KiCAD plugin uses [kicad-python](https://gitlab.com/kicad/code/kicad-python) (MIT).
+
+## Methods
+
+The solver is written from the published papers listed in `docs/PLAN.md`, References (each with a DOI):
+Yee (1966) for the FDTD scheme, Roden and Gedney (2000) for the CPML boundary, Sui et al. (1992) and
+Piket-May et al. (1994) for lumped ports, Maloney and Smith (1992) for thin sheets, Monk and Suli (1994) for
+non-uniform grids, Furse (2000) for the running DFT, Kruger and Westermann (2003) for volume rendering, and
+others. Colour-blind-safe field colours follow Wong, "Points of view: Color blindness", Nature Methods 8:441
+(2011), doi:10.1038/nmeth.1618 (Okabe-Ito palette).
+
+**Clean-room acknowledgement.** openEMS, MEEP and gprMax (all GPL) were used only as behavioural references
+for validation, through their documentation and by running them. No code was copied, translated or used as an
+implementation template.
+
+## Data
+
+- **Fabrication stackups** (`data/fab_profiles.json`): published specifications of
+  [OSH Park](https://docs.oshpark.com/services/) and [PCBWay](https://www.pcbway.com/capabilities.html).
+  Laminate values come from the Kingboard KB-6167F and Isola FR408HR datasheets that OSH Park links. Every
+  value the fabricator does not publish is marked `assumed` in the file. Fabricator and material names belong
+  to their owners and appear only to identify the published data.
+- **Radio bands and channels** (`data/radio_profiles.json`): each profile names its source and whether it
+  was verified.
+
+## Contributing a credit
+
+Add a dependency to the table above and to the Licensing table in `docs/PLAN.md`, and make
+`cmake/Package.cmake` install its licence file.
