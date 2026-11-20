@@ -4,7 +4,9 @@
 #include <complex>
 #include <numbers>
 
+#include "fdtd_vk/gpu_engine.hpp"
 #include "fdtd_vk/gpu_solver.hpp"
+#include "sim/simulation.hpp"
 
 namespace {
 
@@ -221,6 +223,49 @@ SCENARIO("The GPU phasor accumulator matches a double-precision DFT of the same 
       }
       AND_THEN("the validation layer reported no errors") {
         REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}
+
+SCENARIO("The GPU and CPU engines report the same phasors", "[gpu][phasor]") {
+  GIVEN("the same pulsed cavity run on both engines, accumulating E and H channels every 10 steps") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 20; ++i)
+        e.push_back(x += 1e-3 * std::pow(1.03, i));
+    }
+    fdtd::Solver<float> a(fdtd::Grid(edges), 0.95), b(fdtd::Grid(edges), 0.95);
+    seedPulse(a, 10, 10, 9);
+    seedPulse(b, 10, 10, 9);
+    auto cpu = sim::makeCpuEngine(a);
+    fdtd_vk::GpuEngine gpu(ctx, b);
+    std::vector<fdtd::PhasorChannel> channels;
+    for (std::uint32_t n = 0; n < 300; ++n)
+      channels.push_back(
+          {n % 2 ? fdtd::Kind::E : fdtd::Kind::H, static_cast<fdtd::Axis>(n % 3),
+           static_cast<std::uint32_t>(a.grid().nodeIndex(1 + n % 18, 1 + (n * 7) % 18, 1 + (n * 5) % 18))});
+    const std::vector<double> freqs{5e9, 11e9};
+    const auto lc = cpu->addPhasorList(channels, freqs), lg = gpu.addPhasorList(channels, freqs);
+    WHEN("both run 300 steps") {
+      for (int s = 0; s < 30; ++s) {
+        cpu->advance(10);
+        gpu.advance(10);
+        cpu->accumulate(lc, 10 * a.dt());
+        gpu.accumulate(lg, 10 * b.dt());
+      }
+      THEN("the phasors agree within 1e-3 of the peak (the fields differ by float rounding)") {
+        double peak = 0, worst = 0;
+        for (std::size_t f = 0; f < freqs.size(); ++f)
+          for (std::size_t c = 0; c < channels.size(); ++c) {
+            peak = std::max(peak, std::abs(cpu->phasor(lc, f, c)));
+            worst = std::max(worst, std::abs(cpu->phasor(lc, f, c) - gpu.phasor(lg, f, c)));
+          }
+        REQUIRE(peak > 0);
+        REQUIRE(worst / peak < 1e-3);
       }
     }
   }

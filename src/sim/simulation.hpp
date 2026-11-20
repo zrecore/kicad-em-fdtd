@@ -23,7 +23,9 @@ struct RunOptions {
   // Steps per advance(), which is also the cadence of onSample (Nyquist: 1/(2*16*dt) is far above the band).
   std::size_t sampleEvery = 16;
   // Called after every advance with the engine, the time of E, and the time covered since the previous call.
-  std::function<void(const Engine&, double, double)> onSample;
+  std::function<void(Engine&, double, double)> onSample;
+  // Called once after the last sample, with the engine still alive (read accumulated phasors here).
+  std::function<void(Engine&)> onFinish;
   // Called after every advance with the partial result (steps, aggregated port voltage and source so far).
   std::function<void(const RunResult&)> onProgress;
   std::function<bool()> shouldStop; // polled after every advance; true ends the run early (a closed window)

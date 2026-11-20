@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "app/paths.hpp"
+#include "app/phasor_feed.hpp"
 #include "app/prepare.hpp"
 #include "app/settings.hpp"
 #include "board/snapshot.hpp"
@@ -502,6 +503,7 @@ int main(int argc, char** argv) {
     // band.
     std::mutex phasorMutex;
     std::unique_ptr<viz::PhasorAccumulator> phasors;
+    std::unique_ptr<app::PhasorFeed> feed;
     viz::Plane plane{};
     std::vector<std::uint8_t> mask;
     if (frameCount > 0 || view) {
@@ -528,11 +530,21 @@ int main(int argc, char** argv) {
           if (filled[n] && filled[n - 1] && filled[n + 1] && filled[n - plane.nu] && filled[n + plane.nu])
             mask[n] = 0;
         }
-      opt.onSample = [&](const sim::Engine& eng, double t, double dtSample) {
-        auto values = viz::extractPlane(g, plane, eng.field(fdtd::Kind::E, fdtd::Z));
-        std::lock_guard<std::mutex> lock(phasorMutex);
-        phasors->add(t, dtSample, values);
+      std::vector<fdtd::PhasorChannel> channels;
+      for (std::size_t b = 0; b < plane.nv; ++b)
+        for (std::size_t a = 0; a < plane.nu; ++a) {
+          std::array<std::size_t, 3> idx{};
+          idx[plane.normal] = plane.index;
+          idx[plane.u] = a;
+          idx[plane.v] = b;
+          channels.push_back(
+              {fdtd::Kind::E, fdtd::Z, static_cast<std::uint32_t>(g.nodeIndex(idx[0], idx[1], idx[2]))});
+        }
+      feed = std::make_unique<app::PhasorFeed>(*phasors, std::move(channels), freqs);
+      opt.onSample = [&](sim::Engine& eng, double, double dtSample) {
+        feed->sample(eng, dtSample, phasorMutex);
       };
+      opt.onFinish = [&](sim::Engine& eng) { feed->sync(eng, phasorMutex); };
     }
     std::atomic<bool> done{false}, stop{false};
     opt.shouldStop = [&] { return stop.load(); };

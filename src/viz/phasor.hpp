@@ -31,6 +31,12 @@ public:
     }
   }
 
+  // Replaces the accumulated values with phasors computed elsewhere (layout k * voxels + v, as stored here),
+  // for example by the backend's accumulator (docs/PLAN.md, Next steps 11).
+  void load(std::span<const float> re, std::span<const float> im) {
+    re_.assign(re.begin(), re.end());
+    im_.assign(im.begin(), im.end());
+  }
   std::complex<float> phasor(std::size_t k, std::size_t voxel) const {
     return {re_[k * voxels_ + voxel], im_[k * voxels_ + voxel]};
   }

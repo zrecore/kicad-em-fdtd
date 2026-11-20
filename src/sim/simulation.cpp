@@ -29,8 +29,24 @@ public:
   const std::vector<double>& edgeVoltage(std::size_t edge) const override { return series_[edge]; }
   std::span<const float> field(fdtd::Kind kind, fdtd::Axis a) const override { return s_.field(kind, a); }
   double time() const override { return s_.time(); }
+  std::size_t addPhasorList(std::vector<fdtd::PhasorChannel> channels,
+                            std::vector<double> frequenciesHz) override {
+    return bank_.add(std::move(channels), std::move(frequenciesHz));
+  }
+  void accumulate(std::size_t list, double weight) override {
+    bank_.accumulate(
+        list, weight, s_.time(), 0.5 * s_.dt(),
+        [&](fdtd::Kind kind, fdtd::Axis a, std::uint32_t node) -> double { return s_.field(kind, a)[node]; });
+  }
+  std::complex<double> phasor(std::size_t list, std::size_t k, std::size_t c) const override {
+    return bank_.phasor(list, k, c);
+  }
+  void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const override {
+    bank_.copy(list, re, im);
+  }
 
 private:
+  fdtd::PhasorBank bank_;
   fdtd::Solver<float>& s_;
   std::vector<double> dl_;
   std::vector<std::vector<double>> series_;
@@ -122,6 +138,8 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
     if (r.steps > pulseSteps && recent < opt.decay * peak)
       break;
   }
+  if (opt.onFinish)
+    opt.onFinish(*engine);
   std::vector<double> freqs(opt.points);
   for (std::size_t i = 0; i < opt.points; ++i)
     freqs[i] =

@@ -6,18 +6,14 @@
 #include <vector>
 
 #include "core/units.hpp"
+#include "fdtd/phasor_bank.hpp"
 #include "fdtd/solver.hpp"
 #include "shared/fdtd_params.h"
 #include "vkcore/compute.hpp"
 
 namespace fdtd_vk {
 
-// One sample of a phasor list: a field component at a node (grid.hpp node index).
-struct PhasorChannel {
-  fdtd::Kind kind;
-  fdtd::Axis component;
-  std::uint32_t node;
-};
+using fdtd::PhasorChannel;
 
 class GpuSolver {
 public:
@@ -44,6 +40,7 @@ public:
   // every `every` steps), so X_k approximates the Fourier integral.
   void accumulate(std::size_t list, double weight);
   std::complex<double> phasor(std::size_t list, std::size_t frequency, std::size_t channel) const;
+  void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const;
   std::size_t channelCount(std::size_t list) const { return lists_[list]->channels; }
 
 private:

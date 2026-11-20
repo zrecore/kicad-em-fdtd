@@ -10,12 +10,14 @@
 #include <map>
 #include <sstream>
 
+#include "app/phasor_feed.hpp"
 #include "app/results.hpp"
 #include "imgui.h"
 #include "viz/a11y.hpp"
 #include "viz/colormap.hpp"
 #include "viz/theme.hpp"
 #include "viz/triangulate.hpp"
+#include "viz/view_axes.hpp"
 
 namespace fs = std::filesystem;
 
@@ -274,6 +276,18 @@ void legendHeaderButton(const char* id, ImVec2 topLeft, ImVec2 size, bool& open)
   ImGui::SetCursorScreenPos(save);
 }
 
+// Size of the box drawLegend draws, so a caller can place it inside its panel before drawing.
+ImVec2 legendBox(const char* title, const std::vector<LegendItem>& items, bool open) {
+  const float row = ImGui::GetTextLineHeightWithSpacing(), pad = px(8);
+  const std::string head = std::string(title) + (open ? "  [-]" : "  [+]");
+  float width = ImGui::CalcTextSize(head.c_str()).x;
+  if (!open)
+    return {width + pad * 2, row + pad};
+  for (const auto& it : items)
+    width = std::max(width, 26 + ImGui::CalcTextSize(it.label.c_str()).x);
+  return {width + pad * 2, pad * 2 + row * static_cast<float>(items.size() + 1)};
+}
+
 float drawLegend(ImDrawList* dl, ImVec2 topLeft, const char* title, const std::vector<LegendItem>& items,
                  const char* id, bool& open) {
   const float row = ImGui::GetTextLineHeightWithSpacing(), pad = px(8);
@@ -507,14 +521,41 @@ void Ui::runWorker() {
     sim::RunOptions opt = prepared_->options;
     const fdtd::Grid& g = prepared_->model.grid;
     const double impedance = prepared_->plan.portImpedanceOhm;
-    std::vector<float> volumeValues;
-    opt.onSample = [&](const sim::Engine& eng, double t, double dtSample) {
-      const auto field = eng.field(fdtd::Kind::E, fieldAxis_);
-      auto values = viz::extractPlane(g, plane_, field);
-      viz::sampleField(g, dv_, field, volumeValues);
-      std::lock_guard<std::mutex> lock(mu_);
-      phasors_->add(t, dtSample, values);
-      volPhasors_->add(t, dtSample, volumeValues);
+    // Slice and volume accumulate on the backend (one phasor list each); the viewer's copies refresh about
+    // once a second and at the end.
+    auto frequenciesOf = [](const viz::PhasorAccumulator& a) {
+      std::vector<double> f(a.frequencies());
+      for (std::size_t i = 0; i < f.size(); ++i)
+        f[i] = a.frequencyHz(i);
+      return f;
+    };
+    std::vector<fdtd::PhasorChannel> sliceChannels, volumeChannels;
+    for (std::size_t b = 0; b < plane_.nv; ++b)
+      for (std::size_t a = 0; a < plane_.nu; ++a) {
+        std::array<std::size_t, 3> idx{};
+        idx[plane_.normal] = plane_.index;
+        idx[plane_.u] = a;
+        idx[plane_.v] = b;
+        sliceChannels.push_back(
+            {fdtd::Kind::E, fieldAxis_, static_cast<std::uint32_t>(g.nodeIndex(idx[0], idx[1], idx[2]))});
+      }
+    for (std::size_t k = 0; k < dv_.dims[2]; ++k)
+      for (std::size_t j = 0; j < dv_.dims[1]; ++j)
+        for (std::size_t i = 0; i < dv_.dims[0]; ++i)
+          volumeChannels.push_back({fdtd::Kind::E, fieldAxis_,
+                                    static_cast<std::uint32_t>(
+                                        g.nodeIndex(dv_.nodeOf[0][i], dv_.nodeOf[1][j], dv_.nodeOf[2][k]))});
+    app::PhasorFeed sliceFeed(*phasors_, std::move(sliceChannels), frequenciesOf(*phasors_));
+    app::PhasorFeed volumeFeed(*volPhasors_, std::move(volumeChannels), frequenciesOf(*volPhasors_));
+    opt.onSample = [&](sim::Engine& eng, double, double dtSample) {
+      const bool a = sliceFeed.sample(eng, dtSample, mu_);
+      const bool b = volumeFeed.sample(eng, dtSample, mu_);
+      if (a || b)
+        ++phasorVersion_;
+    };
+    opt.onFinish = [&](sim::Engine& eng) {
+      sliceFeed.sync(eng, mu_);
+      volumeFeed.sync(eng, mu_);
       ++phasorVersion_;
     };
     double lastLive = -10;
@@ -982,6 +1023,7 @@ void Ui::drawS11Tab(float w, float h) {
     line.push_back(
         {X(s.frequenciesHz[i]), Y(std::max(20 * std::log10(std::max(std::abs(s.s11[i]), 1e-6)), lo))});
   dl->AddPolyline(line.data(), static_cast<int>(line.size()), pal.curve, 0, 2.5f);
+  std::array<float, 4> bestLabel{}; // x0, y0, x1, y1 of the label and dot, so the legend keeps clear of it
   std::size_t best = 0;
   for (std::size_t i = 1; i < s.s11.size(); ++i)
     if (std::abs(s.s11[i]) < std::abs(s.s11[best]))
@@ -990,7 +1032,15 @@ void Ui::drawS11Tab(float w, float h) {
   dl->AddCircleFilled({X(s.frequenciesHz[best]), Y(bdb)}, 4, pal.text);
   char t[96];
   std::snprintf(t, sizeof t, "best %.1f dB at %.3f GHz", bdb, s.frequenciesHz[best] * 1e-9);
-  dl->AddText({X(s.frequenciesHz[best]) + 8, Y(bdb) + 4}, pal.text, t);
+  {
+    // beside the dot, on whichever side has room, and never below the plot
+    const ImVec2 size = ImGui::CalcTextSize(t);
+    const float dotX = X(s.frequenciesHz[best]), dotY = Y(bdb);
+    const float x = dotX + 8 + size.x <= p1.x ? dotX + 8 : std::max(p0.x, dotX - 8 - size.x);
+    const float y = std::min(dotY + 4, p1.y - size.y - 2);
+    dl->AddText({x, y}, pal.text, t);
+    bestLabel = {x - 4, std::min(y, dotY - 6), x + size.x + 4, std::max(y + size.y, dotY + 6)};
+  }
   if (gTree) { // the plot in words: the best match, and where the match is better than -10 dB
     std::string below;
     double first = 0, last = 0;
@@ -1014,11 +1064,31 @@ void Ui::drawS11Tab(float w, float h) {
         {LegendItem::Dashed, pal.good, "-10 dB: a good match"},
         {LegendItem::Line, pal.geoBox, "channel centres (profile)"},
         {LegendItem::Dot, pal.text, "best match in the sweep"}};
-    float width = 0;
-    for (const auto& it : items)
-      width = std::max(width, 26 + ImGui::CalcTextSize(it.label.c_str()).x);
-    const float height = 16 + ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(items.size() + 1);
-    drawLegend(dl, {p1.x - width - 26, p1.y - height - 12}, "Legend", items, "legendS11", legendOpen_[1]);
+    // Keep the whole legend inside the plot and clear of the best-match label: the expanded box at the lower
+    // right if it fits and does not cover the label, else the one-line chip there, else the chip at the lower
+    // left. (The user can still collapse or expand it by clicking its header.)
+    const float margin = px(10);
+    auto hits = [&](ImVec2 at, ImVec2 size) {
+      return at.x < bestLabel[2] && at.x + size.x > bestLabel[0] && at.y < bestLabel[3] &&
+             at.y + size.y > bestLabel[1];
+    };
+    auto fits = [&](ImVec2 size) {
+      return size.x <= p1.x - p0.x - 2 * margin && size.y <= p1.y - p0.y - 2 * margin;
+    };
+    bool open = legendOpen_[1], forcedShut = false;
+    ImVec2 box = legendBox("Legend", items, open);
+    ImVec2 at{std::max(p0.x + margin, p1.x - box.x - margin), std::max(p0.y + margin, p1.y - box.y - margin)};
+    if (open && (!fits(box) || hits(at, box))) {
+      open = false;
+      forcedShut = true;
+      box = legendBox("Legend", items, false);
+      at = {std::max(p0.x + margin, p1.x - box.x - margin), std::max(p0.y + margin, p1.y - box.y - margin)};
+    }
+    if (hits(at, box))
+      at.x = p0.x + margin; // the label is at the right: use the lower left
+    drawLegend(dl, at, "Legend", items, "legendS11", open);
+    if (!forcedShut) // a click on a chip that was only shut for lack of room changes nothing
+      legendOpen_[1] = open;
   }
   ImGui::Dummy({w, h});
 }
@@ -1165,15 +1235,17 @@ void Ui::drawVolumeTab(float w, float h) {
   const ImVec2 p = ImGui::GetCursorScreenPos();
   volRect_ = {p.x, p.y, w, h - ImGui::GetFrameHeightWithSpacing() - 24, false};
   if (gTree) {
-    gTree->add({.role = viz::access::Role::Image,
-                .name = strf("3D volume: the field around the board at %.4g GHz, animated. Brighter and more "
-                             "opaque is stronger. Drag to rotate, right-drag or Shift-drag to pan, scroll to "
-                             "zoom, double-click to refit.",
-                             volPhasors_->frequencyHz(freq_) * 1e-9),
-                .x = p.x,
-                .y = p.y,
-                .w = volRect_.w,
-                .h = volRect_.h});
+    gTree->add(
+        {.role = viz::access::Role::Image,
+         .name = strf("3D volume: the field around the board at %.4g GHz, animated. Brighter and more "
+                      "opaque is stronger. Drag to rotate, right-drag or Shift-drag to pan, scroll to "
+                      "zoom, double-click to refit. The axis triad in the top-left corner (or keys 1 to 6, 0 "
+                      "for isometric) snaps to the +X, -X, +Y, -Y, +Z, -Z and isometric views.",
+                      volPhasors_->frequencyHz(freq_) * 1e-9),
+         .x = p.x,
+         .y = p.y,
+         .w = volRect_.w,
+         .h = volRect_.h});
   }
   // drag to rotate; right or middle drag, or Shift+drag, to pan; wheel to zoom; double-click to refit
   ImGui::InvisibleButton("##volume", {std::max(1.0f, volRect_.w), std::max(1.0f, volRect_.h)},
@@ -1190,7 +1262,9 @@ void Ui::drawVolumeTab(float w, float h) {
       autoFit_ = false;
     } else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
       cam_.azimuth -= 0.008 * io.MouseDelta.x;
-      cam_.elevation = std::clamp(cam_.elevation + 0.008 * io.MouseDelta.y, -1.5, 1.5);
+      cam_.elevation =
+          std::clamp(cam_.elevation + 0.008 * io.MouseDelta.y, -viz::kMaxElevation, viz::kMaxElevation);
+      viewGoal_.reset(); // the user took over from any glide
       volRect_.dragging = true;
       autoFit_ = false; // the user took the camera
     }
@@ -1200,6 +1274,64 @@ void Ui::drawVolumeTab(float w, float h) {
   if (ImGui::IsItemHovered() && io.MouseWheel != 0) {
     cam_.distance = std::clamp(cam_.distance * std::pow(0.9, io.MouseWheel), 0.25, 6.0);
     autoFit_ = false;
+  }
+  // Axis triad: six labelled ends that snap the camera to the +/-X, +/-Y, +/-Z views, plus an isometric
+  // button. The keys 1-6 and 0 do the same when no text field has focus.
+  {
+    const float arm = px(34), r = px(10);
+    const ImVec2 centre{volRect_.x + arm + r + px(8), volRect_.y + arm + r + px(8)};
+    ImDrawList* tdl = ImGui::GetWindowDrawList();
+    auto ends = viz::axisTriad(cam_.azimuth, cam_.elevation);
+    std::sort(ends.begin(), ends.end(), [](const auto& a, const auto& b) { return a.depth < b.depth; });
+    const ImVec2 saved = ImGui::GetCursorScreenPos();
+    for (const viz::AxisEnd& e : ends) { // far ends first so near ones sit on top
+      const ImVec2 q{centre.x + static_cast<float>(e.x) * arm, centre.y + static_cast<float>(e.y) * arm};
+      const char axisName[2] = {e.axis, 0};
+      const ImU32 base = e.axis == 'X' ? pal.geoPort : e.axis == 'Y' ? pal.geoTop : pal.geoVia;
+      const float fade = e.depth > 0 ? 1.0f : 0.55f;
+      tdl->AddLine(centre, q, alpha(base, static_cast<int>(200 * fade)), e.plus ? 2.0f : 1.0f);
+      ImGui::SetCursorScreenPos({q.x - r, q.y - r});
+      const std::string id = std::string("##view") + viz::stdViewName(e.view);
+      const bool hit = ImGui::InvisibleButton(id.c_str(), {2 * r, 2 * r});
+      note(viz::access::Role::Button, strf("View from %s", viz::stdViewName(e.view)), "",
+           "Snap the camera to look at the board from this side");
+      const bool hot = ImGui::IsItemHovered();
+      if (hot)
+        ImGui::SetTooltip("View from %s (key %d)", viz::stdViewName(e.view), static_cast<int>(e.view) + 1);
+      tdl->AddCircleFilled(q, r, alpha(base, static_cast<int>((e.plus ? 235 : 70) * fade)));
+      if (hot || ImGui::IsItemFocused())
+        tdl->AddCircle(q, r + 1.5f, pal.text, 0, 1.5f);
+      if (e.plus || hot) {
+        const std::string label = e.plus ? std::string(axisName) : std::string("-") + axisName;
+        const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+        tdl->AddText({q.x - ts.x / 2, q.y - ts.y / 2}, pal.legendText, label.c_str());
+      }
+      if (hit)
+        viewGoal_ = viz::stdViewPose(e.view);
+    }
+    ImGui::SetCursorScreenPos({centre.x - arm - r, centre.y + arm + r + px(2)});
+    if (smallButton("Iso", "Isometric view"))
+      viewGoal_ = viz::stdViewPose(viz::StdView::Isometric);
+    ImGui::SetCursorScreenPos(saved);
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+      const viz::StdView keyed[6] = {viz::StdView::PlusX,  viz::StdView::MinusX, viz::StdView::PlusY,
+                                     viz::StdView::MinusY, viz::StdView::PlusZ,  viz::StdView::MinusZ};
+      for (int k = 0; k < 6; ++k)
+        if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + k), false))
+          viewGoal_ = viz::stdViewPose(keyed[k]);
+      if (ImGui::IsKeyPressed(ImGuiKey_0, false))
+        viewGoal_ = viz::stdViewPose(viz::StdView::Isometric);
+    }
+    if (viewGoal_) {
+      autoFit_ = false;
+      const viz::Pose next =
+          viz::easePose({cam_.azimuth, cam_.elevation}, *viewGoal_, reduceMotion_ ? 1.0 : 0.25);
+      cam_.azimuth = next.azimuth;
+      cam_.elevation = next.elevation;
+      if (std::abs(next.azimuth - viewGoal_->azimuth) < 1e-4 &&
+          std::abs(next.elevation - viewGoal_->elevation) < 1e-4)
+        viewGoal_.reset();
+    }
   }
   // outline of the board on its copper plane and of the displayed box, projected with the same camera
   ImDrawList* dl = ImGui::GetWindowDrawList();

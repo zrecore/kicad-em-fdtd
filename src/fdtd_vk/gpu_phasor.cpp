@@ -68,3 +68,18 @@ std::complex<double> GpuSolver::phasor(std::size_t list, std::size_t frequency, 
 }
 
 } // namespace fdtd_vk
+
+namespace fdtd_vk {
+
+void GpuSolver::copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const {
+  const PhasorList& l = *lists_.at(list);
+  const std::size_t total = l.frequencies.size() * l.channels;
+  if (re.size() != total || im.size() != total)
+    throw std::invalid_argument("phasor copy: wrong size");
+  const auto acc = l.acc->as<float>();
+  std::copy(acc.begin(), acc.begin() + static_cast<std::ptrdiff_t>(total), re.begin());
+  std::copy(acc.begin() + static_cast<std::ptrdiff_t>(total),
+            acc.begin() + static_cast<std::ptrdiff_t>(2 * total), im.begin());
+}
+
+} // namespace fdtd_vk

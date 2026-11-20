@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "viz/access.hpp"
 #include "viz/imgui_soft.hpp"
 #include "viz/slice.hpp"
+#include "viz/view_axes.hpp"
 #include "viz/volume.hpp"
 
 struct ImGuiContext;
@@ -185,7 +187,8 @@ private:
   std::uint32_t volImgW_ = 0, volImgH_ = 0;
   std::array<double, 20> lastKey_{};
   bool adaptive_ = true;
-  bool autoFit_ = true; // camera follows the activity until the user moves it
+  std::optional<viz::Pose> viewGoal_; // glide target set by the axis triad or keys 0-6
+  bool autoFit_ = true;               // camera follows the activity until the user moves it
   fdtd::Axis fieldAxis_ = fdtd::Z;
   struct VolRect {
     float x = 0, y = 0, w = 0, h = 0;
