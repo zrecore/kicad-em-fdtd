@@ -10,7 +10,7 @@ permissions:
 jobs:
   native:
     # macOS on Apple silicon is the only supported platform for now. No GPU on the runner: CPU tests only.
-    runs-on: macos-14
+    runs-on: macos-15 # Apple silicon
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
@@ -27,7 +27,7 @@ jobs:
         run: ctest --preset ci -L '^cpu$'
 
   plugin:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # Python 3.9 (KiCAD's interpreter) is not offered on newer images
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
