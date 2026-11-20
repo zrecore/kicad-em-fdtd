@@ -24,7 +24,7 @@ std::array<fdtd::Axis, 2> otherAxes(fdtd::Axis d) {
 } // namespace
 
 GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
-    : nodeCount_(init.grid().nodeCount()), ports_(init.ports()), dt_(init.dt()) {
+    : ctx_(ctx), nodeCount_(init.grid().nodeCount()), ports_(init.ports()), dt_(init.dt()) {
   const fdtd::Grid& g = init.grid();
   const std::size_t fieldBytes = nodeCount_ * sizeof(float);
   for (int i = 0; i < 6; ++i)

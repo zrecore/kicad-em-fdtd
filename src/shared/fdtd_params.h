@@ -33,8 +33,15 @@ struct StepParams {
   u32 portCount, maxSteps; // lumped ports, and the capacity of the per-submit waveform/log tables
 };
 
+// Phasor accumulator (shaders/phasor_accum.comp): sample channels (a field component at a node) and N
+// frequencies.
+struct AccumParams {
+  u32 channels, freqs;
+};
+
 #ifdef __cplusplus
 static_assert(sizeof(StepParams) == 104, "push constant layout must match the shader");
+static_assert(sizeof(AccumParams) == 8, "push constant layout must match the shader");
 } // namespace fdtd_gpu
 #endif
 #endif

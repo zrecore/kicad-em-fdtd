@@ -31,7 +31,7 @@ endif()
 
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 include(cmake/Spirv.cmake)
-add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp)
+add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp shaders/phasor_accum.comp)
 
 # Anything that loads a SPIR-V file links this to learn where they are.
 add_library(fdtd_shaders INTERFACE)

@@ -107,4 +107,4 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 
 ## Still open
 1. Whether user-saved profiles also travel with the board (today: per board in `settings.json`; per user saved profiles are next in the user configuration folder).
-2. The default colour map for the volume (opacity transfer function) and whether the volume shows |E|, Ez or power flow first.
+2. Which colour map is the default per theme (decided 2026-11-20: a sequential map from `data/colormaps.json`, chosen by a View setting; see docs/PLAN.md Open questions) and whether the volume shows |E|, Ez or power flow first.

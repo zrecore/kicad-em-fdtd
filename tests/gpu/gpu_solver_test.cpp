@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
+#include <complex>
+#include <numbers>
 
 #include "fdtd_vk/gpu_solver.hpp"
 
@@ -158,6 +160,64 @@ SCENARIO("The GPU solver matches the CPU reference with CPML and a lumped port",
           REQUIRE(gpu.portVoltage(0).size() == 150);
           REQUIRE(std::abs(gpu.portVoltage(0).back() - cpuV) <= 1e-3 * std::abs(cpuV) + 1e-12);
         }
+      }
+      AND_THEN("the validation layer reported no errors") {
+        REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}
+
+SCENARIO("The GPU phasor accumulator matches a double-precision DFT of the same samples", "[gpu][phasor]") {
+  GIVEN("a graded cavity with a pulse, and sample lists holding E and H channels at scattered nodes") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 24; ++i)
+        e.push_back(x += 1e-3 * std::pow(1.03, i));
+    }
+    fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+    seedPulse(cpu, 12, 12, 11);
+    fdtd_vk::GpuSolver gpu(ctx, cpu);
+    const fdtd::Grid& g = cpu.grid();
+    std::vector<fdtd_vk::PhasorChannel> channels;
+    for (std::uint32_t n = 0; n < 700; ++n) {
+      const std::size_t i = 1 + n % 22, j = 1 + (n * 7) % 22, k = 1 + (n * 13) % 22;
+      channels.push_back({n % 2 ? fdtd::Kind::E : fdtd::Kind::H, static_cast<fdtd::Axis>(n % 3),
+                          static_cast<std::uint32_t>(g.nodeIndex(i, j, k))});
+    }
+    const std::vector<double> freqs{4e9, 9e9, 15e9};
+    const std::size_t list = gpu.addPhasorList(channels, freqs);
+
+    WHEN("it accumulates every 10 steps for 600 steps") {
+      const std::uint32_t every = 10;
+      const double weight = every * cpu.dt();
+      std::vector<std::complex<double>> ref(freqs.size() * channels.size());
+      for (std::uint32_t s = 0; s < 60; ++s) {
+        gpu.step(every);
+        gpu.accumulate(list, weight);
+        const double tE = static_cast<double>(gpu.stepsDone()) * cpu.dt();
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+          const auto& ch = channels[c];
+          const double v = gpu.field(ch.kind, ch.component)[ch.node];
+          const double t = ch.kind == fdtd::Kind::E ? tE : tE - 0.5 * cpu.dt();
+          for (std::size_t f = 0; f < freqs.size(); ++f)
+            ref[f * channels.size() + c] +=
+                v * weight * std::polar(1.0, -2 * std::numbers::pi * freqs[f] * t);
+        }
+      }
+      THEN("every phasor agrees within 1e-4 of the peak magnitude") {
+        double peak = 0, worst = 0;
+        for (const auto& r : ref)
+          peak = std::max(peak, std::abs(r));
+        for (std::size_t f = 0; f < freqs.size(); ++f)
+          for (std::size_t c = 0; c < channels.size(); ++c)
+            worst = std::max(worst, std::abs(gpu.phasor(list, f, c) - ref[f * channels.size() + c]));
+        INFO("peak " << peak << ", worst difference " << worst);
+        REQUIRE(peak > 0);
+        REQUIRE(worst / peak < 1e-4);
       }
       AND_THEN("the validation layer reported no errors") {
         REQUIRE(ctx.validationErrors() == 0);

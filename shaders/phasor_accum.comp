@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "fdtd_params.h"
+// Adds one time sample to a running DFT: for every channel (a field component at a node) and every frequency,
+// X += value * w * exp(-j 2 pi f t), with Kahan compensation (fp32 sums of thousands of samples lose
+// precision otherwise). The weight and the phases are computed on the host per sample: trig[kind * N + k] =
+// (cos, sin) * weight, kind 0 for E (time n dt) and 1 for H (time (n - 1/2) dt).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer EX { float ex[]; };
+layout(std430, binding = 1) readonly buffer EY { float ey[]; };
+layout(std430, binding = 2) readonly buffer EZ { float ez[]; };
+layout(std430, binding = 3) readonly buffer HX { float hx[]; };
+layout(std430, binding = 4) readonly buffer HY { float hy[]; };
+layout(std430, binding = 5) readonly buffer HZ { float hz[]; };
+layout(std430, binding = 6) readonly buffer List { uvec2 list[]; }; // (field id 0..5 = ex..hz, node)
+// acc: four arrays of N * channels floats, index k * channels + c: re, im, re compensation, im compensation.
+layout(std430, binding = 7) buffer Acc { float acc[]; };
+layout(std430, binding = 8) readonly buffer Trig { vec2 trig[]; };
+layout(push_constant) uniform PC { AccumParams q; };
+
+float fieldAt(uint id, uint n) {
+  switch (id) {
+  case 0u: return ex[n];
+  case 1u: return ey[n];
+  case 2u: return ez[n];
+  case 3u: return hx[n];
+  case 4u: return hy[n];
+  default: return hz[n];
+  }
+}
+
+void kahan(uint at, float x) {
+  precise float y = x - acc[at + 2u * q.channels * q.freqs];
+  precise float s = acc[at] + y;
+  precise float c = (s - acc[at]) - y;
+  acc[at] = s;
+  acc[at + 2u * q.channels * q.freqs] = c;
+}
+
+void main() {
+  for (uint c = gl_GlobalInvocationID.x; c < q.channels; c += gl_NumWorkGroups.x * 256u) {
+    const uvec2 s = list[c];
+    const float v = fieldAt(s.x, s.y);
+    const uint kind = s.x >= 3u ? 1u : 0u;
+    for (uint k = 0u; k < q.freqs; ++k) {
+      const vec2 t = trig[kind * q.freqs + k];
+      const uint at = k * q.channels + c;
+      kahan(at, v * t.x);
+      kahan(at + q.channels * q.freqs, -v * t.y);
+    }
+  }
+}
