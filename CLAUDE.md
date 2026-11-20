@@ -13,7 +13,7 @@ The goal is a real-time 3D FDTD Maxwell solver on the GPU (Vulkan 1.2 baseline, 
 ## Commands
 
 ```
-scripts/check.sh           # build (debug preset), CPU tests, clang-format, ruff + pytest. Runs anywhere.
+scripts/check.sh           # build (ci preset = debug + sanitizers + -Werror, as on GitHub), CPU tests, clang-format, ruff + pytest. Runs anywhere.
 scripts/check.sh --gpu     # also GPU tests, under the shared GPU lock
 cmake --preset release && cmake --build --preset release
 /Volumes/CrucialX9/Projects/mongo/poc/gpu/tools/with_gpu_lock.sh nice -n 10 build/release/apps/bench/bench   # writes out/bench.json

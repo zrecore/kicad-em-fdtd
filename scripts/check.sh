@@ -8,13 +8,13 @@ FMT=${CLANG_FORMAT:-/opt/homebrew/opt/llvm/bin/clang-format}
 LOCK=/Volumes/CrucialX9/Projects/mongo/poc/gpu/tools/with_gpu_lock.sh
 
 scripts/version.sh check
-cmake --preset debug >/dev/null
-cmake --build --preset debug
-ctest --preset debug -L '^cpu$' # anchored: -L is a regex and would also match cpu_slow (minutes under ASan)
+cmake --preset ci >/dev/null
+cmake --build --preset ci
+ctest --preset ci -L '^cpu$' # anchored: -L is a regex and would also match cpu_slow (minutes under ASan)
 cmake --preset release >/dev/null
 cmake --build --preset release
 ctest --preset release -L cpu_slow
-if [ "${1:-}" = "--gpu" ]; then "$LOCK" nice -n 10 ctest --preset debug -L gpu; fi
+if [ "${1:-}" = "--gpu" ]; then "$LOCK" nice -n 10 ctest --preset ci -L gpu; fi
 
 find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs "$FMT" --dry-run --Werror
 

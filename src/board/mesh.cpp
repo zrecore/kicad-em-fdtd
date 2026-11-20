@@ -58,9 +58,9 @@ std::vector<double> gradedEdges(double lo, double hi, double hMax, const std::ve
     if (!(target > lo && target < hi) || edges.size() < 5)
       continue;
     std::size_t i = 1;
-    for (std::size_t n = 1; n + 1 < edges.size(); ++n)
-      if (std::abs(edges[n] - target) < std::abs(edges[i] - target))
-        i = n;
+    for (std::size_t e = 1; e + 1 < edges.size(); ++e)
+      if (std::abs(edges[e] - target) < std::abs(edges[i] - target))
+        i = e;
     if (fixed[i] || std::abs(edges[i] - target) < 1e-15)
       continue;
     const double shift = target - edges[i];
@@ -81,8 +81,8 @@ std::vector<double> gradedEdges(double lo, double hi, double hMax, const std::ve
     }
     trial[i] = target;
     bool ok = true;
-    for (std::size_t n = 1; n < trial.size() && ok; ++n)
-      ok = trial[n] - trial[n - 1] >= 0.4 * (original[n] - original[n - 1]);
+    for (std::size_t e = 1; e < trial.size() && ok; ++e)
+      ok = trial[e] - trial[e - 1] >= 0.4 * (original[e] - original[e - 1]);
     if (!ok)
       continue; // a neighbouring snap or the end is too close; leave this one unsnapped
     edges = std::move(trial);
