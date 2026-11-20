@@ -1,0 +1,152 @@
+#include "app/prepare.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+
+#include "fdtd/grid.hpp"
+
+namespace app {
+
+BoardFacts boardFacts(const board::Snapshot& s) {
+  BoardFacts f;
+  for (const board::Layer& l : s.stackup)
+    if (!l.copper) {
+      f.maxEpsilonR = std::max(f.maxEpsilonR, l.epsilonR);
+      f.minDielectricThickness =
+          f.minDielectricThickness == 0 ? l.thickness : std::min(f.minDielectricThickness, l.thickness);
+    }
+  return f;
+}
+
+std::vector<std::string> applyPcbSettings(const Settings& settings, board::Snapshot& snapshot) {
+  std::vector<std::string> notes;
+  const std::string pid = settings.text("pcb_profile");
+  const FabProfile* fab = pid == "board" ? nullptr : &settings.catalog().fabProfile(pid);
+  std::size_t copperLayers = 0;
+  std::vector<board::Layer*> dielectrics; // top to bottom
+  for (board::Layer& l : snapshot.stackup) {
+    if (l.copper)
+      ++copperLayers;
+    else
+      dielectrics.push_back(&l);
+  }
+  const bool fits = fab && fab->layers == copperLayers;
+  if (fab && !fits)
+    notes.push_back("PCB profile '" + fab->name + "' is for " + std::to_string(fab->layers) +
+                    " copper layers but the board has " + std::to_string(copperLayers) +
+                    ": its values are not applied (values you typed are)");
+  if (fits)
+    notes.push_back("PCB stackup from '" + fab->name + "' (" + fab->source + ")");
+  for (std::size_t i = 0; i < kMaxDielectrics; ++i) {
+    const std::string n = std::to_string(i + 1);
+    const std::array<const char*, 3> keys{"_thickness_mm", "_epsilon_r", "_loss_tangent"};
+    const bool present = i < dielectrics.size();
+    std::string changes;
+    for (std::size_t k = 0; k < keys.size(); ++k) {
+      const std::string key = "diel" + n + keys[k];
+      const double v = settings.number(key);
+      if (v == 0)
+        continue;
+      const bool user = settings.source(key) == Source::User;
+      if (!user && !fits)
+        continue;
+      if (!present) {
+        if (user)
+          notes.push_back("dielectric " + n + " does not exist on this board: " + key + " ignored");
+        continue;
+      }
+      board::Layer& l = *dielectrics[i];
+      double& target = k == 0 ? l.thickness : k == 1 ? l.epsilonR : l.lossTangent;
+      const double value = k == 0 ? v * 1e-3 : v;
+      if (target == value)
+        continue;
+      char buf[96];
+      std::snprintf(buf, sizeof buf, "%s%s %g%s (%s", changes.empty() ? "" : ", ",
+                    k == 0   ? "thickness"
+                    : k == 1 ? "er"
+                             : "tan d",
+                    v, k == 0 ? " mm" : "", user ? "your value" : "profile");
+      changes += buf;
+      if (!user && fab && i < fab->dielectrics.size()) {
+        const auto& a = fab->dielectrics[i].assumed;
+        const char* name = k == 0 ? "thickness_mm" : k == 1 ? "epsilon_r" : "loss_tangent";
+        if (std::find(a.begin(), a.end(), name) != a.end())
+          changes += ", not published by the fab: assumed";
+      }
+      changes += ")";
+      target = value;
+    }
+    if (!changes.empty())
+      notes.push_back("dielectric " + n + " (" + dielectrics[i]->name + "): " + changes);
+  }
+  const double outer = settings.number("copper_outer_um"), inner = settings.number("copper_inner_um");
+  if (outer > 0 || inner > 0)
+    notes.push_back("copper thickness " + std::to_string(static_cast<int>(outer)) + " um outer, " +
+                    std::to_string(static_cast<int>(inner)) +
+                    " um inner is recorded only: the model uses zero-thickness copper sheets");
+  return notes;
+}
+
+Prepared prepare(const board::Snapshot& original, const Settings& settings, const board::Selection& selection,
+                 const std::vector<board::RefineBox>& extraRefine) {
+  board::Snapshot snapshot = original; // the PCB settings edit the stackup of this copy only
+  const std::vector<std::string> pcbNotes = applyPcbSettings(settings, snapshot);
+  const BoardFacts facts = boardFacts(snapshot);
+  Prepared p{makePlan(settings, facts.maxEpsilonR, facts.minDielectricThickness),
+             {fdtd::Grid::uniform({1, 1, 1}, {1, 1, 1})},
+             {}};
+  const RunPlan& plan = p.plan;
+
+  std::vector<board::RefineBox> refine =
+      board::refineAroundPorts(snapshot, plan.fineCell, 2 * plan.coarseCell);
+  refine.insert(refine.end(), extraRefine.begin(), extraRefine.end());
+  // The absorbing layer sits outside the free space, so the margin is not eaten by it.
+  const board::GridPlan grid{.lateralCell = plan.coarseCell,
+                             .maxDielectricCell = plan.dielectricCell,
+                             .airMargin =
+                                 plan.airMargin + static_cast<double>(plan.pmlCells) * plan.coarseCell,
+                             .airCell = plan.coarseCell,
+                             .refine = refine,
+                             .snapToGeometry = true};
+  p.model = board::voxelize(snapshot, selection, grid, 0.5 * (plan.bandHz[0] + plan.bandHz[1]));
+  p.model.notes.insert(p.model.notes.end(), pcbNotes.begin(), pcbNotes.end());
+
+  p.options.fMinHz = plan.sweepHz[0];
+  p.options.fMaxHz = plan.sweepHz[1];
+  p.options.excitationMinHz = plan.excitationHz[0];
+  p.options.excitationMaxHz = plan.excitationHz[1];
+  p.options.points = plan.sweepPoints;
+  p.options.cpmlCells = plan.pmlCells;
+  p.options.courant = plan.courant;
+  p.options.maxSteps = plan.maxSteps;
+  p.options.sampleEvery = plan.sampleEvery;
+  p.options.decay = plan.decay;
+  return p;
+}
+
+Estimate estimate(const Prepared& p, bool gpu, double deviceBytes) {
+  Estimate e;
+  const fdtd::Grid& g = p.model.grid;
+  e.cells = g.cellCount();
+  e.timeStep = p.options.courant * fdtd::maxStableDt(g);
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z})
+    e.smallestCell = e.smallestCell == 0 ? g.minCellSize(a) : std::min(e.smallestCell, g.minCellSize(a));
+  const double nodes = static_cast<double>(g.nodeCount());
+  // 6 float fields + one packed material word per node, plus CPML auxiliary slabs (about 8 N faces).
+  double faces = 0;
+  const double n = static_cast<double>(p.plan.pmlCells);
+  faces += static_cast<double>(g.nodes(fdtd::X) * g.nodes(fdtd::Y) + g.nodes(fdtd::Y) * g.nodes(fdtd::Z) +
+                               g.nodes(fdtd::X) * g.nodes(fdtd::Z));
+  e.memoryBytes = nodes * 28.0 + 8.0 * n * faces * 4.0;
+  e.exceedsMemory = deviceBytes > 0 && e.memoryBytes > 0.8 * deviceBytes;
+  const double tau = 1.1 / (p.plan.excitationHz[1] - p.plan.excitationHz[0]);
+  const double pulseSteps = 8.0 * tau / e.timeStep;
+  e.steps = static_cast<std::size_t>(std::min(3.0 * pulseSteps, static_cast<double>(p.plan.maxSteps)));
+  const double cellsPerSecond = gpu ? 7.0e8 : 9.0e7; // measured on the M1 Pro, CPML and one port included
+  e.seconds = static_cast<double>(e.cells) * static_cast<double>(e.steps) / cellsPerSecond;
+  return e;
+}
+
+} // namespace app

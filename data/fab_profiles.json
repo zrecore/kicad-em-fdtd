@@ -1,0 +1,317 @@
+{
+  "_comment": "Single source of defaults for stackup, materials and fabrication limits. Read by the solver app and the plugin; the user can override any value (see docs/PLAN.md, Defaults and editable attributes). Lengths in millimetres here for readability; the core converts to SI at load. 'source' says where each number comes from; 'assumed' marks values no fab publishes. Each profile's 'dielectrics' lists its dielectric layers top to bottom (copper is a zero-thickness sheet between them in the model); a value named in a layer's 'assumed' list is not published by the fab (the 'source' says where it comes from). Profiles are for a given copper-layer count; the solver applies one only to a board with that many copper layers.",
+  "materials": {
+    "fr4": {
+      "epsilon_r": 4.5,
+      "loss_tangent": 0.02,
+      "source": "assumed generic FR-4 (neither fab publishes a general value): er 4.5, tan d 0.02; the fab profiles carry laminate-specific values where a datasheet gives them"
+    },
+    "fr408": {
+      "epsilon_r": 3.69,
+      "loss_tangent": 0.0091,
+      "source": "Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+    },
+    "copper": {
+      "conductivity_s_per_m": 58000000.0,
+      "source": "assumed: bulk annealed copper; real PCB copper is lower (roughness)"
+    },
+    "solder_mask": {
+      "epsilon_r": 3.5,
+      "thickness_mm": 0.01,
+      "source": "assumed"
+    }
+  },
+  "profiles": {
+    "oshpark_2layer": {
+      "source": "https://docs.oshpark.com/services/ read 2026-11-19",
+      "name": "OSH Park 2-layer, ENIG, FR4",
+      "dielectrics": [
+        {
+          "name": "core",
+          "thickness_mm": 1.524,
+          "epsilon_r": 4.6,
+          "loss_tangent": 0.016,
+          "material": "175Tg FR4 (Kingboard KB6167F)",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/two-layer/ stackup table (60 mil core); Dk and Df from the Kingboard KB-6167F datasheet (linked from https://docs.oshpark.com/services/two-layer/), typical, IPC-TM-650 2.5.5.2: Dk 4.8 at 1 MHz and 4.6 at 1 GHz, Df 0.015 at 1 MHz and 0.016 at 1 GHz (1 GHz values used, nearest the radio bands). The OSH Park page itself says Dk 4.5 at 10 MHz and publishes no Df."
+        }
+      ],
+      "layers": 2,
+      "substrate": "fr4",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "copper_inner_um": null,
+      "finish": "ENIG",
+      "min_track_mm": 0.1524,
+      "min_space_mm": 0.1524,
+      "min_drill_mm": 0.254,
+      "min_annular_ring_mm": 0.127,
+      "blind_buried_vias": false,
+      "alt_thickness_mm": [
+        0.8
+      ]
+    },
+    "oshpark_4layer": {
+      "source": "https://docs.oshpark.com/services/ read 2026-11-19",
+      "name": "OSH Park 4-layer, ENIG, FR408HR",
+      "dielectrics": [
+        {
+          "name": "prepreg 2113",
+          "thickness_mm": 0.1999,
+          "epsilon_r": 3.61,
+          "loss_tangent": 0.0091,
+          "material": "FR408HR",
+          "assumed": [
+            "loss_tangent"
+          ],
+          "source": "https://docs.oshpark.com/services/four-layer/ (7.87 mil 2113 prepreg, Dk 3.61 at 1 GHz); Df 0.0091 is the FR408HR laminate's at 1 GHz from the datasheet (prepreg-specific Df not published): Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+        },
+        {
+          "name": "core",
+          "thickness_mm": 0.9906,
+          "epsilon_r": 3.69,
+          "loss_tangent": 0.0091,
+          "material": "FR408HR",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/four-layer/ (39 mil FR408HR core; the page gives no core Dk); Dk and Df from the Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+        },
+        {
+          "name": "prepreg 2113",
+          "thickness_mm": 0.1999,
+          "epsilon_r": 3.61,
+          "loss_tangent": 0.0091,
+          "material": "FR408HR",
+          "assumed": [
+            "loss_tangent"
+          ],
+          "source": "https://docs.oshpark.com/services/four-layer/ (7.87 mil 2113 prepreg, Dk 3.61 at 1 GHz); Df 0.0091 is the FR408HR laminate's at 1 GHz from the datasheet (prepreg-specific Df not published): Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+        }
+      ],
+      "layers": 4,
+      "substrate": "fr408",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "copper_inner_um": 17.5,
+      "finish": "ENIG",
+      "min_track_mm": 0.127,
+      "min_space_mm": 0.127,
+      "min_drill_mm": 0.254,
+      "min_annular_ring_mm": 0.1016,
+      "blind_buried_vias": false
+    },
+    "oshpark_6layer": {
+      "source": "https://docs.oshpark.com/services/ read 2026-11-19",
+      "name": "OSH Park 6-layer, ENIG, FR408HR",
+      "dielectrics": [
+        {
+          "name": "prepreg 106",
+          "thickness_mm": 0.1107,
+          "epsilon_r": 3.23,
+          "loss_tangent": 0.011,
+          "material": "FR408HR 106 75%",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/six-layer/ (4.36 mil; Dk 3.23 at 1 GHz, Df 0.011)"
+        },
+        {
+          "name": "core 2113",
+          "thickness_mm": 0.1016,
+          "epsilon_r": 3.66,
+          "loss_tangent": 0.009,
+          "material": "FR408HR 2113",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/six-layer/ (4 mil; Dk 3.66 at 1 GHz, Df 0.009)"
+        },
+        {
+          "name": "core",
+          "thickness_mm": 0.9256,
+          "epsilon_r": 3.69,
+          "loss_tangent": 0.0091,
+          "material": "FR408HR",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/six-layer/ (36.44 mil FR408HR core; the page gives no core Dk or Df); values from the Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+        },
+        {
+          "name": "core 2113",
+          "thickness_mm": 0.1016,
+          "epsilon_r": 3.66,
+          "loss_tangent": 0.009,
+          "material": "FR408HR 2113",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/six-layer/ (4 mil; Dk 3.66 at 1 GHz, Df 0.009)"
+        },
+        {
+          "name": "prepreg 106",
+          "thickness_mm": 0.1107,
+          "epsilon_r": 3.23,
+          "loss_tangent": 0.011,
+          "material": "FR408HR 106 75%",
+          "assumed": [],
+          "source": "https://docs.oshpark.com/services/six-layer/ (4.36 mil; Dk 3.23 at 1 GHz, Df 0.011)"
+        }
+      ],
+      "layers": 6,
+      "substrate": "fr408",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "copper_inner_um": 17.5,
+      "finish": "ENIG",
+      "min_track_mm": 0.127,
+      "min_space_mm": 0.127,
+      "min_drill_mm": 0.2032,
+      "min_annular_ring_mm": 0.1016,
+      "blind_buried_vias": false
+    },
+    "pcbway_2layer": {
+      "source": "https://www.pcbway.com/capabilities.html read 2026-11-19 (standard tier; the advanced tier allows tighter limits)",
+      "name": "PCBWay 2-layer, ENIG, FR4",
+      "dielectrics": [
+        {
+          "name": "core",
+          "thickness_mm": 1.53,
+          "epsilon_r": 4.6,
+          "loss_tangent": 0.016,
+          "material": "FR4 (Shengyi S1141 / Kingboard KB6160A class)",
+          "assumed": [
+            "thickness_mm",
+            "epsilon_r",
+            "loss_tangent"
+          ],
+          "source": "derived: 1.6 mm finished thickness less two 35 um copper layers; PCBWay publishes no 2-layer stackup, so the core Dk 4.6 is the value its 4-layer table gives for cores (https://www.pcbway.com/multi-layer-laminated-structure.html); loss tangent not published by PCBWay: assumed 0.016, the Kingboard KB-6167F figure at 1 GHz (one of PCBWay's listed FR4 materials; S1141 blog figures are 0.015 to 0.017). Manufacturer datasheet for the material actually used was not read"
+        }
+      ],
+      "layers": 2,
+      "substrate": "fr4",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "copper_inner_um": 35,
+      "finish": "ENIG",
+      "min_track_mm": 0.1,
+      "min_space_mm": 0.1,
+      "recommended_track_mm": 0.15,
+      "min_drill_mm": 0.2,
+      "absolute_min_drill_mm": 0.15,
+      "min_annular_ring_mm": 0.15,
+      "thickness_options_mm": [
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0,
+        1.2,
+        1.6,
+        2.0,
+        2.4,
+        2.6,
+        2.8,
+        3.0,
+        3.2
+      ],
+      "copper_outer_options_um": [
+        35,
+        70,
+        105,
+        140,
+        175,
+        210,
+        245,
+        280
+      ],
+      "copper_inner_options_um": [
+        35,
+        50,
+        70,
+        105,
+        140
+      ],
+      "thickness_tolerance": "+/-10% for t >= 1.0 mm, +/-0.1 mm below",
+      "blind_buried_vias": "advanced tier only"
+    },
+    "pcbway_4layer": {
+      "source": "https://www.pcbway.com/multi-layer-laminated-structure.html entry 1 (4 layers, 1.6 mm, outer 0.5 oz base plated to 1 oz, inner 1 oz, 70% residual copper) read 2026-11-20; limits as pcbway_2layer",
+      "name": "PCBWay 4-layer, ENIG, FR4",
+      "dielectrics": [
+        {
+          "name": "prepreg 7628",
+          "thickness_mm": 0.1855,
+          "epsilon_r": 4.74,
+          "loss_tangent": 0.016,
+          "material": "FR4 prepreg 7628 RC46%",
+          "assumed": [
+            "loss_tangent"
+          ],
+          "source": "https://www.pcbway.com/multi-layer-laminated-structure.html entry 1 (laminated thickness 0.1855 mm, Dk 4.74, no frequency stated); loss tangent not published by PCBWay: assumed 0.016, the Kingboard KB-6167F figure at 1 GHz (one of PCBWay's listed FR4 materials; S1141 blog figures are 0.015 to 0.017). Manufacturer datasheet for the material actually used was not read"
+        },
+        {
+          "name": "core",
+          "thickness_mm": 1.03,
+          "epsilon_r": 4.6,
+          "loss_tangent": 0.016,
+          "material": "FR4 core",
+          "assumed": [
+            "loss_tangent"
+          ],
+          "source": "https://www.pcbway.com/multi-layer-laminated-structure.html entry 1 (1.03 mm, Core DK 4.6, no frequency stated); loss tangent not published by PCBWay: assumed 0.016, the Kingboard KB-6167F figure at 1 GHz (one of PCBWay's listed FR4 materials; S1141 blog figures are 0.015 to 0.017). Manufacturer datasheet for the material actually used was not read"
+        },
+        {
+          "name": "prepreg 7628",
+          "thickness_mm": 0.1855,
+          "epsilon_r": 4.74,
+          "loss_tangent": 0.016,
+          "material": "FR4 prepreg 7628 RC46%",
+          "assumed": [
+            "loss_tangent"
+          ],
+          "source": "https://www.pcbway.com/multi-layer-laminated-structure.html entry 1 (as above); loss tangent not published by PCBWay: assumed 0.016, the Kingboard KB-6167F figure at 1 GHz (one of PCBWay's listed FR4 materials; S1141 blog figures are 0.015 to 0.017). Manufacturer datasheet for the material actually used was not read"
+        }
+      ],
+      "layers": 4,
+      "substrate": "fr4",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "copper_inner_um": 35,
+      "finish": "ENIG",
+      "min_track_mm": 0.1,
+      "min_space_mm": 0.1,
+      "recommended_track_mm": 0.15,
+      "min_drill_mm": 0.2,
+      "absolute_min_drill_mm": 0.15,
+      "min_annular_ring_mm": 0.15,
+      "blind_buried_vias": "advanced tier only"
+    },
+    "common_denominator": {
+      "source": "the limits both fabs can build: used for the W3008 reference board and as the default when no profile is chosen",
+      "name": "Common limits, 2-layer FR4 (default)",
+      "dielectrics": [
+        {
+          "name": "core",
+          "thickness_mm": 1.53,
+          "epsilon_r": 4.5,
+          "loss_tangent": 0.02,
+          "material": "fr4",
+          "assumed": [
+            "thickness_mm",
+            "epsilon_r",
+            "loss_tangent"
+          ],
+          "source": "assumed: 1.6 mm board less two 35 um copper layers; FR-4 values as in materials.fr4"
+        }
+      ],
+      "layers": 2,
+      "substrate": "fr4",
+      "board_thickness_mm": 1.6,
+      "copper_outer_um": 35,
+      "finish": "ENIG",
+      "min_track_mm": 0.1524,
+      "min_space_mm": 0.1524,
+      "min_drill_mm": 0.254,
+      "min_annular_ring_mm": 0.15,
+      "min_copper_to_edge_mm": 0.3
+    }
+  },
+  "defaults": {
+    "profile": "common_denominator",
+    "boundary_distance_wavelengths": 0.25,
+    "source": "profile: our choice; boundary distance: assumption to be confirmed by convergence tests"
+  },
+  "_note_pcbway_layers": "PCBWay's page counts 4-layer stackups (112 of 298 entries) but the 6-layer and larger tables could not be read (2026-11-20; its 6-layer example is an image), so there is no 6-layer or larger PCBWay profile; PCBWay publishes no 2-layer stackup (its stock 1.6 mm board uses a 1.2 mm core with 18/35/70 um copper per the cores table at /pcb_prototype/Cost_cores_Foil___Prepreg_for_PCBs.html, not labelled 2-layer), no Df, and no Dk frequency. ENIG ('Immersion gold' and 'ENIG') is listed in its standard and advanced finishes with no layer-count restriction (capabilities.html, /pcb_prototype/Comparison_of_several_PCB_surface_finish_types.html)."
+}

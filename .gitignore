@@ -1,0 +1,8 @@
+.venv/
+build/
+out/
+*.kicad_prl
+*-backups/
+__pycache__/
+boards/w3008-testboard/
+imgui.ini

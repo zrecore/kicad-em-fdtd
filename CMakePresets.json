@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    { "name": "base", "hidden": true, "generator": "Ninja", "binaryDir": "${sourceDir}/build/${presetName}" },
+    { "name": "debug", "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "FDTD_SANITIZE": "ON", "FDTD_VALIDATION": "ON" } },
+    { "name": "release", "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "FDTD_VALIDATION": "OFF" } },
+    { "name": "ci", "inherits": "debug", "cacheVariables": { "FDTD_WARNINGS_AS_ERRORS": "ON" } }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "ci", "configurePreset": "ci" }
+  ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true },
+      "environment": { "ASAN_OPTIONS": "detect_leaks=0", "VK_LAYER_PATH": "/usr/local/share/vulkan/explicit_layer.d" } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "ci", "configurePreset": "ci", "output": { "outputOnFailure": true },
+      "environment": { "ASAN_OPTIONS": "detect_leaks=0", "VK_LAYER_PATH": "/usr/local/share/vulkan/explicit_layer.d" } }
+  ]
+}

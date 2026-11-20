@@ -1,0 +1,48 @@
+name: release
+# Push a tag v<VERSION> (for example v0.2.0 or v0.2.0-rc.1) to build and publish a release:
+#   scripts/version.sh bump 0.2.0   # edit CHANGELOG.md, commit
+#   git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: write # create the release and upload the archive
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag must match VERSION and the changelog
+        run: scripts/version.sh check "$GITHUB_REF_NAME"
+      - name: Dependencies
+        run: brew install ninja shaderc vulkan-headers vulkan-loader molten-vk
+      - name: Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+      - name: CPU tests
+        run: ctest --preset release -L cpu
+      - name: Package
+        run: |
+          cpack --config build/release/CPackConfig.cmake -B dist
+          ls -l dist
+      - name: Smoke test the unpacked archive
+        run: |
+          mkdir smoke && tar -xzf dist/emfdtd-*.tar.gz -C smoke --strip-components=1
+          smoke/bin/emfdtd --version
+          smoke/bin/emfdtd --list-settings > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emfdtd-macos-arm64
+          path: dist/emfdtd-*
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/version.sh notes > notes.md
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/emfdtd-* $flags \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

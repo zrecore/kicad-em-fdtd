@@ -1,0 +1,211 @@
+#include "fdtd_vk/gpu_solver.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <map>
+#include <stdexcept>
+
+#include "core/resources.hpp"
+
+namespace fdtd_vk {
+namespace {
+constexpr std::size_t kMaxPalette = 256;
+constexpr std::uint32_t kGroups = 8192; // grid-stride loop: a fixed dispatch covers any grid size
+
+template <class T> void upload(vkcore::Buffer& b, std::size_t floatOffset, std::span<const T> src) {
+  std::copy(src.begin(), src.end(), b.as<float>().begin() + static_cast<std::ptrdiff_t>(floatOffset));
+}
+
+// The two other axes of a derivative axis, in increasing order (matches the shader).
+std::array<fdtd::Axis, 2> otherAxes(fdtd::Axis d) {
+  return {d == fdtd::X ? fdtd::Y : fdtd::X, d == fdtd::Z ? fdtd::Y : fdtd::Z};
+}
+} // namespace
+
+GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
+    : nodeCount_(init.grid().nodeCount()), ports_(init.ports()), dt_(init.dt()) {
+  const fdtd::Grid& g = init.grid();
+  const std::size_t fieldBytes = nodeCount_ * sizeof(float);
+  for (int i = 0; i < 6; ++i)
+    buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, fieldBytes));
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, fieldBytes)); // 6: packed material indices
+
+  // 7: tables: 1/cell and 1/dual sizes, then (with CPML) b and a at cells (H) and at nodes (E), per axis.
+  // Keep one submit near 25 ms (macOS GPU watchdog) at the measured ~2000 Mcells/s: steps = 5e7 / nodes.
+  stepsPerSubmit_ = static_cast<std::uint32_t>(
+      std::clamp<std::size_t>(50'000'000 / std::max<std::size_t>(nodeCount_, 1), 1, kMaxStepsPerSubmit));
+  const std::size_t pml = init.cpmlCells();
+  std::size_t tableFloats = 0;
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z})
+    tableFloats += g.cells(a) + g.nodes(a) + (pml ? 2 * (g.cells(a) + g.nodes(a)) : 0);
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, tableFloats * sizeof(float)));
+
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
+    upload<float>(*buffers_[a], 0, init.field(fdtd::Kind::E, a));
+    upload<float>(*buffers_[3 + a], 0, init.field(fdtd::Kind::H, a));
+  }
+  // Edge coefficients depend only on (ca, cb), and few distinct pairs exist: store a 1-byte palette index per
+  // edge (3 per node, packed in one word) instead of six floats per node.
+  std::map<std::pair<float, float>, std::uint32_t> palette;
+  std::vector<std::array<float, 2>> paletteData;
+  auto* mat = reinterpret_cast<std::uint32_t*>(buffers_[6]->as<float>().data());
+  std::fill(mat, mat + nodeCount_, 0u);
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
+    const auto ca = init.ca(a), cb = init.cb(a);
+    for (std::size_t n = 0; n < nodeCount_; ++n) {
+      const auto [it, added] =
+          palette.try_emplace({ca[n], cb[n]}, static_cast<std::uint32_t>(palette.size()));
+      if (added) {
+        if (palette.size() > kMaxPalette)
+          throw std::runtime_error("more than 256 distinct edge materials; widen the material index");
+        paletteData.push_back({ca[n], cb[n]});
+      }
+      mat[n] |= it->second << (8 * a);
+    }
+  }
+  paletteMaterials_ = palette.size();
+
+  std::array<std::uint32_t, 3> cellOff{}, dualOff{};
+  std::size_t off = 0;
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
+    cellOff[a] = static_cast<std::uint32_t>(off);
+    upload<float>(*buffers_[7], off, init.invCell(a));
+    off += g.cells(a);
+  }
+  for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
+    dualOff[a] = static_cast<std::uint32_t>(off);
+    upload<float>(*buffers_[7], off, init.invDual(a));
+    off += g.nodes(a);
+  }
+  fdtd_gpu::StepParams base{static_cast<std::uint32_t>(g.nodes(fdtd::X)),
+                            static_cast<std::uint32_t>(g.nodes(fdtd::Y)),
+                            static_cast<std::uint32_t>(g.nodes(fdtd::Z)),
+                            fdtd_gpu::kPhaseH,
+                            static_cast<float>(init.dt() / fdtd::units::kMu0),
+                            cellOff[0],
+                            cellOff[1],
+                            cellOff[2],
+                            dualOff[0],
+                            dualOff[1],
+                            dualOff[2]};
+  base.pmlCells = static_cast<std::uint32_t>(pml);
+  if (pml) {
+    for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
+      base.pmlBH[a] = static_cast<std::uint32_t>(off);
+      upload<float>(*buffers_[7], off, init.cpmlBH(a));
+      off += g.cells(a);
+      base.pmlAH[a] = static_cast<std::uint32_t>(off);
+      upload<float>(*buffers_[7], off, init.cpmlAH(a));
+      off += g.cells(a);
+      base.pmlBE[a] = static_cast<std::uint32_t>(off);
+      upload<float>(*buffers_[7], off, init.cpmlBE(a));
+      off += g.nodes(a);
+      base.pmlAE[a] = static_cast<std::uint32_t>(off);
+      upload<float>(*buffers_[7], off, init.cpmlAE(a));
+      off += g.nodes(a);
+    }
+  }
+
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, kMaxPalette * 2 * sizeof(float))); // 8: palette
+  std::copy(&paletteData[0][0], &paletteData[0][0] + 2 * paletteData.size(),
+            buffers_[8]->as<float>().begin());
+
+  // 9: CPML psi, only on the 2*pml layers next to the walls (H terms then E terms, two per derivative axis).
+  std::size_t psiFloats = 1;
+  if (pml) {
+    psiFloats = 0;
+    for (fdtd::Axis d : {fdtd::X, fdtd::Y, fdtd::Z}) {
+      const auto [u, v] = otherAxes(d);
+      psiFloats += 4 * 2 * pml * g.nodes(u) * g.nodes(v); // (H + E) * 2 terms * 2*pml layers
+    }
+  }
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, psiFloats * sizeof(float)));
+  std::fill(buffers_[9]->as<float>().begin(), buffers_[9]->as<float>().end(), 0.0f);
+
+  // 10: ports: counter header, port table, then the per-submit waveform and E log.
+  const std::size_t portCount = ports_.size();
+  base.portCount = static_cast<std::uint32_t>(portCount);
+  base.maxSteps = kMaxStepsPerSubmit;
+  const std::size_t portWords = 4 + 4 * portCount + 2 * kMaxStepsPerSubmit * portCount;
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, portWords * sizeof(float)));
+  auto words = buffers_[10]->as<float>();
+  std::fill(words.begin(), words.end(), 0.0f);
+  for (std::size_t p = 0; p < portCount; ++p) {
+    const fdtd::LumpedPort& port = ports_[p];
+    const std::array<std::size_t, 3> idx{port.i, port.j, port.k};
+    const std::uint32_t node = static_cast<std::uint32_t>(g.nodeIndex(port.i, port.j, port.k));
+    const std::uint32_t comp = static_cast<std::uint32_t>(port.component);
+    const float coupling = static_cast<float>(1.0 / (port.resistance * init.portArea(port)));
+    std::memcpy(&words[4 + 4 * p], &node, 4);
+    std::memcpy(&words[4 + 4 * p + 1], &comp, 4);
+    words[4 + 4 * p + 2] = coupling;
+    portDl_.push_back(g.cellSize(port.component, idx[port.component]));
+  }
+  portV_.resize(portCount);
+  portVs_.resize(portCount);
+
+  // The dispatch order of one leapfrog step.
+  auto add = [&](std::uint32_t phase) {
+    sequence_.push_back(base);
+    sequence_.back().phase = phase;
+  };
+  add(fdtd_gpu::kPhaseH);
+  if (pml)
+    for (std::uint32_t d = 0; d < 3; ++d)
+      add(fdtd_gpu::kPhaseCpmlH + d);
+  add(fdtd_gpu::kPhaseE);
+  if (pml)
+    for (std::uint32_t d = 0; d < 3; ++d)
+      add(fdtd_gpu::kPhaseCpmlE + d);
+  if (portCount) {
+    add(fdtd_gpu::kPhasePorts);
+    add(fdtd_gpu::kPhaseCounter);
+  }
+  for (const auto& s : sequence_)
+    pushes_.push_back(&s);
+
+  for (auto& b : buffers_)
+    bound_.push_back(b.get());
+  pipeline_ = std::make_unique<vkcore::ComputePipeline>(
+      ctx, core::resourceDir("shaders", FDTD_SHADER_DIR) + "/fdtd_step.comp.spv", 11,
+      sizeof(fdtd_gpu::StepParams));
+}
+
+vkcore::Timing GpuSolver::step(std::uint32_t n) {
+  vkcore::Timing total{};
+  auto words = buffers_[10]->as<float>();
+  const std::size_t portCount = ports_.size();
+  while (n > 0) {
+    const std::uint32_t chunk = std::min(n, stepsPerSubmit_);
+    if (portCount) {
+      std::memset(&words[0], 0, sizeof(std::uint32_t)); // device step counter back to 0
+      float* wave = &words[4 + 4 * portCount];
+      for (std::uint32_t s = 0; s < chunk; ++s)
+        for (std::size_t p = 0; p < portCount; ++p) {
+          const double vs = ports_[p].voltage((static_cast<double>(stepsDone_ + s) + 0.5) * dt_);
+          wave[s * portCount + p] = static_cast<float>(vs);
+          portVs_[p].push_back(vs);
+        }
+    }
+    const auto t = pipeline_->runSequence(bound_, pushes_, kGroups, chunk);
+    total.gpuMs += t.gpuMs;
+    total.wallMs += t.wallMs;
+    if (portCount) {
+      const float* log = &words[4 + 4 * portCount + kMaxStepsPerSubmit * portCount];
+      for (std::uint32_t s = 0; s < chunk; ++s)
+        for (std::size_t p = 0; p < portCount; ++p)
+          portV_[p].push_back(static_cast<double>(log[s * portCount + p]) * portDl_[p]);
+    }
+    stepsDone_ += chunk;
+    n -= chunk;
+  }
+  return total;
+}
+
+std::span<const float> GpuSolver::field(fdtd::Kind kind, fdtd::Axis component) const {
+  const std::size_t index = (kind == fdtd::Kind::E ? 0 : 3) + component;
+  return buffers_[index]->as<float>().first(nodeCount_);
+}
+
+} // namespace fdtd_vk

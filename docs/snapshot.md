@@ -1,0 +1,20 @@
+# Board snapshot format (version 1)
+
+The one file the KiCAD plugin writes and the native app (`emfdtd`) reads. JSON, **all lengths in metres**, written by `plugin/src/emfdtd_plugin/kicad_reader.py` (reader of the open board through the IPC API) or by a script (`plugin/tools/make_patch_snapshot.py`). C++ reader: `src/board/snapshot.cpp`; Python check: `snapshot.validate_snapshot`. A change to the format bumps `version`; the reader refuses versions it does not know, naming the field.
+
+| Field | Meaning |
+|---|---|
+| `format` | `"kicad-em-fdtd.snapshot"` |
+| `version` | `1` |
+| `board` | `{name, kicad_version}` |
+| `outline` | polygon `[[x, y], ...]` (v1 writes the bounding rectangle of Edge.Cuts and says so in `notes`) |
+| `stackup` | top to bottom: `{name, kind: "copper"}` or `{name, kind: "dielectric", thickness, epsilon_r, loss_tangent, material}`. Copper is a zero-thickness PEC sheet on the dielectric interface; solder mask, silkscreen and paste are not modelled |
+| `copper` | filled polygons: `{layer, owner, net, polygon, holes?}`. `owner` is the footprint reference for pads, `""` for tracks, zones and other board-level copper |
+| `vias` | `{x, y, diameter, drill, net, owner}`; modelled as PEC columns between the outermost copper layers |
+| `components` | `{ref, value, layer, x, y}`: what the user can select |
+| `ports` | optional. In-plane: `{name, layer, a, b, width, impedance}` across a gap from `a` (positive) to `b`. Vertical: `{name, layer, layer_b, a, width, impedance}` from `layer` (positive) to `layer_b` |
+| `notes` | what the exporter simplified, copied into the run summary |
+
+The component selection is not part of the snapshot: it is applied by the voxelizer (`board::Selection`), so the same snapshot serves any choice. Board-level items (`owner == ""`) are always in the model.
+
+Material defaults used when KiCAD's stackup has no permittivity come from `data/fab_profiles.json` and are named in `notes`.

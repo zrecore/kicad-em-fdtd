@@ -1,0 +1,8 @@
+{
+  "_comment": "Defaults for the solver window's field colours, one pair per theme: negative and positive field. The user can change any of them in Settings (View group) and reset to these. Hex RRGGBB.",
+  "source": "user requirement, 2026-11-19: light theme traditional blue (negative) and red (positive); dark theme a colour-blind-safe pair from the Okabe-Ito palette, which is specified in CMYK values (sky blue #56B4E9 and yellow #F0E442), chosen on the blue-yellow axis that stays distinguishable in red-green colour blindness and with yellow clearly lighter than blue so sign also shows in lightness. Wong, B., Points of view: Color blindness, Nature Methods 8:441 (2011), doi:10.1038/nmeth.1618",
+  "colours": {
+    "dark": { "negative": "#56B4E9", "positive": "#F0E442" },
+    "light": { "negative": "#2150AA", "positive": "#B2182B" }
+  }
+}

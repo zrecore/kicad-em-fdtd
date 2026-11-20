@@ -1,0 +1,175 @@
+{
+  "_comment": "Single source of radio profiles: band of interest, channel markers and meshing rules. Read by the solver app (preview screen) and the plugin; users adjust and save copies, and can reset to these. Frequencies in Hz. Each profile carries a source and a status: verified = read from a source on the date given, unverified = from general knowledge or a source that could not be retrieved (a one-line edit here fixes a wrong number; no code holds these values). Three nested ranges per profile: the band of interest (what the user cares about, shaded on the S11 plot), the reported sweep (band widened by sweep_margin_fraction of the frequency so a resonance that is 15 percent off is still visible), and the excitation band (sweep widened by excitation_margin_fraction of its width so the source spectrum has no deep edge where S11 = 2V/Vs - 1 would be noisy).",
+  "read_date": "2026-11-19",
+  "meshing": {
+    "sweep_margin_fraction": 0.15,
+    "excitation_margin_fraction": 0.25,
+    "sweep_points": 101,
+    "port_impedance_ohm": 50,
+    "boundary_distance_wavelengths": 0.25,
+    "default_preset": "medium",
+    "presets": {
+      "coarse": { "cells_per_wavelength": 10, "label": "Coarse (fast, rough)" },
+      "medium": { "cells_per_wavelength": 20, "label": "Medium (default)" },
+      "fine": { "cells_per_wavelength": 30, "label": "Fine (slow, accurate)" }
+    },
+    "source": "assumed: cells per wavelength in the dielectric at the highest swept frequency; 20 is the usual FDTD rule of thumb, to be confirmed by convergence tests (docs/PLAN.md next steps). Fine cells near small features are derived from the geometry, not stored here."
+  },
+  "default_profile": "wifi",
+  "profiles": {
+    "wifi": {
+      "name": "Wi-Fi",
+      "default_variant": "2g4",
+      "variants": {
+        "2g4": {
+          "name": "Wi-Fi 2.4 GHz (802.11b/g/n/ax)",
+          "band_hz": [2.4e9, 2.4835e9],
+          "channels": [
+            { "label": "ch 1", "center_hz": 2.412e9, "width_hz": 22e6 },
+            { "label": "ch 6", "center_hz": 2.437e9, "width_hz": 22e6 },
+            { "label": "ch 11", "center_hz": 2.462e9, "width_hz": 22e6 }
+          ],
+          "source": "2400-2483.5 MHz ISM band; channels 1, 6, 11 non-overlapping, 22 MHz wide (Wikipedia '2.4 GHz radio use', electronics-notes pages), status: verified 2026-11-19",
+          "status": "verified"
+        },
+        "5g": {
+          "name": "Wi-Fi 5 GHz (U-NII-1 to U-NII-3)",
+          "band_hz": [5.15e9, 5.85e9],
+          "channels": [],
+          "source": "U-NII-1 5150-5250 MHz and U-NII-3 5725-5850 MHz (radio-electronics.com U-NII page, FCC material); the full 5 GHz allocation has gaps (DFS bands) and U-NII-4 5850-5925 is largely not available to Wi-Fi; status: verified 2026-11-19 from secondary sources, check 47 CFR Part 15 Subpart E for the exact edges",
+          "status": "verified"
+        },
+        "6g": {
+          "name": "Wi-Fi 6 GHz (6E, U-NII-5 to U-NII-8, US)",
+          "band_hz": [5.925e9, 7.125e9],
+          "channels": [],
+          "source": "FCC order of April 2020: 5925-7125 MHz in U-NII-5 (5925-6425), U-NII-6 (6425-6525), U-NII-7 (6525-6875), U-NII-8 (6875-7125); other regions differ (fcc.gov, Federal Register 2025-02962); status: verified 2026-11-19",
+          "status": "verified"
+        }
+      }
+    },
+    "bluetooth": {
+      "name": "Bluetooth",
+      "default_variant": "le",
+      "variants": {
+        "le": {
+          "name": "Bluetooth Low Energy / Classic (2.4 GHz)",
+          "band_hz": [2.4e9, 2.4835e9],
+          "channels": [
+            { "label": "adv 37", "center_hz": 2.402e9, "width_hz": 2e6 },
+            { "label": "adv 38", "center_hz": 2.426e9, "width_hz": 2e6 },
+            { "label": "adv 39", "center_hz": 2.480e9, "width_hz": 2e6 }
+          ],
+          "source": "LE channel centres 2402-2480 MHz, 40 channels of 2 MHz, advertising on 37, 38, 39 (electronics-notes.com, everythingrf.com); the system band is 2400-2483.5 MHz; status: verified 2026-11-19",
+          "status": "verified"
+        }
+      }
+    },
+    "zigbee": {
+      "name": "Zigbee (IEEE 802.15.4)",
+      "default_variant": "2g4",
+      "variants": {
+        "2g4": {
+          "name": "Zigbee 2.4 GHz (channels 11-26)",
+          "band_hz": [2.4e9, 2.4835e9],
+          "channels": [
+            { "label": "ch 11", "center_hz": 2.405e9, "width_hz": 2e6 },
+            { "label": "ch 15", "center_hz": 2.425e9, "width_hz": 2e6 },
+            { "label": "ch 20", "center_hz": 2.450e9, "width_hz": 2e6 },
+            { "label": "ch 25", "center_hz": 2.475e9, "width_hz": 2e6 },
+            { "label": "ch 26", "center_hz": 2.480e9, "width_hz": 2e6 }
+          ],
+          "source": "16 channels, 11-26, 2 MHz wide, 5 MHz spacing, ch 11 at 2405 MHz, ch 26 at 2480 MHz (everythingrf.com, rfwireless-world.com, NXP JN-AN-1079); status: verified 2026-11-19",
+          "status": "verified"
+        },
+        "subghz_eu": {
+          "name": "Zigbee/802.15.4 sub-GHz Europe (868 MHz)",
+          "band_hz": [8.68e8, 8.686e8],
+          "channels": [],
+          "source": "IEEE 802.15.4 868-868.6 MHz; from general knowledge, not re-read in this session; status: unverified",
+          "status": "unverified"
+        },
+        "subghz_us": {
+          "name": "Zigbee/802.15.4 sub-GHz Americas (915 MHz)",
+          "band_hz": [9.02e8, 9.28e8],
+          "channels": [],
+          "source": "IEEE 802.15.4 902-928 MHz; from general knowledge, not re-read in this session; status: unverified",
+          "status": "unverified"
+        }
+      }
+    },
+    "lwmesh": {
+      "name": "LWMesh (Microchip Lightweight Mesh)",
+      "default_variant": "2g4",
+      "variants": {
+        "2g4": {
+          "name": "LWMesh 2.4 GHz (802.15.4 radios such as AT86RF231)",
+          "band_hz": [2.4e9, 2.4835e9],
+          "channels": [
+            { "label": "ch 11", "center_hz": 2.405e9, "width_hz": 2e6 },
+            { "label": "ch 26", "center_hz": 2.480e9, "width_hz": 2e6 }
+          ],
+          "source": "LWMesh runs on Atmel/Microchip 802.15.4 transceivers; the release notes list AT86RF231 and AT86RF212 (microchip.com AVR2130/AN42028 search results). AT86RF231 being a 2.4 GHz part and AT86RF212 a sub-GHz part is general knowledge; the developer guide's frequency band section (5.2.4) could not be retrieved, so the 2.4 GHz default is the 802.15.4 2.4 GHz plan; status: unverified",
+          "status": "unverified"
+        },
+        "subghz_eu": {
+          "name": "LWMesh sub-GHz Europe (868 MHz, e.g. AT86RF212)",
+          "band_hz": [8.68e8, 8.686e8],
+          "channels": [],
+          "source": "see the 2.4 GHz entry; status: unverified",
+          "status": "unverified"
+        },
+        "subghz_us": {
+          "name": "LWMesh sub-GHz Americas (915 MHz, e.g. AT86RF212)",
+          "band_hz": [9.02e8, 9.28e8],
+          "channels": [],
+          "source": "see the 2.4 GHz entry; status: unverified",
+          "status": "unverified"
+        }
+      }
+    },
+    "uwb": {
+      "name": "UWB (IEEE 802.15.4z HRP)",
+      "default_variant": "ch5_ch9",
+      "variants": {
+        "ch5_ch9": {
+          "name": "UWB channels 5 and 9 (6.0 to 8.5 GHz)",
+          "band_hz": [6.0e9, 8.5e9],
+          "channels": [
+            { "label": "ch 5", "center_hz": 6.4896e9, "width_hz": 499.2e6 },
+            { "label": "ch 9", "center_hz": 7.9872e9, "width_hz": 499.2e6 }
+          ],
+          "source": "channel 5 centre 6489.6 MHz, channel 9 centre 7987.2 MHz, bandwidth 499.2 MHz (arXiv 2202.02190 overview table, FiRa white paper, LitePoint white paper; other channels' values disagree between sources and are not used); status: verified 2026-11-19. Note: dielectric loss is represented by a conductivity set at the band centre, a coarser approximation over this 2.5 GHz span than at 2.4 GHz",
+          "status": "verified"
+        },
+        "ch5": {
+          "name": "UWB channel 5 only",
+          "band_hz": [6.24e9, 6.7392e9],
+          "channels": [{ "label": "ch 5", "center_hz": 6.4896e9, "width_hz": 499.2e6 }],
+          "source": "centre 6489.6 MHz +/- 249.6 MHz; status: verified 2026-11-19",
+          "status": "verified"
+        },
+        "ch9": {
+          "name": "UWB channel 9 only",
+          "band_hz": [7.7376e9, 8.2368e9],
+          "channels": [{ "label": "ch 9", "center_hz": 7.9872e9, "width_hz": 499.2e6 }],
+          "source": "centre 7987.2 MHz +/- 249.6 MHz; status: verified 2026-11-19",
+          "status": "verified"
+        }
+      }
+    },
+    "custom": {
+      "name": "Custom",
+      "default_variant": "default",
+      "variants": {
+        "default": {
+          "name": "Custom (starts at 2.4 GHz ISM; set your own band)",
+          "band_hz": [2.4e9, 2.4835e9],
+          "channels": [],
+          "source": "our choice: the most common hobbyist and engineer band and this project's first target",
+          "status": "assumed"
+        }
+      }
+    }
+  }
+}

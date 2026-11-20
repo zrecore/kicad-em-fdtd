@@ -1,0 +1,41 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    # macOS on Apple silicon is the only supported platform for now. No GPU on the runner: CPU tests only.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install ninja shaderc vulkan-headers vulkan-loader molten-vk clang-format
+      - name: Version
+        run: scripts/version.sh check
+      - name: Format
+        run: find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs clang-format --dry-run --Werror
+      - name: Build (warnings are errors, ASan and UBSan)
+        run: |
+          cmake --preset ci
+          cmake --build --preset ci
+      - name: CPU tests
+        run: ctest --preset ci -L '^cpu$'
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9" # KiCAD's bundled interpreter
+      - run: pip install pytest pytest-bdd ruff
+      - working-directory: plugin
+        run: |
+          ruff check .
+          ruff format --check .
+          pytest -q

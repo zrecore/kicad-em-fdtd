@@ -1,0 +1,3 @@
+// Generated from the VERSION file by CMake; do not edit.
+#pragma once
+#define FDTD_VERSION "@FDTD_VERSION@"

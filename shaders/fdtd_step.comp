@@ -1,0 +1,159 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "fdtd_params.h"
+// One leapfrog half-step per dispatch (phase 0: H from E, phase 1: E from H). Grid-stride loop over nodes;
+// x varies fastest. Same operation order as the CPU reference (src/fdtd/solver.cpp).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer EX { float ex[]; };
+layout(std430, binding = 1) buffer EY { float ey[]; };
+layout(std430, binding = 2) buffer EZ { float ez[]; };
+layout(std430, binding = 3) buffer HX { float hx[]; };
+layout(std430, binding = 4) buffer HY { float hy[]; };
+layout(std430, binding = 5) buffer HZ { float hz[]; };
+layout(std430, binding = 6) readonly buffer Mat { uint mat[]; };       // per node: 3 palette indices, 8 bits each (x,y,z)
+layout(std430, binding = 8) readonly buffer Pal { vec2 pal[]; };       // palette: (ca, cb) per distinct edge material
+layout(std430, binding = 7) readonly buffer Tab { float tab[]; };    // 1/cell and 1/dual sizes
+layout(std430, binding = 9) buffer Psi { float psi[]; };               // CPML auxiliary fields, slab-compact
+layout(std430, binding = 10) buffer Ports { uint ctr; uint pad0, pad1, pad2; float portData[]; };
+// portData: per port 4 words (node, component, coupling = 1/(R dA), dl), then waveform[maxSteps][ports], then
+// the logged port E[maxSteps][ports] (E after the step's update), both for the current submit only.
+layout(push_constant) uniform PC { StepParams p; };
+
+float getE(uint c, uint n) { return c == 0u ? ex[n] : (c == 1u ? ey[n] : ez[n]); }
+void addE(uint c, uint n, float v) {
+  if (c == 0u) ex[n] += v; else if (c == 1u) ey[n] += v; else ez[n] += v;
+}
+float getH(uint c, uint n) { return c == 0u ? hx[n] : (c == 1u ? hy[n] : hz[n]); }
+void addH(uint c, uint n, float v) {
+  if (c == 0u) hx[n] += v; else if (c == 1u) hy[n] += v; else hz[n] += v;
+}
+
+// CPML for derivative axis d (phase CPML_H or CPML_E). Each invocation owns one slab element and updates the
+// (at most two) components whose curl contains a d-derivative; terms of different axes run in separate
+// dispatches, so no two invocations touch the same field sample.
+void cpml(uint d, bool hPhase) {
+  const uvec3 nn = uvec3(p.nxn, p.nyn, p.nzn);
+  const uvec3 nc = nn - 1u;
+  const uint u = d == 0u ? 1u : 0u, v = d == 2u ? 1u : 2u;
+  const uint layers = 2u * p.pmlCells;
+  const uint slab = layers * nn[u] * nn[v];
+  // psi layout: H terms of d = 0,1,2 (two arrays each), then the E terms the same way.
+  uint base = 0u;
+  for (uint q = 0u; q < d; ++q) {
+    const uint qu = q == 0u ? 1u : 0u, qv = q == 2u ? 1u : 2u;
+    base += 2u * layers * nn[qu] * nn[qv];
+  }
+  if (!hPhase) {
+    for (uint q = 0u; q < 3u; ++q) {
+      const uint qu = q == 0u ? 1u : 0u, qv = q == 2u ? 1u : 2u;
+      base += 2u * layers * nn[qu] * nn[qv];
+    }
+  }
+  // Term t (0 or 1): updated component, differenced field component and sign. The same table serves H and E
+  // phases: curl(F)_c = d_a F_b - d_b F_a gives, per derivative axis, these two (component, field, sign) terms.
+  uint comp[2], field[2];
+  float sgn[2];
+  if (d == 0u) {
+    comp = uint[2](1u, 2u); field = uint[2](2u, 1u); sgn = float[2](-1.0, 1.0);
+  } else if (d == 1u) {
+    comp = uint[2](0u, 2u); field = uint[2](2u, 0u); sgn = float[2](1.0, -1.0);
+  } else {
+    comp = uint[2](0u, 1u); field = uint[2](1u, 0u); sgn = float[2](-1.0, 1.0);
+  }
+  const uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  const uint strideD = d == 0u ? 1u : (d == 1u ? p.nxn : p.nxn * p.nyn);
+  const uint tabInv = hPhase ? (d == 0u ? p.icx : (d == 1u ? p.icy : p.icz))
+                             : (d == 0u ? p.idx : (d == 1u ? p.idy : p.idz));
+  const uint tabB = hPhase ? p.pmlBH[d] : p.pmlBE[d];
+  const uint tabA = hPhase ? p.pmlAH[d] : p.pmlAE[d];
+  for (uint e = gl_GlobalInvocationID.x; e < slab; e += stride) {
+    const uint lu = e % nn[u], r = e / nn[u], lv = r % nn[v], layer = r / nn[v];
+    uint id;
+    if (layer < p.pmlCells) id = layer;
+    else id = nc[d] - p.pmlCells + (hPhase ? 0u : 1u) + (layer - p.pmlCells);
+    uvec3 idx;
+    idx[d] = id; idx[u] = lu; idx[v] = lv;
+    const uint n = idx.x + p.nxn * (idx.y + p.nyn * idx.z);
+    const float a = tab[tabA + id];
+    if (a == 0.0) continue;
+    const float b = tab[tabB + id];
+    const float inv = tab[tabInv + id];
+    for (uint t = 0u; t < 2u; ++t) {
+      const uint c = comp[t];
+      bool ok = true;
+      for (uint ax = 0u; ax < 3u && ok; ++ax) {
+        if (hPhase) ok = ax == c ? idx[ax] <= nc[ax] : idx[ax] < nc[ax];
+        else ok = ax == c ? idx[ax] < nc[ax] : (idx[ax] >= 1u && idx[ax] < nc[ax]);
+      }
+      if (!ok) continue;
+      float diff;
+      if (hPhase) diff = (getE(field[t], n + strideD) - getE(field[t], n)) * inv;
+      else diff = (getH(field[t], n) - getH(field[t], n - strideD)) * inv;
+      const uint pi = base + t * slab + e;
+      psi[pi] = b * psi[pi] + a * diff;
+      if (hPhase) addH(c, n, -p.dtOverMu * sgn[t] * psi[pi]);
+      else addE(c, n, pal[(mat[n] >> (8u * c)) & 255u].y * sgn[t] * psi[pi]);
+    }
+  }
+}
+
+void main() {
+  if (p.phase >= FDTD_PHASE_CPML_H) {
+    if (p.phase == FDTD_PHASE_PORTS) {
+      const uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+      for (uint q = gl_GlobalInvocationID.x; q < p.portCount; q += stride) {
+        const uint n = floatBitsToUint(portData[4u * q]), c = floatBitsToUint(portData[4u * q + 1u]);
+        const float coupling = portData[4u * q + 2u];
+        const uint wave = 4u * p.portCount, logBase = wave + p.maxSteps * p.portCount;
+        const float vs = portData[wave + ctr * p.portCount + q];
+        addE(c, n, pal[(mat[n] >> (8u * c)) & 255u].y * vs * coupling);
+        portData[logBase + ctr * p.portCount + q] = getE(c, n);
+      }
+    } else if (p.phase == FDTD_PHASE_COUNTER) {
+      if (gl_GlobalInvocationID.x == 0u) ctr += 1u;
+    } else if (p.phase < FDTD_PHASE_CPML_E) {
+      cpml(p.phase - FDTD_PHASE_CPML_H, true);
+    } else {
+      cpml(p.phase - FDTD_PHASE_CPML_E, false);
+    }
+    return;
+  }
+  const uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  const uint nodes = p.nxn * p.nyn * p.nzn;
+  const uint nx = p.nxn - 1u, ny = p.nyn - 1u, nz = p.nzn - 1u;
+  const uint sy = p.nxn, sz = p.nxn * p.nyn;
+  for (uint n = gl_GlobalInvocationID.x; n < nodes; n += stride) {
+    const uint i = n % p.nxn, r = n / p.nxn, j = r % p.nyn, k = r / p.nyn;
+    if (p.phase == FDTD_PHASE_H) {
+      if (j < ny && k < nz) {
+        const float dy = tab[p.icy + j], dz = tab[p.icz + k];
+        hx[n] -= p.dtOverMu * ((ez[n + sy] - ez[n]) * dy - (ey[n + sz] - ey[n]) * dz);
+      }
+      if (i < nx && k < nz) {
+        const float dx = tab[p.icx + i], dz = tab[p.icz + k];
+        hy[n] -= p.dtOverMu * ((ex[n + sz] - ex[n]) * dz - (ez[n + 1u] - ez[n]) * dx);
+      }
+      if (i < nx && j < ny) {
+        const float dx = tab[p.icx + i], dy = tab[p.icy + j];
+        hz[n] -= p.dtOverMu * ((ey[n + 1u] - ey[n]) * dx - (ex[n + sy] - ex[n]) * dy);
+      }
+    } else {
+      const uint m = mat[n];
+      if (i < nx && j >= 1u && j < ny && k >= 1u && k < nz) {
+        const float dy = tab[p.idy + j], dz = tab[p.idz + k];
+        const vec2 c = pal[m & 255u];
+        ex[n] = c.x * ex[n] + c.y * ((hz[n] - hz[n - sy]) * dy - (hy[n] - hy[n - sz]) * dz);
+      }
+      if (i >= 1u && i < nx && j < ny && k >= 1u && k < nz) {
+        const float dx = tab[p.idx + i], dz = tab[p.idz + k];
+        const vec2 c = pal[(m >> 8) & 255u];
+        ey[n] = c.x * ey[n] + c.y * ((hx[n] - hx[n - sz]) * dz - (hz[n] - hz[n - 1u]) * dx);
+      }
+      if (i >= 1u && i < nx && j >= 1u && j < ny && k < nz) {
+        const float dx = tab[p.idx + i], dy = tab[p.idy + j];
+        const vec2 c = pal[(m >> 16) & 255u];
+        ez[n] = c.x * ez[n] + c.y * ((hy[n] - hy[n - 1u]) * dx - (hx[n] - hx[n - sy]) * dy);
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "org.kicad-em-fdtd.simulate",
+  "name": "EM FDTD",
+  "description": "Real-time 3D FDTD electromagnetic simulation of the open board, with an animated field view.",
+  "runtime": {
+    "type": "python",
+    "min_version": "3.9"
+  },
+  "actions": [
+    {
+      "identifier": "simulate",
+      "name": "Simulate (EM FDTD)",
+      "description": "Select two pads (the port: RF pad first, then its ground pad) and start the simulation right away in the solver window (opened, or refreshed if already open).",
+      "show-button": true,
+      "scopes": [
+        "pcb"
+      ],
+      "entrypoint": "action_simulate.py",
+      "icons-light": [
+        "icons/simulate_light_24.png",
+        "icons/simulate_light_48.png"
+      ],
+      "icons-dark": [
+        "icons/simulate_dark_24.png",
+        "icons/simulate_dark_48.png"
+      ]
+    },
+    {
+      "identifier": "window",
+      "name": "EM FDTD window",
+      "description": "Open the solver window on its preview screen (settings and estimate) for this board, or bring it forward if it is open. No pad selection needed; the previous port is kept. Does not start a run.",
+      "show-button": true,
+      "scopes": [
+        "pcb"
+      ],
+      "entrypoint": "action_window.py",
+      "icons-light": [
+        "icons/window_light_24.png",
+        "icons/window_light_48.png"
+      ],
+      "icons-dark": [
+        "icons/window_dark_24.png",
+        "icons/window_dark_48.png"
+      ]
+    }
+  ]
+}
