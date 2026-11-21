@@ -127,7 +127,7 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
   const std::size_t portCount = ports_.size();
   base.portCount = static_cast<std::uint32_t>(portCount);
   base.maxSteps = kMaxStepsPerSubmit;
-  const std::size_t portWords = 4 + 4 * portCount + 2 * kMaxStepsPerSubmit * portCount;
+  const std::size_t portWords = 4 + 8 * portCount + 2 * kMaxStepsPerSubmit * portCount;
   buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, portWords * sizeof(float)));
   auto words = buffers_[10]->as<float>();
   std::fill(words.begin(), words.end(), 0.0f);
@@ -137,9 +137,13 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
     const std::uint32_t node = static_cast<std::uint32_t>(g.nodeIndex(port.i, port.j, port.k));
     const std::uint32_t comp = static_cast<std::uint32_t>(port.component);
     const float coupling = static_cast<float>(1.0 / (port.resistance * init.portArea(port)));
-    std::memcpy(&words[4 + 4 * p], &node, 4);
-    std::memcpy(&words[4 + 4 * p + 1], &comp, 4);
-    words[4 + 4 * p + 2] = coupling;
+    std::memcpy(&words[4 + 8 * p], &node, 4);
+    std::memcpy(&words[4 + 8 * p + 1], &comp, 4);
+    words[4 + 8 * p + 2] = coupling;
+    const double dlEdge = g.cellSize(port.component, idx[port.component]);
+    words[4 + 8 * p + 4] =
+        port.inductance > 0 ? static_cast<float>(init.dt() * dlEdge / (2 * port.inductance)) : 0.0f;
+    words[4 + 8 * p + 5] = static_cast<float>(1.0 / init.portArea(port));
     portDl_.push_back(g.cellSize(port.component, idx[port.component]));
   }
   portV_.resize(portCount);
@@ -180,7 +184,7 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
     const std::uint32_t chunk = std::min(n, stepsPerSubmit_);
     if (portCount) {
       std::memset(&words[0], 0, sizeof(std::uint32_t)); // device step counter back to 0
-      float* wave = &words[4 + 4 * portCount];
+      float* wave = &words[4 + 8 * portCount];
       for (std::uint32_t s = 0; s < chunk; ++s)
         for (std::size_t p = 0; p < portCount; ++p) {
           const double vs = ports_[p].voltage((static_cast<double>(stepsDone_ + s) + 0.5) * dt_);
@@ -192,7 +196,7 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
     total.gpuMs += t.gpuMs;
     total.wallMs += t.wallMs;
     if (portCount) {
-      const float* log = &words[4 + 4 * portCount + kMaxStepsPerSubmit * portCount];
+      const float* log = &words[4 + 8 * portCount + kMaxStepsPerSubmit * portCount];
       for (std::uint32_t s = 0; s < chunk; ++s)
         for (std::size_t p = 0; p < portCount; ++p)
           portV_[p].push_back(static_cast<double>(log[s * portCount + p]) * portDl_[p]);

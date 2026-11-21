@@ -39,7 +39,42 @@ struct AccumParams {
   u32 channels, freqs;
 };
 
+// Volume renderer (shaders/volume_field.comp, shaders/volume_render.comp): everything one frame needs, in a
+// storage buffer (it is larger than the 128 bytes of push constants Vulkan guarantees).
+#define VOL_LIGHT 1u /* light theme */
+#define VOL_LUT 2u   /* colour by |value| through the table */
+#define VOL_SKIP 4u  /* skip empty bricks */
+#define VOL_MAG 8u   /* magnitude, not Re{X exp(j phase)} */
+#define VOL_BRICK 4u /* brick edge in voxels */
 #ifdef __cplusplus
+struct alignas(16) vec4 {
+  float x, y, z, w;
+};
+#endif
+struct VolParams {
+  vec4 pos, forward, right, up, size;  // camera frame and box size (longest side 1)
+  vec4 negative, positive, background; // colours, 0..255
+  u32 nx, ny, nz, width;
+  u32 height, flags, lutSize, pad0;
+  float cosPhase, sinPhase, brickThreshold, colourScale;
+  float density, gamma, threshold, logRangeDb;
+  float emission, step, voxel, tanY;
+  float aspect, pad1, pad2, pad3;
+};
+
+// Slice renderer (shaders/slice_render.comp).
+#define SLICE_LIGHT 1u
+#define SLICE_MASK 2u
+struct SliceParams {
+  vec4 negative, positive;
+  u32 width, height, nu, nv;
+  u32 flags, pad0, pad1, pad2;
+  float cosPhase, sinPhase, colourScale, gamma;
+};
+
+#ifdef __cplusplus
+static_assert(sizeof(SliceParams) == 80, "storage buffer layout must match the shader");
+static_assert(sizeof(VolParams) == 224, "storage buffer layout must match the shader");
 static_assert(sizeof(StepParams) == 104, "push constant layout must match the shader");
 static_assert(sizeof(AccumParams) == 8, "push constant layout must match the shader");
 } // namespace fdtd_gpu

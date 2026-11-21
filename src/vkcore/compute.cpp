@@ -174,6 +174,10 @@ Timing ComputePipeline::runSequence(std::span<Buffer* const> buffers, std::span<
   Timing t;
   t.gpuMs = static_cast<double>(ts[1] - ts[0]) * ctx_.properties().limits.timestampPeriod * 1e-6;
   t.wallMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  if (ts[1] <= ts[0]) {
+    t.timestamps = false;
+    t.gpuMs = t.wallMs;
+  }
   return t;
 }
 

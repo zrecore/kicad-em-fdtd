@@ -4,10 +4,12 @@
 // columns.
 #pragma once
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "board/parts.hpp"
 #include "board/snapshot.hpp"
 #include "fdtd/solver.hpp"
 
@@ -29,6 +31,12 @@ struct Selection {
   BodyTreatment defaultBody;    // for every selected component without its own entry
   double defaultBodyHeight = 0; // metres, for a body whose snapshot gives no height
   std::map<std::string, BodyTreatment> bodies;
+  std::map<std::string, PartTreatment> parts; // per two-terminal part; absent means Auto
+  bool netFilter = false;                     // net-driven selection (board/netwalk.hpp): keep only `nets`
+  std::set<std::string> nets;                 // the nets kept: the walk's plus ground
+  std::set<std::string> pickedNets;           // what the user picked (the walk starts here)
+  std::vector<std::string> netNotes;          // why each part and net is in, for the run summary
+  bool netIncluded(const std::string& net) const { return !netFilter || nets.count(net) > 0; }
   bool includes(const std::string& owner) const { return owner.empty() || all || owners.count(owner) > 0; }
   BodyTreatment bodyOf(const std::string& ref) const {
     const auto it = bodies.find(ref);
@@ -67,6 +75,7 @@ struct PortPlan {
   double impedance;
   std::size_t series = 0, parallel = 0;
   std::vector<PortEdge> edges;
+  bool lumped = false; // a resistor or capacitor part across a gap: a passive load, never the driven port
 };
 
 struct Model {

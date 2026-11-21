@@ -8,6 +8,7 @@
 
 #include "app/paths.hpp"
 #include "app/prepare.hpp"
+#include "app/selection_store.hpp"
 #include "app/settings.hpp"
 #include "board/snapshot.hpp"
 
@@ -491,6 +492,101 @@ SCENARIO("Component bodies are an option that defaults to off and follows the se
         REQUIRE(p.model.materials.back().pec);
         REQUIRE(bodyCells(p) > 0);
       }
+    }
+  }
+}
+
+SCENARIO("The model selection is saved next to the board and restored exactly") {
+  GIVEN("a selection with picked nets, a bead's values, an open part and a metal body") {
+    app::StoredSelection sel;
+    sel.pickedNets = {"RF_FEED", "ANT"};
+    sel.extraGroundNets = {"SHIELD"};
+    sel.parts["FB1"] = {board::PartTreatment::State::Values, false, 600.0, 100e-9, 0.2e-12};
+    sel.parts["R9"].state = board::PartTreatment::State::Open;
+    sel.parts["R5"].fitDnp = true;
+    sel.bodies["U2"] = {board::BodyKind::Metal, 1.0};
+    sel.defaultBody = {board::BodyKind::Dielectric, 6.5};
+    const auto dir = std::filesystem::path(FDTD_TEST_TMP) / "selection-store";
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "em-fdtd" / "selection.json";
+    WHEN("it is saved and read back") {
+      app::saveSelection(file, sel);
+      const auto back = app::loadSelection(file);
+      THEN("every value comes back exactly") {
+        REQUIRE(back.pickedNets == sel.pickedNets);
+        REQUIRE(back.extraGroundNets == sel.extraGroundNets);
+        REQUIRE(back.parts.at("FB1").state == board::PartTreatment::State::Values);
+        REQUIRE(*back.parts.at("FB1").r == 600.0);
+        REQUIRE(*back.parts.at("FB1").l == 100e-9);
+        REQUIRE(*back.parts.at("FB1").c == 0.2e-12);
+        REQUIRE(back.parts.at("R9").state == board::PartTreatment::State::Open);
+        REQUIRE(back.parts.at("R5").fitDnp);
+        REQUIRE(back.bodies.at("U2").kind == board::BodyKind::Metal);
+        REQUIRE(back.defaultBody.kind == board::BodyKind::Dielectric);
+        REQUIRE(back.defaultBody.epsilonR == 6.5);
+      }
+    }
+    WHEN("the file does not exist") {
+      THEN("the selection is empty") {
+        REQUIRE(app::loadSelection(dir / "none" / "selection.json").pickedNets.empty());
+      }
+    }
+    WHEN("the file is not a selection file") {
+      std::filesystem::create_directories(dir / "bad");
+      std::ofstream(dir / "bad" / "selection.json") << "{\"format\":\"something else\"}";
+      THEN("it is refused, not silently replaced") {
+        REQUIRE_THROWS_AS(app::loadSelection(dir / "bad" / "selection.json"), app::SettingsError);
+      }
+    }
+  }
+}
+
+SCENARIO("The sequential colour maps are data with a source and a licence, and match their known ends") {
+  GIVEN("the catalogue loaded from data/") {
+    const auto& maps = catalog().colourMaps();
+    THEN("viridis, magma, inferno and plasma are there with 256 entries each") {
+      for (const char* id : {"viridis", "magma", "inferno", "plasma"}) {
+        REQUIRE(maps.count(id) == 1);
+        REQUIRE(maps.at(id).colours.size() == 256);
+      }
+    }
+    AND_THEN("their end colours are the published ones within 1 level per channel (viridis 440154 to FDE725, "
+             "magma 000004 to FCFDBF, inferno 000004 to FCFFA4, plasma 0D0887 to F0F921)") {
+      auto near = [](const std::array<std::uint8_t, 3>& c, int r, int g, int b) {
+        return std::abs(int(c[0]) - r) <= 1 && std::abs(int(c[1]) - g) <= 1 && std::abs(int(c[2]) - b) <= 1;
+      };
+      REQUIRE(near(maps.at("viridis").colours.front(), 0x44, 0x01, 0x54));
+      REQUIRE(near(maps.at("viridis").colours.back(), 0xFD, 0xE7, 0x25));
+      REQUIRE(near(maps.at("magma").colours.front(), 0x00, 0x00, 0x04));
+      REQUIRE(near(maps.at("magma").colours.back(), 0xFC, 0xFD, 0xBF));
+      REQUIRE(near(maps.at("inferno").colours.front(), 0x00, 0x00, 0x04));
+      REQUIRE(near(maps.at("inferno").colours.back(), 0xFC, 0xFF, 0xA4));
+      REQUIRE(near(maps.at("plasma").colours.front(), 0x0D, 0x08, 0x87));
+      REQUIRE(near(maps.at("plasma").colours.back(), 0xF0, 0xF9, 0x21));
+    }
+    AND_THEN("each map gets lighter from end to end: luma 0.2126 R + 0.7152 G + 0.0722 B never falls by more "
+             "than 2 of 255 between neighbours, and ends at least 150 above where it starts (viridis, "
+             "magma, inferno are designed this way; plasma is checked the same way)") {
+      for (const auto& [id, def] : maps) {
+        auto luma = [](const std::array<std::uint8_t, 3>& c) {
+          return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        };
+        double worstFall = 0;
+        for (std::size_t i = 1; i < def.colours.size(); ++i)
+          worstFall = std::max(worstFall, luma(def.colours[i - 1]) - luma(def.colours[i]));
+        INFO(id << " worst fall " << worstFall);
+        REQUIRE(worstFall <= 2.0);
+        REQUIRE(luma(def.colours.back()) - luma(def.colours.front()) >= 150);
+      }
+    }
+  }
+  GIVEN("the setting that picks the 3D colours") {
+    app::Settings s(catalog());
+    THEN("the default is the two-colour signed view, and the maps are the other choices") {
+      REQUIRE(s.text("volume_colour_map") == "signed");
+      const auto choices = s.choices("volume_colour_map");
+      REQUIRE(choices.front() == "signed");
+      REQUIRE(std::find(choices.begin(), choices.end(), "viridis") != choices.end());
     }
   }
 }

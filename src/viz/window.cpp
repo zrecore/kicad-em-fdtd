@@ -4,6 +4,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace viz {
@@ -24,6 +25,7 @@ Window::Window(const std::string& title, int width, int height) {
   vkcore::ContextOptions opt;
   opt.instanceExtensions.assign(exts, exts + n);
   opt.swapchain = true;
+  opt.validation = std::getenv("EMFDTD_VALIDATE") != nullptr; // debugging aid: the Vulkan validation layer
   ctx_ = std::make_unique<vkcore::Context>(opt);
   if (glfwCreateWindowSurface(ctx_->instance(), window_, nullptr, &surface_) != VK_SUCCESS)
     throw std::runtime_error("cannot create the window surface");

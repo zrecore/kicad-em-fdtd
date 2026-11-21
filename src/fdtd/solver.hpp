@@ -33,6 +33,7 @@ struct LumpedPort {
   double resistance; // ohm; infinity: no conductance (a pure capacitor)
   std::function<double(double)> voltage;
   double capacitance = 0; // farad across this edge, added as permittivity C dl / area (a lumped capacitor)
+  double inductance = 0;  // henry across this edge, in parallel with R and C; 0: none (a lumped inductor)
 };
 
 // Convolution PML on all six walls (kappa = 1, polynomial sigma, linearly falling alpha) [4][5].
@@ -72,6 +73,7 @@ public:
   // source).
   double portSourceVoltage(std::size_t port) const { return portState_[port].vs; }
   double portCurrent(std::size_t port) const { return portState_[port].current; }
+  double inductorCurrent(std::size_t port) const { return portState_[port].inductorCurrent; } // A, at n - 1/2
   std::span<const T> field(Kind kind, Axis component) const; // node-sized, see grid.hpp
   std::span<T> mutableField(Kind kind, Axis component) {     // for initial conditions
     return kind == Kind::E ? std::span<T>(e_[component]) : std::span<T>(h_[component]);
@@ -99,6 +101,7 @@ private:
 
   struct PortState {
     double vs = 0, current = 0;
+    double inductorCurrent = 0; // I_L at n - 1/2: the inductor's state (docs/PLAN.md, References [29])
   };
   void checkInteriorSample(Axis component, std::size_t i, std::size_t j, std::size_t k) const;
   void applyCpmlH();

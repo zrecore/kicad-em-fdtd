@@ -31,7 +31,7 @@ endif()
 
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 include(cmake/Spirv.cmake)
-add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp shaders/phasor_accum.comp)
+add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp shaders/phasor_accum.comp shaders/slice_render.comp shaders/volume_field.comp shaders/volume_render.comp)
 
 # Anything that loads a SPIR-V file links this to learn where they are.
 add_library(fdtd_shaders INTERFACE)
@@ -81,6 +81,11 @@ add_library(imgui_core STATIC ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/
 target_include_directories(imgui_core PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui_core PUBLIC glfw)
 
+# Dear ImGui's Vulkan backend (MIT, same source tree): the window draws the UI on the GPU with it.
+add_library(imgui_vulkan STATIC ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui_vulkan PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui_vulkan PUBLIC Vulkan::Vulkan)
+
 configure_file(src/version.hpp.in ${CMAKE_BINARY_DIR}/generated/version.hpp @ONLY)
 add_library(fdtd_version INTERFACE)
 target_include_directories(fdtd_version INTERFACE ${CMAKE_BINARY_DIR}/generated)
@@ -92,6 +97,7 @@ add_subdirectory(src/viz)
 add_subdirectory(src/app)
 add_subdirectory(src/vkcore)
 add_subdirectory(src/fdtd_vk)
+add_subdirectory(src/viz_vk)
 add_subdirectory(apps/bench)
 add_subdirectory(apps/emfdtd)
 enable_testing()

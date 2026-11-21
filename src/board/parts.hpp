@@ -5,6 +5,8 @@
 #include <optional>
 #include <string>
 
+#include "board/snapshot.hpp"
+
 namespace board {
 
 // "0R", "10R", "4k7", "4.7k", "1M", "47", "220 ohm", "0R0", "10 Ω" (case of the unit letter ignored).
@@ -63,10 +65,12 @@ inline std::optional<double> parseResistance(const std::string& text) {
   }
 }
 
-// "1pF", "100nF", "0.1u", "4p7", "2n2", "10 pF" in farad (RKM-style p, n, u as the decimal point too). A bare
-// number, an H (inductance), an R or an unknown word gives nullopt. The prefix letter (p, n, u, \u00b5) is
-// required: "100" alone could be anything.
-inline std::optional<double> parseCapacitance(const std::string& text) {
+// Capacitance in farad or inductance in henry from a value field: "1pF", "100nF", "0.1u", "4p7", "2n2",
+// "10 pF" and "2.2nH", "10 nH", "1uH", "4n7H" (RKM-style p, n, u as the decimal point too; m is milli for
+// henry only). The prefix letter is required: "100" alone could be anything. A capacitance may leave the F
+// off ("22p"); an inductance must keep the H ("10n" is a capacitance, never an inductance). Anything else
+// (a bare number, the other unit, a resistance, a part number) gives nullopt.
+inline std::optional<double> parseSI(const std::string& text, char unit, bool unitRequired, bool allowMilli) {
   std::string t;
   {
     std::size_t i = 0;
@@ -79,14 +83,15 @@ inline std::optional<double> parseCapacitance(const std::string& text) {
     const std::string rest = text.substr(i);
     const std::size_t word = rest.find(' ');
     const std::string next = rest.substr(0, word);
-    if (!next.empty() &&
+    if (!next.empty() && !t.empty() && std::isdigit(static_cast<unsigned char>(t.back())) &&
         (next[0] == 'p' || next[0] == 'P' || next[0] == 'n' || next[0] == 'N' || next[0] == 'u' ||
-         next[0] == 'U' || next.rfind("\u00b5", 0) == 0) &&
-        std::isdigit(static_cast<unsigned char>(t.back())))
+         next[0] == 'U' || (allowMilli && next[0] == 'm') || next.rfind("\u00b5", 0) == 0))
       t += next;
   }
-  if (!t.empty() && (t.back() == 'F' || t.back() == 'f'))
+  if (!t.empty() && std::toupper(static_cast<unsigned char>(t.back())) == unit)
     t.pop_back();
+  else if (unitRequired)
+    return std::nullopt;
   if (t.empty() || !std::isdigit(static_cast<unsigned char>(t[0])))
     return std::nullopt;
   double scale = 0;
@@ -106,6 +111,8 @@ inline std::optional<double> parseCapacitance(const std::string& text) {
       scale = 1e-9;
     else if (ch == 'u' || ch == 'U')
       scale = 1e-6;
+    else if (allowMilli && ch == 'm')
+      scale = 1e-3;
     else if (t.compare(i, 2, "\u00b5") == 0) {
       scale = 1e-6;
       ++i;
@@ -122,6 +129,12 @@ inline std::optional<double> parseCapacitance(const std::string& text) {
   } catch (...) {
     return std::nullopt;
   }
+}
+inline std::optional<double> parseCapacitance(const std::string& text) {
+  return parseSI(text, 'F', false, false);
+}
+inline std::optional<double> parseInductance(const std::string& text) {
+  return parseSI(text, 'H', true, true);
 }
 
 // True if the value field itself says "resistance": an R, k, M or G mark (4k7, 0R), an ohm word or sign, or
@@ -151,6 +164,90 @@ inline std::string refPrefix(const std::string& ref) {
     p += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
   }
   return p;
+}
+
+// What to put between the two pads of a two-terminal part. Auto reads the part's value field (a resistance,
+// a capacitance or an inductance; the value wins over the reference letter) and leaves a do-not-populate
+// part open. The other states are the user's: Open (not fitted), Short (a 0 ohm link) or Values (a parallel
+// R, L, C with the given values, any subset: a ferrite bead is all three). fitDnp fits a DNP part by value.
+struct PartTreatment {
+  enum class State { Auto, Open, Short, Values } state = State::Auto;
+  bool fitDnp = false;
+  std::optional<double> r, l, c; // ohm, henry, farad (Values only)
+};
+
+// What the model puts between a two-terminal part's pads: nothing (skip: the part is not modellable and is
+// reported as not modelled), an open circuit on purpose, or R, L, C in parallel (a short for 0 ohm).
+struct PartModel {
+  enum class Kind { Unmodelled, Open, Lumped } kind = Kind::Unmodelled;
+  std::optional<double> r, l, c;
+  bool shortIt = false;
+  std::string asRead; // "resistance", "capacitance", "inductance", "short, set by the user", ...
+  std::string note;   // a note for the run summary, or empty
+};
+
+inline bool isTwoTerminal(const Component& c) {
+  return c.pads.size() == 2 && c.pads[0].net != c.pads[1].net;
+}
+
+// Decide a two-terminal part's treatment from the part and the user's PartTreatment (the value wins over the
+// reference letter; a do-not-populate part is open unless fitDnp or an explicit state says otherwise).
+inline PartModel modelPart(const Component& c, const PartTreatment& t) {
+  using State = PartTreatment::State;
+  PartModel m;
+  if (t.state == State::Open) {
+    m.kind = PartModel::Kind::Open;
+    m.note = "component " + c.ref + ": left open as set by the user";
+    return m;
+  }
+  if (t.state == State::Auto && c.dnp && !t.fitDnp) {
+    m.kind = PartModel::Kind::Open; // reported by the caller as do not populate
+    return m;
+  }
+  if (t.state == State::Short) {
+    m.kind = PartModel::Kind::Lumped;
+    m.shortIt = true;
+    m.asRead = "short, set by the user";
+    return m;
+  }
+  if (t.state == State::Values) {
+    m.r = t.r, m.l = t.l, m.c = t.c;
+    if (!m.r && !m.l && !m.c) {
+      m.kind = PartModel::Kind::Open;
+      m.note = "component " + c.ref + ": the user gave no value, left open";
+      return m;
+    }
+    m.kind = PartModel::Kind::Lumped;
+    m.asRead = "values set by the user";
+    m.shortIt = m.r && *m.r == 0 && !m.l && !m.c;
+    return m;
+  }
+  const bool byValue = valueSaysResistance(c.value), byPrefix = refPrefix(c.ref) == "R";
+  if (byValue) {
+    m.r = parseResistance(c.value);
+    m.asRead = "resistance";
+  } else if ((m.c = parseCapacitance(c.value))) {
+    m.asRead = "capacitance";
+  } else if ((m.l = parseInductance(c.value))) {
+    m.asRead = "inductance";
+  } else if (byPrefix) { // a bare number on an R reference is ohms
+    m.r = parseResistance(c.value);
+    if (!m.r) {
+      m.kind = PartModel::Kind::Open;
+      m.note = "component " + c.ref + ": value '" + c.value + "' is not a resistance, left open";
+      return m;
+    }
+    m.asRead = "resistance";
+  } else {
+    return m; // a bead, a part number or an unreadable value
+  }
+  m.kind = PartModel::Kind::Lumped;
+  m.shortIt = m.r && *m.r == 0;
+  const std::string want = m.asRead == "capacitance" ? "C" : m.asRead == "inductance" ? "L" : "R";
+  if (refPrefix(c.ref) != want)
+    m.note = "component " + c.ref + ": the reference says " + refPrefix(c.ref) + " but the value '" +
+             c.value + "' is a " + m.asRead + ", so it is modelled as that";
+  return m;
 }
 
 } // namespace board

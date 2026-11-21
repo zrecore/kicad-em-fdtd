@@ -15,7 +15,8 @@ layout(std430, binding = 8) readonly buffer Pal { vec2 pal[]; };       // palett
 layout(std430, binding = 7) readonly buffer Tab { float tab[]; };    // 1/cell and 1/dual sizes
 layout(std430, binding = 9) buffer Psi { float psi[]; };               // CPML auxiliary fields, slab-compact
 layout(std430, binding = 10) buffer Ports { uint ctr; uint pad0, pad1, pad2; float portData[]; };
-// portData: per port 4 words (node, component, coupling = 1/(R dA), dl), then waveform[maxSteps][ports], then
+// portData: per port 8 words (node, component, coupling = 1/(R dA), unused, gl = dt dl / (2 L) or 0, 1/dA,
+// inductor current I_L (n - 1/2), E at the end of the previous step), then waveform[maxSteps][ports], then
 // the logged port E[maxSteps][ports] (E after the step's update), both for the current submit only.
 layout(push_constant) uniform PC { StepParams p; };
 
@@ -102,12 +103,19 @@ void main() {
     if (p.phase == FDTD_PHASE_PORTS) {
       const uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
       for (uint q = gl_GlobalInvocationID.x; q < p.portCount; q += stride) {
-        const uint n = floatBitsToUint(portData[4u * q]), c = floatBitsToUint(portData[4u * q + 1u]);
-        const float coupling = portData[4u * q + 2u];
-        const uint wave = 4u * p.portCount, logBase = wave + p.maxSteps * p.portCount;
+        const uint n = floatBitsToUint(portData[8u * q]), c = floatBitsToUint(portData[8u * q + 1u]);
+        const float coupling = portData[8u * q + 2u];
+        const float gl = portData[8u * q + 4u], invArea = portData[8u * q + 5u];
+        const float iPrev = portData[8u * q + 6u], ePrev = portData[8u * q + 7u];
+        const uint wave = 8u * p.portCount, logBase = wave + p.maxSteps * p.portCount;
         const float vs = portData[wave + ctr * p.portCount + q];
-        addE(c, n, pal[(mat[n] >> (8u * c)) & 255u].y * vs * coupling);
-        portData[logBase + ctr * p.portCount + q] = getE(c, n);
+        // the source half of the edge current, and the inductor's current drawn from the edge (the E^(n+1)
+        // half of the trapezoid sits in the edge's coefficients); then the inductor current advances
+        addE(c, n, pal[(mat[n] >> (8u * c)) & 255u].y * (vs * coupling - iPrev * invArea));
+        const float e1 = getE(c, n);
+        portData[8u * q + 6u] = iPrev + gl * (ePrev + e1);
+        portData[8u * q + 7u] = e1;
+        portData[logBase + ctr * p.portCount + q] = e1;
       }
     } else if (p.phase == FDTD_PHASE_COUNTER) {
       if (gl_GlobalInvocationID.x == 0u) ctr += 1u;

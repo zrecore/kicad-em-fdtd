@@ -316,3 +316,36 @@ SCENARIO("Panning the 3D camera moves the picture with the pointer and keeps the
     }
   }
 }
+
+SCENARIO("A colour table colours the volume by magnitude, whatever the sign") {
+  const auto grid = fdtd::Grid::uniform({16, 16, 16}, {16, 16, 16});
+  const auto dv = viz::makeDisplayVolume(grid, 16, {});
+  viz::RenderSpec spec;
+  spec.width = 64;
+  spec.height = 64;
+  spec.colourScale = 1.0;
+  spec.density = 6.0;
+  viz::Camera cam;
+  GIVEN("a table that is pure green from end to end") {
+    spec.lut = {{0, 255, 0}, {0, 255, 0}};
+    WHEN("a positive block and a negative block are drawn") {
+      const auto pos = pixel(viz::renderVolume(dv, cube(dv, 4, 12, 1.0f), cam, spec), 64, 32, 32);
+      const auto neg = pixel(viz::renderVolume(dv, cube(dv, 4, 12, -1.0f), cam, spec), 64, 32, 32);
+      THEN("both are green (green above red and blue by 40 levels) and identical") {
+        REQUIRE(pos.g > pos.r + 40);
+        REQUIRE(pos.g > pos.b + 40);
+        REQUIRE(pos.r == neg.r);
+        REQUIRE(pos.g == neg.g);
+        REQUIRE(pos.b == neg.b);
+      }
+    }
+  }
+  GIVEN("a table that goes from blue at zero to red at full scale") {
+    spec.lut = {{0, 0, 255}, {255, 0, 0}};
+    THEN("a weak block is bluer and a full-scale block redder") {
+      const auto weak = pixel(viz::renderVolume(dv, cube(dv, 4, 12, 0.3f), cam, spec), 64, 32, 32);
+      const auto strong = pixel(viz::renderVolume(dv, cube(dv, 4, 12, 1.0f), cam, spec), 64, 32, 32);
+      REQUIRE(int(strong.r) - int(strong.b) > int(weak.r) - int(weak.b));
+    }
+  }
+}

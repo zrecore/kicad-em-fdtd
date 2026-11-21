@@ -1,0 +1,114 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "fdtd_params.h"
+// Volume view, pass 2: the ray march, one invocation per pixel. A port of renderVolume in src/viz/volume.cpp
+// (front-to-back compositing, early termination, empty-brick leaps, trilinear samples, the same colour maps);
+// the GPU test holds it to the CPU picture.
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Params { VolParams p; };
+layout(std430, binding = 1) readonly buffer Field { float field[]; };
+layout(std430, binding = 2) readonly buffer Flags { uint flags[]; };
+layout(std430, binding = 3) readonly buffer Lut { vec4 lut[]; };
+layout(std430, binding = 4) writeonly buffer Out { uint rgb[]; }; // r | g << 8 | b << 16
+layout(push_constant) uniform PC { uint pixels; } pc;
+
+float at(uint i, uint j, uint k) { return field[i + p.nx * (j + p.ny * k)]; }
+
+float sampleField(vec3 g) { // trilinear, voxel centres at +0.5
+  const vec3 hi = vec3(p.nx - 1u, p.ny - 1u, p.nz - 1u);
+  g = clamp(g - 0.5, vec3(0.0), hi);
+  const uvec3 c = min(uvec3(g), uvec3(p.nx - 2u, p.ny - 2u, p.nz - 2u));
+  const vec3 f = g - vec3(c);
+  const float c00 = mix(at(c.x, c.y, c.z), at(c.x + 1u, c.y, c.z), f.x);
+  const float c10 = mix(at(c.x, c.y + 1u, c.z), at(c.x + 1u, c.y + 1u, c.z), f.x);
+  const float c01 = mix(at(c.x, c.y, c.z + 1u), at(c.x + 1u, c.y, c.z + 1u), f.x);
+  const float c11 = mix(at(c.x, c.y + 1u, c.z + 1u), at(c.x + 1u, c.y + 1u, c.z + 1u), f.x);
+  return mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z);
+}
+
+float byteOf(float v) { return floor(clamp(v, 0.0, 255.0) + 0.5); }
+
+vec3 luminous(float t, vec3 neg, vec3 pos) {
+  const float a = abs(clamp(t, -1.0, 1.0));
+  const vec3 b = t >= 0.0 ? pos : neg;
+  const vec3 hi = mix(b, vec3(255.0), 0.7);
+  return vec3(byteOf(mix(b.x, hi.x, a * a)), byteOf(mix(b.y, hi.y, a * a)), byteOf(mix(b.z, hi.z, a * a)));
+}
+
+vec3 volumeLight(float t, vec3 neg, vec3 pos) {
+  const float a = abs(clamp(t, -1.0, 1.0));
+  const vec3 b = t >= 0.0 ? pos : neg;
+  const vec3 lo = mix(vec3(250.0), b, 0.5);
+  const vec3 c = mix(lo, b * 0.9, a);
+  return vec3(byteOf(c.x), byteOf(c.y), byteOf(c.z));
+}
+
+vec3 lutColour(float t) {
+  const float x = clamp(t, 0.0, 1.0) * float(p.lutSize - 1u);
+  const uint i = min(uint(x), p.lutSize - 2u);
+  const float f = x - float(i);
+  const vec3 a = lut[i].xyz, b = lut[i + 1u].xyz;
+  const vec3 c = a + f * (b - a);
+  return floor(c + 0.5);
+}
+
+void main() {
+  const uint bx = (p.nx + VOL_BRICK - 1u) / VOL_BRICK, by = (p.ny + VOL_BRICK - 1u) / VOL_BRICK,
+             bz = (p.nz + VOL_BRICK - 1u) / VOL_BRICK;
+  const vec3 dims = vec3(p.nx, p.ny, p.nz);
+  const bool light = (p.flags & VOL_LIGHT) != 0u, useLut = (p.flags & VOL_LUT) != 0u,
+             skip = (p.flags & VOL_SKIP) != 0u;
+  for (uint pix = gl_GlobalInvocationID.x; pix < pc.pixels; pix += gl_NumWorkGroups.x * 64u) {
+    const uint x = pix % p.width, y = pix / p.width;
+    const float u = ((float(x) + 0.5) / float(p.width) * 2.0 - 1.0) * p.tanY * p.aspect;
+    const float w = (1.0 - (float(y) + 0.5) / float(p.height) * 2.0) * p.tanY;
+    const vec3 d = normalize(p.forward.xyz + p.right.xyz * u + p.up.xyz * w);
+    const vec3 o = p.pos.xyz, h = 0.5 * p.size.xyz;
+    float t0 = 0.0, t1 = 1e30;
+    bool hit = true;
+    for (int a = 0; a < 3 && hit; ++a) {
+      if (abs(d[a]) < 1e-12) {
+        hit = abs(o[a]) <= h[a];
+      } else {
+        float ta = (-h[a] - o[a]) / d[a], tb = (h[a] - o[a]) / d[a];
+        if (ta > tb) { const float s = ta; ta = tb; tb = s; }
+        t0 = max(t0, ta);
+        t1 = min(t1, tb);
+        hit = t0 < t1;
+      }
+    }
+    vec3 acc = vec3(0.0);
+    float alpha = 0.0;
+    if (hit)
+      for (float t = t0 + 0.5 * p.step; t < t1 && alpha < 0.98; t += p.step) {
+        const vec3 q = o + d * t;
+        const vec3 g = (q / p.size.xyz + 0.5) * dims;
+        if (skip) {
+          const uvec3 b = min(uvec3(max(g, vec3(0.0))) / VOL_BRICK, uvec3(bx - 1u, by - 1u, bz - 1u));
+          if (flags[b.x + bx * (b.y + by * b.z)] == 0u) {
+            t += p.step * float(VOL_BRICK - 1u); // empty brick: leap ahead
+            continue;
+          }
+        }
+        float s = sampleField(g) / p.colourScale;
+        if (p.logRangeDb > 0.0) { // [-range, 0] dB to [0, 1], keeping the sign
+          const float db = 20.0 * log2(max(abs(s), 1e-12)) * 0.30102999566;
+          s = sign(s) * clamp(1.0 + db / p.logRangeDb, 0.0, 1.0);
+        }
+        const float a = abs(s);
+        if (a < p.threshold)
+          continue;
+        const float shaped = sign(s) * pow(min(a, 1.0), p.gamma);
+        const float opacity = 1.0 - exp(-0.25 * p.density * min(a, 1.0) * p.step / p.voxel);
+        const vec3 c = useLut ? lutColour(abs(shaped))
+                       : light ? volumeLight(shaped, p.negative.xyz, p.positive.xyz)
+                               : luminous(shaped, p.negative.xyz, p.positive.xyz);
+        const float wgt = (1.0 - alpha) * opacity;
+        acc += wgt * c;
+        alpha += wgt;
+      }
+    const vec3 lit = light ? acc : 255.0 * (1.0 - exp(-p.emission * acc / 255.0));
+    const vec3 px = floor(clamp(lit + (1.0 - alpha) * p.background.xyz, 0.0, 255.0));
+    rgb[pix] = uint(px.x) | (uint(px.y) << 8) | (uint(px.z) << 16);
+  }
+}

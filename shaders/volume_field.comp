@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "fdtd_params.h"
+// Volume view, pass 1: the frame's scalar field from one frequency's phasors, Re{X exp(j phase)} or |X|, and
+// the empty-brick flags (a brick is full if any voxel within one brick of it reaches the threshold; the host
+// clears the flags first). Same rule as the CPU marcher in src/viz/volume.cpp.
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Params { VolParams p; };
+layout(std430, binding = 1) readonly buffer Re { float re[]; };
+layout(std430, binding = 2) readonly buffer Im { float im[]; };
+layout(std430, binding = 3) buffer Field { float field[]; };
+layout(std430, binding = 4) buffer Flags { uint flags[]; };
+layout(push_constant) uniform PC { uint voxels; } pc;
+
+void main() {
+  const uint bx = (p.nx + VOL_BRICK - 1u) / VOL_BRICK, by = (p.ny + VOL_BRICK - 1u) / VOL_BRICK;
+  for (uint v = gl_GlobalInvocationID.x; v < pc.voxels; v += gl_NumWorkGroups.x * 64u) {
+    const float x = (p.flags & VOL_MAG) != 0u ? sqrt(re[v] * re[v] + im[v] * im[v])
+                                              : re[v] * p.cosPhase - im[v] * p.sinPhase;
+    field[v] = x;
+    if ((p.flags & VOL_SKIP) == 0u || abs(x) < p.brickThreshold)
+      continue;
+    const int i = int(v % p.nx), j = int((v / p.nx) % p.ny), k = int(v / (p.nx * p.ny));
+    for (int dk = -1; dk <= 1; ++dk)
+      for (int dj = -1; dj <= 1; ++dj)
+        for (int di = -1; di <= 1; ++di) {
+          const int ii = i + di * int(VOL_BRICK), jj = j + dj * int(VOL_BRICK), kk = k + dk * int(VOL_BRICK);
+          if (ii < 0 || jj < 0 || kk < 0 || ii >= int(p.nx) || jj >= int(p.ny) || kk >= int(p.nz))
+            continue;
+          atomicOr(flags[uint(ii) / VOL_BRICK + bx * (uint(jj) / VOL_BRICK + by * (uint(kk) / VOL_BRICK))], 1u);
+        }
+  }
+}

@@ -77,6 +77,27 @@ Catalog Catalog::load(const std::string& path) {
       throw SettingsError("ui_defaults.json: " + std::string(e.what()));
     }
   }
+  const std::string cmaps = path.substr(0, path.find_last_of("/\\") + 1) + "colormaps.json";
+  if (std::ifstream cf(cmaps); cf) { // optional: sequential colour maps for the 3D magnitude view
+    std::ostringstream cs;
+    cs << cf.rdbuf();
+    try {
+      const Json u = Json::parse(cs.str());
+      for (const auto& [id, def] : u.at("maps").items()) {
+        ColourMapDef m;
+        m.note = def.value("note", "");
+        for (const Json& hex : def.at("colours")) {
+          const auto rgb = parseColour(hex.get<std::string>());
+          m.colours.push_back({rgb[0], rgb[1], rgb[2]});
+        }
+        if (m.colours.size() < 2)
+          throw SettingsError("colour map '" + id + "' needs at least two entries");
+        c.colourMaps_[id] = std::move(m);
+      }
+    } catch (const std::exception& e) {
+      throw SettingsError("colormaps.json: " + std::string(e.what()));
+    }
+  }
   const std::string fab = path.substr(0, path.find_last_of("/\\") + 1) + "fab_profiles.json";
   if (std::ifstream ff(fab); ff) { // optional: PCB stackups per fabricator
     std::ostringstream fs;
@@ -328,6 +349,13 @@ void Settings::build() {
   num("volume_resolution", "3D volume resolution",
       "Voxels along the longest side of the volume view. Higher is sharper and uses more memory.", "View",
       "voxels", Tier::Advanced, 16, 160, {"3d", "volume", "detail", "voxel"});
+  choice("volume_colour_map", "3D volume colours",
+         "How the 3D view colours the field. signed: two colours by sign, animated through the phase of the "
+         "wave (default). The others show the field's magnitude at the chosen frequency with a sequential "
+         "colour map (dark to light, no sign, not animated): useful for finding hot spots and the pattern of "
+         "an antenna. viridis, magma, inferno and plasma are CC0 maps by Smith, van der Walt and Firing; "
+         "viridis was designed to stay readable with common colour-vision deficiencies.",
+         "View", Tier::Common, {"colour map", "viridis", "magma", "inferno", "plasma", "magnitude", "heat"});
   choice("pcb_profile", "PCB stackup",
          "Where the board's layers come from: the open board's own stackup (default), or a fabricator's "
          "published stackup for the same number of copper layers. The values below start from it and you can "
@@ -442,6 +470,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return 64.0;
   if (key == "backend")
     return std::string("auto");
+  if (key == "volume_colour_map")
+    return std::string("signed");
   if (key == "component_bodies")
     return std::string("ignore");
   if (key == "component_body_eps")
@@ -523,6 +553,12 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
   }
   if (key == "backend")
     return {"auto", "gpu", "cpu"};
+  if (key == "volume_colour_map") {
+    std::vector<std::string> ids{"signed"};
+    for (const auto& [id, def] : catalog_.colourMaps())
+      ids.push_back(id);
+    return ids;
+  }
   if (key == "component_bodies")
     return {"ignore", "dielectric", "metal"};
   if (key == "pcb_profile") {

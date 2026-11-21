@@ -18,6 +18,10 @@
 #include "app/phasor_feed.hpp"
 #include "app/prepare.hpp"
 #include "app/settings.hpp"
+#include "app/sweep.hpp"
+#include "board/geometry_override.hpp"
+#include "board/netwalk.hpp"
+#include "board/parts.hpp"
 #include "board/snapshot.hpp"
 #include "board/voxelize.hpp"
 #include "core/resources.hpp"
@@ -27,6 +31,7 @@
 #include "sim/simulation.hpp"
 #include "ui.hpp"
 #include "version.hpp"
+#include "viz/gpu_ui.hpp"
 #include "viz/png.hpp"
 #include "viz/screen_reader.hpp"
 #include "viz/slice.hpp"
@@ -64,6 +69,8 @@ void usage() {
       "  --view                   open a window and animate the field while the solve runs\n"
       "  --frames N               write N animation frames into the run folder\n"
       "  --dry-run                prepare and print the plan and estimate, do not solve\n"
+      "  --ui-frames N            with --ui: report the frame cost over N window frames, then exit\n"
+      "  --cpu-ui                 with --ui: draw the UI on the CPU instead of the GPU\n"
       "  --ui                     open the solver window on its first screen (preview and settings)\n"
       "  --autorun                with --ui: start the run as soon as the model is ready\n"
       "  --ui-a11y-dump FILE      with --ui-screenshot: write what a screen reader is told; exit 1 if a "
@@ -197,11 +204,19 @@ int main(int argc, char** argv) {
     std::vector<std::pair<std::string, std::string>> sets;
     std::vector<board::RefineBox> refine;
     board::Selection selection;
+    std::set<std::string> pickedNets, extraGround;
+    app::SweepSpec sweepSpec;
+    std::string sweepValuesText, probesText;
+    bool exportAfterRun = false, clickWanted = false;
+    float clickX = 0, clickY = 0;
+    std::vector<board::GeometryOverride> geomOverrides;
     int frameCount = 0;
     bool view = false, dryRun = false, uiMode = false, autorun = false;
     std::string shotFile, shotQuery, shotExpand, shotTab;
     bool shotRun = false, showSettings = false, hideControls = false;
     int benchFrames = 0;
+    int windowFrames = 0; // --ui-frames: measure this many window frames, then exit
+    bool softUi = false;  // --cpu-ui: draw the UI with the CPU rasteriser
     std::string shotTheme, a11yDump;
     std::string layersFlag;
     int legendsFlag = -1; // -1 default, 0 collapsed, 1 expanded
@@ -229,6 +244,62 @@ int main(int argc, char** argv) {
         std::stringstream ss(next());
         for (std::string ref; std::getline(ss, ref, ',');)
           selection.owners.insert(ref);
+      } else if (a ==
+                 "--sweep") { // KEY=a,b,c or KEY=start:stop:count: one run per value, S11 curves overlaid
+        const std::string kv = next();
+        const auto eq = kv.find('=');
+        if (eq == std::string::npos)
+          throw std::runtime_error("--sweep needs KEY=a,b,c or KEY=start:stop:count, got '" + kv + "'");
+        sweepSpec.key = kv.substr(0, eq);
+        sweepValuesText = kv.substr(eq + 1);
+        sweepSpec.values = app::parseSweepValues(sweepValuesText);
+      } else if (a == "--probes") { // x,y,z;x,y,z in mm (board coordinates, z above the bottom copper)
+        probesText = next();
+      } else if (a == "--ui-click") { // X,Y in window pixels, after the tab is selected
+        std::sscanf(next(), "%f,%f", &clickX, &clickY);
+        clickWanted = true;
+      } else if (a == "--ui-export") { // after the run: write the 3D volume for ParaView (and the isosurface)
+        exportAfterRun = true;
+      } else if (a == "--geom") { // NET.x=MM or NET.y=MM: stretch a net's copper (solver side only)
+        geomOverrides.push_back(board::parseGeometryOverride(next()));
+      } else if (a ==
+                 "--nets") { // net-driven selection: the parts and nets they reach follow (board/netwalk.hpp)
+        std::stringstream ss(next());
+        for (std::string n; std::getline(ss, n, ',');)
+          pickedNets.insert(n);
+      } else if (a == "--ground-nets") { // added to the ground and plane nets guessed from names and areas
+        std::stringstream ss(next());
+        for (std::string n; std::getline(ss, n, ',');)
+          extraGround.insert(n);
+      } else if (a ==
+                 "--part") { // REF=open | short | fit | r600,l100n,c0.2p (a two-terminal part's treatment)
+        const std::string kv = next();
+        const auto eq = kv.find('=');
+        if (eq == std::string::npos)
+          throw std::runtime_error("--part needs REF=open|short|fit|r<ohm>,l<henry>,c<farad>, got '" + kv +
+                                   "'");
+        board::PartTreatment t;
+        std::stringstream ss(kv.substr(eq + 1));
+        for (std::string tok; std::getline(ss, tok, ',');) {
+          if (tok == "open")
+            t.state = board::PartTreatment::State::Open;
+          else if (tok == "short")
+            t.state = board::PartTreatment::State::Short;
+          else if (tok == "fit")
+            t.fitDnp = true;
+          else if (tok.size() > 1 && (tok[0] == 'r' || tok[0] == 'l' || tok[0] == 'c')) {
+            const std::string v = tok.substr(1);
+            const auto x = tok[0] == 'r'   ? board::parseResistance(v)
+                           : tok[0] == 'l' ? board::parseInductance(v + (v.back() == 'H' ? "" : "H"))
+                                           : board::parseCapacitance(v);
+            if (!x)
+              throw std::runtime_error("--part: cannot read '" + tok + "'");
+            t.state = board::PartTreatment::State::Values;
+            (tok[0] == 'r' ? t.r : tok[0] == 'l' ? t.l : t.c) = x;
+          } else
+            throw std::runtime_error("--part: unknown '" + tok + "'");
+        }
+        selection.parts[kv.substr(0, eq)] = t;
       } else if (a == "--refine") {
         double v[5];
         for (double& x : v)
@@ -266,6 +337,10 @@ int main(int argc, char** argv) {
         layersFlag = next();
       else if (a == "--ui-legends")
         legendsFlag = std::string(next()) == "open" ? 1 : 0;
+      else if (a == "--ui-frames")
+        windowFrames = std::atoi(next());
+      else if (a == "--cpu-ui")
+        softUi = true;
       else if (a == "--ui-bench")
         benchFrames = std::atoi(next());
       else if (a == "--ui-show-settings")
@@ -300,7 +375,22 @@ int main(int argc, char** argv) {
     if (!backendFlag.empty())
       settings.set("backend", backendFlag);
 
-    const auto snap = board::parseSnapshot(slurp(snapshotPath));
+    auto snap = board::parseSnapshot(slurp(snapshotPath));
+    std::vector<std::string> geomNotes; // every override is printed and goes into the run summary
+    if (!geomOverrides.empty()) {
+      geomNotes = board::applyGeometryOverrides(snap, geomOverrides);
+      for (const std::string& n : geomNotes)
+        std::fprintf(stderr, "%s\n", n.c_str());
+    }
+    if (!pickedNets
+             .empty()) { // net-driven selection: walk from the picked nets, then keep only what it reaches
+      auto ground = board::guessGroundNets(snap);
+      ground.insert(extraGround.begin(), extraGround.end());
+      const auto walk = board::walkNets(snap, pickedNets, ground, selection.parts);
+      board::applyNetSelection(selection, walk, ground);
+      for (const std::string& n : selection.netNotes)
+        std::fprintf(stderr, "%s\n", n.c_str());
+    }
     if (uiMode || !shotFile.empty()) {
       std::shared_ptr<vkcore::Context> ctxHolder;
       auto chooseBackend = [&](const std::string& requested) {
@@ -316,6 +406,7 @@ int main(int argc, char** argv) {
         if (requested != "cpu" && ctxHolder) {
           b.gpu = true;
           b.name = std::string("GPU (") + ctxHolder->properties().deviceName + ")";
+          b.details = ctxHolder->floatControls();
           b.deviceBytes = static_cast<double>(ctxHolder->deviceLocalBytes());
           auto ctx = ctxHolder;
           b.factory = [ctx](fdtd::Solver<float>& s) { return std::make_unique<fdtd_vk::GpuEngine>(*ctx, s); };
@@ -336,6 +427,8 @@ int main(int argc, char** argv) {
         screen.setPanels(showSettings, !hideControls);
         screen.setAccessWanted(!a11yDump.empty());
         screen.setLayers(layersFlag);
+        if (!probesText.empty())
+          screen.setProbes(probesText);
         if (legendsFlag >= 0)
           screen.setLegends(legendsFlag == 1);
         if (!shotTheme.empty())
@@ -354,10 +447,29 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
           }
         }
+        if (!sweepSpec.key.empty()) { // run the sweep to the end, show its overlay in the S11 tab
+          screen.sweepNow(sweepSpec.key, sweepValuesText);
+          screen.selectTab("S11 plot");
+          screen.setLayers("sweep");
+          for (int n = 0; n < 4; ++n)
+            screen.frame(50.0 + 0.1 * n, shotW, shotH, rgba);
+        }
         if (!shotTab.empty())
           screen.selectTab(shotTab);
         for (int n = 0; n < 16; ++n) // frames for the camera to settle (auto-fit eases towards the activity)
           screen.frame(100.0 + 0.1 * n, shotW, shotH, rgba);
+        if (exportAfterRun) {
+          screen.exportVolume();
+          std::printf("%s\n", screen.statusMessage().c_str());
+        }
+        if (clickWanted) { // a left click, then a few frames for the result to settle
+          screen.pressAt(clickX, clickY);
+          screen.frame(120.0, shotW, shotH, rgba);
+          screen.frame(120.1, shotW, shotH, rgba);
+          screen.releaseMouse();
+          for (int n = 0; n < 4; ++n)
+            screen.frame(120.2 + 0.1 * n, shotW, shotH, rgba);
+        }
         int a11yProblems = 0;
         if (!a11yDump.empty()) { // what a screen reader is told, and which controls have no name
           std::ofstream(a11yDump) << screen.accessTree().dump();
@@ -393,6 +505,19 @@ int main(int argc, char** argv) {
       env.pixelScale = window.pixelScale();
       ui::Ui screen(std::move(env));
       ImGui_ImplGlfw_InitForOther(window.handle(), true);
+      std::unique_ptr<viz::GpuUi>
+          gpuUi; // the UI drawn by the GPU; the CPU rasteriser if that is not possible
+      if (!softUi) {
+        try {
+          gpuUi = std::make_unique<viz::GpuUi>(window);
+          screen.setGpuUi([&gpuUi] { gpuUi->fontsChanged(); });
+        } catch (const std::exception& e) {
+          gpuUi.reset();
+          std::fprintf(stderr, "emfdtd: UI on the CPU (GPU drawing not used: %s)\n", e.what());
+        }
+      }
+      double frameMs = 0, presentMs = 0;
+      int framesDone = 0;
       const auto reader = viz::ScreenReader::create(window.handle()); // VoiceOver etc.; null if unsupported
       // One window per project: the plugin finds it through this file and, on a new export, just rewrites
       // snapshot.json, which this loop notices.
@@ -433,24 +558,43 @@ int main(int argc, char** argv) {
           }
         }
         ImGui_ImplGlfw_NewFrame();
+        if (gpuUi)
+          gpuUi->newFrame();
         if (reader) { // the tree is only built once a screen reader attaches
           screen.setAccessWanted(reader->active());
           screen.perform(reader->takeActions());
         }
+        const auto tFrame = std::chrono::steady_clock::now();
         screen.frame(glfwGetTime(), ex.width, ex.height, rgba);
+        const auto tPresent = std::chrono::steady_clock::now();
         if (reader)
           reader->update(screen.accessTree(), glfwGetWindowAttrib(window.handle(), GLFW_FOCUSED) != 0);
         if (pendingRun && screen.screen() == ui::Screen::Preview) {
           screen.start();
           pendingRun = false; // one attempt per request; if the model cannot run, the preview says why
         }
-        window.presentRgba(rgba, ex.width, ex.height);
+        if (gpuUi)
+          gpuUi->present(rgba, ex.width, ex.height, ImGui::GetDrawData());
+        else
+          window.presentRgba(rgba, ex.width, ex.height);
+        const auto tDone = std::chrono::steady_clock::now();
+        frameMs += std::chrono::duration<double, std::milli>(tPresent - tFrame).count();
+        presentMs += std::chrono::duration<double, std::milli>(tDone - tPresent).count();
+        if (windowFrames > 0 && ++framesDone >= windowFrames) { // a measurement run: report and leave
+          std::printf(
+              "window, %s UI: frame() %.1f ms, present %.1f ms (includes waiting for the display) over %d "
+              "frames\n",
+              gpuUi ? "GPU" : "CPU", frameMs / framesDone, presentMs / framesDone, framesDone);
+          break;
+        }
       }
+      gpuUi.reset(); // before the ImGui context goes
       ImGui_ImplGlfw_Shutdown();
       fs::remove(pidFile, ec);
       return 0;
     }
     auto prepared = app::prepare(snap, settings, selection, refine);
+    prepared.model.notes.insert(prepared.model.notes.end(), geomNotes.begin(), geomNotes.end());
     const auto& g = prepared.model.grid;
     const auto& plan = prepared.plan;
 
@@ -495,10 +639,33 @@ int main(int argc, char** argv) {
     if (gpu) {
       factory = [&](fdtd::Solver<float>& s) { return std::make_unique<fdtd_vk::GpuEngine>(*ctx, s); };
       std::printf("backend: GPU (%s)\n", ctx->properties().deviceName);
+      if (!ctx->floatControls().empty())
+        std::printf("float controls: %s\n", ctx->floatControls().c_str());
     } else {
       std::printf("backend: CPU reference\n");
     }
 
+    if (!sweepSpec.key
+             .empty()) { // one run per value, then a table; S11 curves are in <results>/sweep-*/sweep.json
+      app::SweepEnv senv{snap,    snapshotPath.string(),        catalog, paths, selection,
+                         factory, gpu ? "GPU" : "CPU reference"};
+      senv.notes = geomNotes;
+      senv.gpu = gpu;
+      senv.deviceBytes = ctx ? static_cast<double>(ctx->deviceLocalBytes()) : 0.0;
+      senv.stamp = app::timestamp();
+      senv.progress = [&](std::size_t i, std::size_t n, const app::SweepPoint* done) {
+        if (!done)
+          std::printf("sweep %zu/%zu: %s = %s ...\n", i + 1, n, sweepSpec.key.c_str(),
+                      sweepSpec.values[i].c_str());
+        else if (!done->error.empty())
+          std::printf("  failed: %s\n", done->error.c_str());
+        else
+          std::printf("  best %.2f dB at %.4f GHz  -> %s\n", done->bestDb, done->bestHz * 1e-9,
+                      done->dir.string().c_str());
+      };
+      app::runSweep(senv, settings, sweepSpec);
+      return 0;
+    }
     const fs::path runDir = paths.newRunDir(app::timestamp());
     std::printf("results: %s\n", runDir.string().c_str());
     sim::RunOptions& opt = prepared.options;

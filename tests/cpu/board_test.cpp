@@ -325,19 +325,32 @@ SCENARIO("A component's pads and do-not-populate flag are read from the snapshot
   }
 }
 
-SCENARIO("A fitted two-terminal part is reported as not modelled") {
-  GIVEN("a fitted 0 ohm link between two nets") {
+SCENARIO("A fitted two-terminal part whose value is not R, L or C is reported as not modelled") {
+  GIVEN("a ferrite bead, known only by its part number, between two nets") {
     const auto snap =
         board::parseSnapshot(fixture(1, "",
-                                     R"(,{"ref":"R6","value":"0R","x":0.005,"y":0.005,"layer":"F.Cu",
+                                     R"(,{"ref":"FB6","value":"BLM18","x":0.005,"y":0.005,"layer":"F.Cu",
              "pads":[{"number":"1","net":"FEED","x":0.004,"y":0.005},{"number":"2","net":"ANT","x":0.006,"y":0.005}]})"));
     THEN("the run notes say the gap is open and name the part") {
       const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
       bool found = false;
       for (const auto& n : model.notes)
         found =
-            found || (n.find("not modelled yet") != std::string::npos && n.find("R6") != std::string::npos);
+            found || (n.find("not modelled yet") != std::string::npos && n.find("FB6") != std::string::npos);
       REQUIRE(found);
+    }
+  }
+  GIVEN("a 0 ohm link whose pads have no copper under them in this snapshot") {
+    const auto snap =
+        board::parseSnapshot(fixture(1, "",
+                                     R"(,{"ref":"R6","value":"0R","x":0.005,"y":0.005,"layer":"F.Cu",
+             "pads":[{"number":"1","net":"FEED","x":0.004,"y":0.005},{"number":"2","net":"ANT","x":0.006,"y":0.005}]})"));
+    THEN("the notes say its pads are not found, once, and do not also call it unmodelled") {
+      const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
+      int mentions = 0;
+      for (const auto& n : model.notes)
+        mentions += n.find("R6") != std::string::npos;
+      REQUIRE(mentions == 1);
     }
   }
 }
@@ -449,12 +462,94 @@ SCENARIO("A fitted 0 ohm link or resistor between two pads is modelled across th
         REQUIRE(noteContains(model, "R9", "reference says R"));
       }
     }
-    WHEN("it is an inductor, which is not modelled yet") {
-      const auto model = board::voxelize(snapshotWithPart("L1", "2.2nH"), board::Selection{}, kPlan, kF0);
-      THEN("the gap stays open and the notes say so") {
+    WHEN("it is a 10 nH inductor, 4.7 nH on a reference that says R") {
+      const auto model = board::voxelize(snapshotWithPart("L1", "10nH"), board::Selection{}, kPlan, kF0);
+      THEN("the gap edge carries 10 nH, no conductance and no capacitance, and is not a short") {
         REQUIRE(!gapIsShort(model));
-        REQUIRE(noteContains(model, "not modelled yet", "L1"));
+        REQUIRE(model.ports.size() == 1);
+        const auto& e = model.ports[0].edges[0].edge;
+        REQUIRE(e.inductance == Approx(10e-9).epsilon(1e-9));
+        REQUIRE(std::isinf(e.resistance));
+        REQUIRE(e.capacitance == 0);
+        REQUIRE(!noteContains(model, "not modelled yet", "L1"));
       }
+    }
+    WHEN("it is a ferrite bead with a part number for a value") {
+      const auto model = board::voxelize(snapshotWithPart("FB1", "BLM18"), board::Selection{}, kPlan, kF0);
+      THEN("it is not guessed: the gap stays open and the notes say so") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(model.ports.empty());
+        REQUIRE(noteContains(model, "not modelled yet", "FB1"));
+      }
+    }
+    WHEN("the user gives the bead's values: 600 ohm, 100 nH and 0.2 pF in parallel") {
+      board::Selection sel;
+      sel.parts["FB1"] = {board::PartTreatment::State::Values, false, 600.0, 100e-9, 0.2e-12};
+      const auto model = board::voxelize(snapshotWithPart("FB1", "BLM18"), sel, kPlan, kF0);
+      THEN("one edge carries all three, within 1e-9 relative") {
+        REQUIRE(model.ports.size() == 1);
+        const auto& e = model.ports[0].edges[0].edge;
+        REQUIRE(e.resistance == Approx(600.0).epsilon(1e-9));
+        REQUIRE(e.inductance == Approx(100e-9).epsilon(1e-9));
+        REQUIRE(e.capacitance == Approx(0.2e-12).epsilon(1e-9));
+        REQUIRE(!noteContains(model, "not modelled yet", "FB1"));
+      }
+    }
+    WHEN("the user sets a DNP-marked part open, short, or fitted by value") {
+      board::Selection open, shortIt, fit;
+      open.parts["R6"].state = board::PartTreatment::State::Open;
+      shortIt.parts["R6"].state = board::PartTreatment::State::Short;
+      fit.parts["R6"].fitDnp = true;
+      THEN("Open leaves the gap open even for a fitted 0R, Short closes a DNP part, and fitDnp fits a DNP "
+           "0R by its value") {
+        REQUIRE(!gapIsShort(board::voxelize(snapshotWithPart("R6", "0R"), open, kPlan, kF0)));
+        REQUIRE(gapIsShort(board::voxelize(snapshotWithPart("R6", "100R", true), shortIt, kPlan, kF0)));
+        REQUIRE(gapIsShort(board::voxelize(snapshotWithPart("R6", "0R", true), fit, kPlan, kF0)));
+      }
+    }
+  }
+}
+
+SCENARIO("The voxelizer drops copper on nets that the net selection leaves out") {
+  GIVEN("the fixture board: ground plane on GND, the antenna pad on FEED") {
+    const auto snap = board::parseSnapshot(fixture());
+    WHEN("only GND is selected") {
+      board::Selection sel;
+      sel.netFilter = true;
+      sel.nets = {"GND"};
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("the pad is gone, the ground plane stays, and the notes name the net left out") {
+        REQUIRE(edgesInPlane(model, 4) == 0);
+        REQUIRE(edgesInPlane(model, 2) == 180);
+        REQUIRE(noteContains(model, "net selection", "FEED"));
+      }
+    }
+    WHEN("GND and FEED are selected") {
+      board::Selection sel;
+      sel.netFilter = true;
+      sel.nets = {"GND", "FEED"};
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("nothing is dropped") {
+        REQUIRE(edgesInPlane(model, 4) == 12);
+        REQUIRE(edgesInPlane(model, 2) == 180);
+      }
+    }
+  }
+}
+
+SCENARIO("A port as wide as the copper it feeds is flagged in the run notes") {
+  GIVEN("the fixture's 2.8 mm pad with a vertical port 2.8 mm wide, and with one 0.8 mm wide") {
+    auto make = [](double width) {
+      return board::parseSnapshot(
+          fixture(1, R"({"name":"P1","layer":"F.Cu","layer_b":"B.Cu","a":[0.005,0.005],"width":)" +
+                         std::to_string(width) + R"(,"impedance":50})"));
+    };
+    THEN("the wide port is flagged, with both widths, and the narrow one is not") {
+      const auto wide = board::voxelize(make(0.0028), board::Selection{}, kPlan, kF0);
+      const auto narrow = board::voxelize(make(0.0008), board::Selection{}, kPlan, kF0);
+      REQUIRE(noteContains(wide, "port 'P1'", "apparent loss"));
+      REQUIRE(noteContains(wide, "2.8", "wide"));
+      REQUIRE(!noteContains(narrow, "port 'P1'", "apparent loss"));
     }
   }
 }

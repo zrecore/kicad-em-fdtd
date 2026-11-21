@@ -7,6 +7,7 @@
 #include <complex>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -17,14 +18,22 @@
 
 #include "app/paths.hpp"
 #include "app/prepare.hpp"
+#include "app/probes.hpp"
 #include "app/settings.hpp"
+#include "app/sweep.hpp"
 #include "board/snapshot.hpp"
+#include "fdtd/ntff.hpp"
 #include "fdtd/surface_current.hpp"
+#include "imgui.h"
 #include "viz/access.hpp"
 #include "viz/imgui_soft.hpp"
+#include "viz/isosurface.hpp"
 #include "viz/slice.hpp"
 #include "viz/view_axes.hpp"
 #include "viz/volume.hpp"
+#include "viz/volume_renderer.hpp"
+#include "viz_vk/gpu_slice.hpp"
+#include "vkcore/context.hpp"
 
 struct ImGuiContext;
 
@@ -34,7 +43,8 @@ struct ImVec2;
 namespace ui {
 
 struct Backend {
-  std::string name; // "GPU (Apple M1 Pro)" or "CPU reference"
+  std::string name;    // "GPU (Apple M1 Pro)" or "CPU reference"
+  std::string details; // for the run summary: the device's float controls (fp32 denormals, NaN handling)
   bool gpu = false;
   double deviceBytes = 0;
   sim::EngineFactory factory;
@@ -68,6 +78,12 @@ public:
 
   // For layout checks without a window.
   void setHeadless(std::uint32_t w, std::uint32_t h);
+  // The window draws the ImGui draw data itself (on the GPU) after frame(): frame() then leaves the UI out of
+  // the returned pixels. `fontsChanged` is called when the font atlas is rebuilt.
+  void setGpuUi(std::function<void()> fontsChanged) {
+    gpuUi_ = true;
+    onFontsChanged_ = std::move(fontsChanged);
+  }
   void setAdaptive(bool on) { adaptive_ = on; } // adaptive render resolution (off for still images)
   void setSearch(const std::string& text) {
     searchText_ = text;
@@ -89,6 +105,24 @@ public:
   const viz::access::Tree& accessTree() const { return access_; }
   void perform(const std::vector<viz::access::Action>& actions);
   void setTheme(const std::string& mode) { env_.settings.set("ui_theme", mode); } // for layout checks
+  // for tests and screenshots: a left click at a window position (press now, release with releaseMouse())
+  void pressAt(float x, float y) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(x, y);
+    io.AddMouseButtonEvent(0, true);
+  }
+  void releaseMouse() { ImGui::GetIO().AddMouseButtonEvent(0, false); }
+  void setProbes(const std::string& text) { probeText_ = text; }
+  void exportVolume(); // the 3D volume (and the isosurface, if shown) into the results folder
+  const std::string& statusMessage() const { return message_; }
+  // for screenshots and tests: start a sweep and wait for it to finish
+  void sweepNow(const std::string& key, const std::string& values) {
+    sweepKey_ = key;
+    sweepValues_ = values;
+    startSweep();
+    if (sweepWorker_.joinable())
+      sweepWorker_.join();
+  }
   // for screenshots: layers is a comma list of field, nofield, current, nocurrent (both tabs)
   void setLayers(const std::string& layers) {
     auto has = [&](const char* w) {
@@ -96,6 +130,13 @@ public:
     };
     if (has("nofield"))
       showFieldSlice_ = showField3d_ = false;
+    openModelOnce_ = has("model");
+    showPowerSlice_ = has("power");
+    showIso_ = has("iso");
+    showVoxelModel_ = has("voxels");
+    pinAfterRun_ = has("pin");
+    s11View_ = has("smith") ? 1 : has("impedance") ? 2 : has("sweep") ? 3 : 0;
+    modelScrollFrames_ = openModelOnce_ ? 4 : 0;
     if (has("current"))
       showCurrentSlice_ = showCurrent3d_ = true;
   }
@@ -119,6 +160,37 @@ private:
   void drawSetting(const std::string& key);
   void drawPreviewTab(float w, float h);
   void drawS11Tab(float w, float h);
+  void drawProbesTab(float w, float h);
+  void drawProbePanel();
+  void refreshIsosurface();
+  void drawSweepOverlay(float w, float h);
+  void drawSweepPanel();
+  void startSweep();
+  void drawFarFieldTab(float w, float h);
+  void drawS11Plot(float w, float h);
+  void drawSmithChart(float w, float h);
+  void drawImpedancePlot(float w, float h);
+  fdtd::SParam1 pinnedS11_; // freeze-and-compare: a run's S11 kept as a reference for the next runs
+  std::string pinnedLabel_;
+  bool pinAfterRun_ = false; // screenshots: pin the finished run's S11 at once (a smoke test of the overlay)
+  bool showVoxelModel_ = false; // the preview shows the model as the solver sees it
+  int s11View_ = 0;             // 0 dB plot, 1 Smith chart, 2 impedance and VSWR, 3 sweep overlay
+  // Export, isosurface and probes (docs/PLAN.md, Next steps 11h)
+  bool showIso_ = false;
+  float isoLevel_ = 0.5f; // fraction of the 92nd-percentile magnitude
+  std::vector<viz::Triangle> isoMesh_;
+  std::uint64_t isoVersion_ = ~0ull;
+  std::size_t isoFreq_ = ~std::size_t(0);
+  float isoLevelBuilt_ = -1;
+  std::string probeText_, probeStatus_;
+  std::vector<app::ProbeSpec> probes_;
+  std::unique_ptr<viz::PhasorAccumulator> probeAcc_;
+  std::vector<double> probeFreqs_;
+  // Sweeps (docs/PLAN.md, Next steps 11g): one run per value of a setting, the S11 curves overlaid
+  std::thread sweepWorker_;
+  std::atomic<bool> sweepRunning_{false};
+  std::vector<app::SweepPoint> sweepPoints_; // under mu_
+  std::string sweepKey_ = "mesh_preset", sweepValues_ = "coarse,medium", sweepStatus_, sweepLabelKey_;
   void drawSliceTab(float w, float h);
   void drawVolumeTab(float w, float h);
   void drawStatusBar();
@@ -135,6 +207,8 @@ private:
   std::unique_ptr<viz::SoftImGui> soft_;
   Screen screen_ = Screen::Preview;
   bool quit_ = false, headless_ = false;
+  bool gpuUi_ = false; // the window draws the ImGui data on the GPU: do not rasterise it here
+  std::function<void()> onFontsChanged_; // tells the GPU backend the atlas was rebuilt
 
   // settings panel
   std::set<std::string> expanded_;
@@ -189,10 +263,48 @@ private:
   std::uint64_t currentVersion_ = ~0ull;
   std::size_t currentFreq_ = ~std::size_t(0);
   void refreshCurrent();
+  // Power flow in the slice plane: E and H phasors (6 channels per plane node) -> time-averaged S
+  std::unique_ptr<viz::PhasorAccumulator> poyntingH_;
+  std::vector<std::array<float, 3>> poyntingS_; // per plane node, at freq_
+  double poyntingScale_ = 0;                    // |S lateral| at the 95th percentile, W/m^2 per unit source
+  std::uint64_t poyntingVersion_ = ~0ull;
+  std::size_t poyntingFreq_ = ~std::size_t(0);
+  bool showPowerSlice_ = false;
+  double animCyclesPerSecond_ = 0.5; // phase animation speed
+  void refreshPoynting();
+  // Far field (docs/PLAN.md, Next steps 11f): a Huygens box around the board, accumulated at a few
+  // frequencies of the sweep, transformed after the run.
+  struct FarResult {
+    double frequencyHz = 0;
+    fdtd::FarField field;
+    fdtd::AntennaFigures figures;
+    double s11Db = 0;
+  };
+  fdtd::NtffPlan ntffPlan_;
+  std::unique_ptr<viz::PhasorAccumulator> ntffAcc_;
+  std::vector<double> ntffFreqs_;
+  std::string ntffNote_; // why there is no far field, or empty
+  std::vector<FarResult> farResults_;
+  int farFreq_ = 0;
+  bool farRealised_ = true; // plot the realised gain (else the directivity)
+  void animationControl();
+  std::vector<viz::Rgb> volumeLut() const;
   // Draws the surface current of the cells on copper plane `onlyK` (or all if npos) as coloured quads;
   // `project` maps grid coordinates (m) to the screen.
   void drawCurrent(ImDrawList* dl, const std::function<bool(double, double, double, ImVec2&)>& project,
                    bool light, std::size_t onlyK);
+  // Model selection (docs/PLAN.md, Next steps 12): picked nets, the guessed ground nets, and the text the
+  // user typed for each two-terminal part's R, L and C.
+  std::set<std::string> pickedNets_, groundNets_, extraGroundNets_;
+  bool groundGuessed_ = false, openModelOnce_ = false;
+  int modelScrollFrames_ = 0;
+  std::map<std::string, std::array<std::string, 3>> partText_;
+  void drawModelSelection();
+  void applyNets();
+  void ensureGround();
+  void loadSelectionOnce();
+  void saveSelection();
+  bool selectionLoaded_ = false;
   bool showGeometry_ = true; // copper, vias, port and board thickness drawn over the 3D view
   // Legends are collapsible: preview, S11, slice, volume field, volume board (the preview's starts closed
   // because it sits over the drawing).
@@ -213,6 +325,16 @@ private:
   double statsTime_ = -1e9, volMagScale_ = 1e-30, volRes_ = 1.0;
   viz::Camera fitCam_;
   std::vector<float> volField_, volMag_;
+  // The GPU volume renderer: its own Vulkan context (the solver thread submits to the solver's queue, and a
+  // queue must not be used from two threads at once), made on first use; null means the CPU marcher.
+  std::unique_ptr<vkcore::Context> renderCtx_;
+  std::unique_ptr<viz::VolumeRenderer> volRenderer_;
+  bool renderTried_ = false;
+  std::unique_ptr<viz::GpuSliceRenderer> sliceRenderer_; // the same context; null means the CPU slice
+  bool sliceTried_ = false;
+  vkcore::Context* renderContext(); // made on first use; null on the CPU backend, in stills, or on failure
+  std::uint64_t renderVersion_ = ~0ull;
+  std::size_t renderFreq_ = ~std::size_t{0};
   std::vector<std::uint8_t> volImg_;
   std::uint32_t volImgW_ = 0, volImgH_ = 0;
   std::array<double, 20> lastKey_{};

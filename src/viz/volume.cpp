@@ -1,4 +1,5 @@
 #include "viz/volume.hpp"
+#include "viz/volume_view.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,50 +17,21 @@ std::size_t nearestNode(const fdtd::Grid& g, fdtd::Axis a, double x) {
   return std::abs(g.edge(a, lo) - x) <= std::abs(g.edge(a, hi) - x) ? lo : hi;
 }
 
-struct Vec {
-  double x, y, z;
-};
-Vec operator+(Vec a, Vec b) {
-  return {a.x + b.x, a.y + b.y, a.z + b.z};
-}
-Vec operator-(Vec a, Vec b) {
-  return {a.x - b.x, a.y - b.y, a.z - b.z};
-}
-Vec operator*(Vec a, double s) {
-  return {a.x * s, a.y * s, a.z * s};
-}
-double dot(Vec a, Vec b) {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-Vec cross(Vec a, Vec b) {
-  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
-Vec norm(Vec a) {
-  return a * (1.0 / std::sqrt(dot(a, a)));
-}
-
-// The box is drawn centred at the origin with its longest side 1, so the camera distance is scale-free.
-struct View {
-  Vec size, pos, forward, right, up;
-};
-View makeView(const DisplayVolume& dv, const Camera& c) {
-  const double longest = std::max({dv.extent[0], dv.extent[1], dv.extent[2]});
-  View v;
-  v.size = {dv.extent[0] / longest, dv.extent[1] / longest, dv.extent[2] / longest};
-  const Vec target{c.target[0], c.target[1], c.target[2]}; // the point the camera looks at, orbits and pans
-  const Vec dir{std::cos(c.elevation) * std::cos(c.azimuth), std::cos(c.elevation) * std::sin(c.azimuth),
-                std::sin(c.elevation)};
-  v.pos = target + dir * c.distance;
-  v.forward = norm(Vec{0, 0, 0} - dir);
-  v.right = norm(cross(v.forward, Vec{0, 0, 1}));
-  v.up = cross(v.right, v.forward);
-  return v;
-}
-
 // Soft clip of the accumulated glow: lifts weak fields, and strong ones approach their full colour without
 // saturating to white (so the hue survives).
 double toneMap(double value, double gain) {
   return 255.0 * (1.0 - std::exp(-gain * value / 255.0));
+}
+
+// Linear interpolation in a colour table, t in [0, 1].
+Rgb lutColour(const std::vector<Rgb>& lut, float t) {
+  const float x = std::clamp(t, 0.0f, 1.0f) * static_cast<float>(lut.size() - 1);
+  const std::size_t i = std::min(static_cast<std::size_t>(x), lut.size() - 2);
+  const float f = x - static_cast<float>(i);
+  auto mix = [&](std::uint8_t a, std::uint8_t b) {
+    return static_cast<std::uint8_t>(std::lround(static_cast<float>(a) + f * (static_cast<float>(b) - a)));
+  };
+  return {mix(lut[i].r, lut[i + 1].r), mix(lut[i].g, lut[i + 1].g), mix(lut[i].b, lut[i + 1].b)};
 }
 
 } // namespace
@@ -278,7 +250,8 @@ std::vector<std::uint8_t> renderVolume(const DisplayVolume& dv, const std::vecto
             // opacity per voxel crossed (not per unit length): a thin sheet of field must still show from
             // above
             const double opacity = 1 - std::exp(-0.25 * spec.density * std::min(a, 1.0) * step / voxel);
-            const Rgb c = spec.lightTheme
+            const Rgb c = !spec.lut.empty() ? lutColour(spec.lut, static_cast<float>(std::abs(shaped)))
+                          : spec.lightTheme
                               ? volumeLight(static_cast<float>(shaped), spec.negative, spec.positive)
                               : luminous(static_cast<float>(shaped), spec.negative, spec.positive);
             const double wgt = (1 - alpha) * opacity;

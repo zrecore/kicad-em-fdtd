@@ -36,6 +36,17 @@ struct FrameSpec {
   double cropU0 = 0, cropU1 = 0, cropV0 = 0, cropV1 = 0;
 };
 
+// Where each pixel of a frame sits on the plane: the nearest node (for the copper mask), the node below and
+// the fraction towards the next one (for the bilinear sample); -1 marks pixels outside the plane. Cheap
+// (width + height searches), so the GPU renderer takes it from here and shades the pixels itself.
+struct SliceMap {
+  std::uint32_t width = 0, height = 0;
+  std::vector<long> colNode, rowNode;
+  std::vector<std::size_t> colLo, rowLo;
+  std::vector<double> colT, rowT;
+};
+SliceMap makeSliceMap(const fdtd::Grid& g, const Plane& p, const FrameSpec& spec);
+
 // RGB frame (top row first) of Re{X exp(j phi)} for frequency k over the plane's extent, nearest-node
 // sampling on the graded grid. mask (nu*nv, may be empty) marks copper nodes drawn as a grey overlay.
 std::vector<std::uint8_t> renderFrame(const fdtd::Grid& g, const Plane& p, const PhasorAccumulator& acc,

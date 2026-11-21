@@ -58,6 +58,8 @@ struct RenderSpec {
   bool lightTheme =
       false;             // light background and absorption-style colours (negative/positive = the light pair)
   double emission = 2.5; // brightness gain of the accumulated colour (the glow); background is not scaled
+  // Non-empty: colour by |value| through this table (dark to light) instead of the two colours by sign.
+  std::vector<Rgb> lut;
   bool skipEmpty = true;
   int threads = 0; // 0 = hardware concurrency
 };

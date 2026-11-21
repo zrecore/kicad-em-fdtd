@@ -86,6 +86,8 @@ template <class T> void Solver<T>::addLumpedPort(LumpedPort p) {
   checkInteriorSample(p.component, p.i, p.j, p.k);
   if (!(p.resistance > 0))
     throw std::invalid_argument("port resistance must be positive");
+  if (!(p.inductance >= 0) || !(p.capacitance >= 0))
+    throw std::invalid_argument("port inductance and capacitance must not be negative");
   ports_.push_back(std::move(p));
   portState_.emplace_back();
   portEOld_.push_back(T(0));
@@ -120,6 +122,11 @@ void Solver<T>::buildCoefficients(const std::vector<Material>& table,
               const double dl = grid_.cellSize(a, std::array<std::size_t, 3>{i, j, k}[a]);
               sigma += dl / (p.resistance * portArea(p));
               eps += p.capacitance * dl / portArea(p); // a lumped capacitor is extra permittivity on the edge
+              // a lumped inductor, trapezoidal in time (I^(n+1/2) = I^(n-1/2) + dt dl / (2 L) (E^n +
+              // E^(n+1))): the E^(n+1) part is an effective conductivity dt dl / (2 L A), the rest a current
+              // state
+              if (p.inductance > 0)
+                sigma += dt_ * dl / (2 * p.inductance * portArea(p));
             }
           const double loss = sigma * dt_ / (2 * eps);
           const std::size_t n = grid_.nodeIndex(i, j, k);
@@ -261,6 +268,11 @@ template <class T> void Solver<T>::step() {
         g.cellSize(port.component, std::array<std::size_t, 3>{port.i, port.j, port.k}[port.component]);
     T& e = e_[port.component][n];
     e += cb_[port.component][n] * static_cast<T>(vs / (port.resistance * portArea(port)));
+    if (port.inductance > 0) { // the inductor current drawn from the edge, then advanced with the new E
+      e -= cb_[port.component][n] * static_cast<T>(portState_[p].inductorCurrent / portArea(port));
+      portState_[p].inductorCurrent +=
+          dt_ * dl / (2 * port.inductance) * (static_cast<double>(portEOld_[p]) + static_cast<double>(e));
+    }
     portState_[p].vs = vs;
     // E now holds the new value; the old one is recovered from the update, so average the two.
     portState_[p].current = (vs - dl * 0.5 * (double(e) + double(portEOld_[p]))) / port.resistance;

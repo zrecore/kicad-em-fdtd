@@ -270,3 +270,75 @@ SCENARIO("The GPU and CPU engines report the same phasors", "[gpu][phasor]") {
     }
   }
 }
+
+SCENARIO("The GPU solver matches the CPU reference with a lumped R, L, C part on an edge", "[gpu][lumped]") {
+  GIVEN("a graded 20-cell PEC box, a 50 ohm port driven by a pulse and a bead-like parallel 600 ohm, 5 nH, "
+        "0.5 pF part on another edge") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 20; ++i)
+        e.push_back(x += 1e-3 * std::pow(1.02, i));
+    }
+    fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+    cpu.addLumpedPort({10, 10, 9, fdtd::Z, 50.0, [](double t) {
+                         const double tau = 2e-11, u = (t - 4 * tau) / tau;
+                         return -u * std::exp(-u * u);
+                       }});
+    fdtd::LumpedPort part{6, 10, 9, fdtd::Z, 600.0, [](double) { return 0.0; }};
+    part.inductance = 5e-9;
+    part.capacitance = 0.5e-12;
+    cpu.addLumpedPort(part);
+    fdtd_vk::GpuSolver gpu(ctx, cpu);
+    WHEN("both advance 400 steps") {
+      for (int n = 0; n < 400; ++n)
+        cpu.step();
+      gpu.step(400);
+      THEN("every field value agrees within 1e-3 of the peak (float rounding), and the part's own voltage "
+           "within 1e-3 relative") {
+        std::string where;
+        const double diff = relativeDifference(cpu, gpu, &where);
+        INFO("worst: " << where);
+        REQUIRE(diff < 1e-3);
+        const double cpuV = cpu.e(fdtd::Z, 6, 10, 9) * (edges[2][10] - edges[2][9]);
+        REQUIRE(std::abs(cpuV) > 0);
+        REQUIRE(std::abs(gpu.portVoltage(1).back() - cpuV) <= 1e-3 * std::abs(cpuV) + 1e-12);
+      }
+      AND_THEN("the validation layer reported no errors") {
+        REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}
+
+SCENARIO("The GPU accumulator really is compensated: 20 000 small terms added to a large one are kept",
+         "[gpu][phasor]") {
+  GIVEN("a field node held at 1.0, a phasor at 0 Hz (cos 1, sin 0), and no time stepping") {
+    vkcore::Context ctx({.validation = kValidation});
+    const auto grid = fdtd::Grid::uniform({6, 6, 6}, {6e-3, 6e-3, 6e-3});
+    fdtd::Solver<float> cpuSolver(grid, 0.95);
+    seedPulse(cpuSolver, 3, 3, 3);
+    fdtd_vk::GpuSolver gpu(ctx, cpuSolver);
+    const std::vector<fdtd::PhasorChannel> channels{
+        {fdtd::Kind::E, fdtd::Z, static_cast<std::uint32_t>(grid.nodeIndex(3, 3, 3))}};
+    const auto list = gpu.addPhasorList(channels, {0.0});
+    WHEN("one sample with weight 1e8 is accumulated, then 20 000 samples with weight 1") {
+      gpu.accumulate(list, 1e8);
+      for (int n = 0; n < 20000; ++n)
+        gpu.accumulate(list, 1.0);
+      THEN("the phasor is 1.0002e8 within 1e-6 relative (a plain float sum stays at 1e8: its spacing "
+           "there is 8, so each added 1 is lost)") {
+        const double expect = 1.0002e8;
+        const double got = gpu.phasor(list, 0, 0).real();
+        INFO("got " << got << ", expected " << expect << ", plain float sum would give 1e8");
+        REQUIRE(std::abs(got - expect) <= 1e-6 * expect);
+        REQUIRE(std::abs(gpu.phasor(list, 0, 0).imag()) <= 1e-6 * expect);
+      }
+      AND_THEN("the validation layer reported no errors") {
+        REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}

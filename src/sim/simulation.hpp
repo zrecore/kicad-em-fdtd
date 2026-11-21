@@ -46,6 +46,12 @@ struct RunResult {
   std::size_t steps = 0;
   double dt = 0;
   std::vector<double> portVoltage, portSource; // aggregated, for plots and checks
+  // The voltage of every parallel strip of the driven port after each step, [strip][step], and a strip's
+  // source resistance (the port impedance times the number of strips): with them the power the port really
+  // delivers is the sum over strips of V_k I_k, which stays correct when the strips see different voltages
+  // (docs/PLAN.md, the wide-port finding).
+  std::vector<std::vector<double>> stripVoltage;
+  double stripResistance = 0;
 };
 
 // Modulated-Gaussian pulse covering the band; its parameters are returned through the options' band.

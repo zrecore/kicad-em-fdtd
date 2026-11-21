@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -258,10 +259,14 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     throw std::invalid_argument("copper shape on a layer that is not in the stackup: " + name);
   };
 
-  std::set<std::string> leftOut;
+  std::set<std::string> leftOut, netLeftOut;
   for (const CopperShape& shape : s.copper) {
     if (!sel.includes(shape.owner)) {
       leftOut.insert(shape.owner);
+      continue;
+    }
+    if (!sel.netIncluded(shape.net)) {
+      netLeftOut.insert(shape.net.empty() ? "(no net)" : shape.net);
       continue;
     }
     const std::size_t k = copperNode[layerIndex(shape.layer)];
@@ -289,6 +294,10 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
   for (const Via& v : s.vias) {
     if (!sel.includes(v.owner)) {
       leftOut.insert(v.owner);
+      continue;
+    }
+    if (!sel.netIncluded(v.net)) {
+      netLeftOut.insert(v.net.empty() ? "(no net)" : v.net);
       continue;
     }
     const double r = 0.5 * v.diameter;
@@ -382,27 +391,53 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       }
     return plan2;
   };
-  for (const PortDef& def : s.ports)
+  for (const PortDef& def : s.ports) {
     m.ports.push_back(expandGap(def));
+    // A port that spans (nearly) the whole width of the copper it feeds averages a voltage that is not
+    // uniform across the strips, so |S11| of a lossless load reads below 1 (measured: docs/PLAN.md, "Wide
+    // ports").
+    if (def.width > 0) {
+      double narrowest = 1e300;
+      for (const CopperShape& cs : s.copper)
+        if (cs.layer == def.layer && insideRing(cs.outer, def.a.x, def.a.y)) {
+          double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
+          for (const Point& q : cs.outer) {
+            x0 = std::min(x0, q.x), x1 = std::max(x1, q.x), y0 = std::min(y0, q.y), y1 = std::max(y1, q.y);
+          }
+          narrowest = std::min(narrowest, std::min(x1 - x0, y1 - y0));
+        }
+      if (narrowest < 1e299 && def.width > 0.6 * narrowest)
+        m.notes.push_back(
+            "port '" + def.name + "' is " + std::to_string(def.width * 1e3) + " mm wide on copper " +
+            std::to_string(narrowest * 1e3) +
+            " mm across: its strips see different voltages, so |S11| "
+            "of a lossless load reads below 1 (apparent loss, growing with frequency) and the radiation "
+            "efficiency is overstated; a port under about a third of the copper width reads true");
+    }
+  }
 
   // Fitted two-terminal resistors (and 0 ohm links) across the gap between their two pads: the gap runs from
   // the inner edge of one pad's copper to the inner edge of the other, across the overlap of the two pads'
   // widths. A 0 ohm value forces the gap edges (a short); another value is a passive lumped load.
   std::set<std::string> lumpedRefs;
   for (const Component& c : s.components) {
-    if (!sel.includes(c.ref) || c.dnp || c.pads.size() != 2 || c.pads[0].net == c.pads[1].net)
+    if (!sel.includes(c.ref) || c.pads.size() != 2 || c.pads[0].net == c.pads[1].net)
       continue;
-    // The value decides, not the reference: an inductor footprint marked 0R is a 0 ohm link. A bare number
-    // needs an R reference to count as ohms.
-    const bool byValue = valueSaysResistance(c.value), byPrefix = refPrefix(c.ref) == "R";
-    const auto farad = byValue ? std::nullopt : parseCapacitance(c.value);
-    if (!byValue && !byPrefix && !farad)
-      continue; // an inductor or bead by its value: not modelled yet, reported below
-    const auto ohm = farad ? std::optional<double>(1.0) : parseResistance(c.value);
-    if (!ohm) {
-      m.notes.push_back("component " + c.ref + ": value '" + c.value + "' is not a resistance, left open");
+    const auto found = sel.parts.find(c.ref);
+    const PartModel pm = modelPart(c, found == sel.parts.end() ? PartTreatment{} : found->second);
+    if (!pm.note.empty())
+      m.notes.push_back(pm.note);
+    if (pm.kind == PartModel::Kind::Unmodelled)
+      continue; // reported below as not modelled
+    if (pm.kind == PartModel::Kind::Open) {
+      if (pm.note.empty() && c.dnp)
+        continue; // reported below as do not populate
+      lumpedRefs.insert(c.ref);
       continue;
     }
+    const std::optional<double> rOhm = pm.r, lHenry = pm.l, cFarad = pm.c;
+    const bool shortIt = pm.shortIt;
+    const std::string asRead = pm.asRead;
     auto padBox = [&](const ComponentPad& p, std::array<double, 4>& box) {
       for (const CopperShape& cs : s.copper)
         if (cs.owner == c.ref && cs.layer == c.layer && insideRing(cs.outer, p.x, p.y)) {
@@ -421,6 +456,7 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     if (!padBox(c.pads[0], A) || !padBox(c.pads[1], B) || layerIndex(c.layer) >= s.stackup.size()) {
       m.notes.push_back("component " + c.ref + ": its pads are not found as copper on " + c.layer +
                         ", left open");
+      lumpedRefs.insert(c.ref); // already reported: not again as "not modelled"
       continue;
     }
     const bool alongX = std::abs(c.pads[1].x - c.pads[0].x) >= std::abs(c.pads[1].y - c.pads[0].y);
@@ -433,47 +469,56 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     if (!(gapHi > gapLo) || !(wHi > wLo)) {
       m.notes.push_back("component " + c.ref +
                         ": its pads touch, overlap or do not face each other, left open");
+      lumpedRefs.insert(c.ref);
       continue;
     }
     PortDef def;
     def.name = c.ref;
     def.layer = c.layer;
-    def.impedance = *ohm > 0 ? *ohm : 1.0;
+    def.impedance = rOhm && *rOhm > 0 ? *rOhm : 1.0;
     def.width = wHi - wLo;
     const double across = 0.5 * (wLo + wHi);
     def.a = alongX ? Point{gapLo, across} : Point{across, gapLo};
     def.b = alongX ? Point{gapHi, across} : Point{across, gapHi};
     PortPlan gapPlan = expandGap(def);
-    if (farad) {
-      // series cells in a row and parallel strips side by side: C_edge = C * series / parallel gives C
-      // overall
-      const double perEdge =
-          *farad * static_cast<double>(gapPlan.series) / static_cast<double>(gapPlan.parallel);
-      for (PortEdge& pe : gapPlan.edges) {
-        pe.edge.resistance = std::numeric_limits<double>::infinity();
-        pe.edge.capacitance = perEdge;
-      }
-      m.notes.push_back("component " + c.ref + ": " + c.value + " capacitor, " +
-                        std::to_string(gapPlan.series) + " cell(s) across the gap, " +
-                        std::to_string(gapPlan.parallel) + " strip(s)");
-      m.ports.push_back(std::move(gapPlan));
-    } else if (*ohm > 0) {
-      m.notes.push_back("component " + c.ref + ": " + c.value + " resistor, " +
-                        std::to_string(gapPlan.series) + " cell(s) across the gap, " +
-                        std::to_string(gapPlan.parallel) + " strip(s)");
-      m.ports.push_back(std::move(gapPlan));
-    } else {
+    gapPlan.lumped = true;
+    std::string what;
+    if (shortIt) {
       for (const PortEdge& pe : gapPlan.edges)
         m.pecEdges.push_back({pe.edge.component, g.nodeIndex(pe.edge.i, pe.edge.j, pe.edge.k)});
-      m.notes.push_back("component " + c.ref + ": 0 ohm, modelled as a short across the gap (" +
-                        std::to_string(gapPlan.edges.size()) + " edge(s))");
+      m.notes.push_back("component " + c.ref + ": 0 ohm (" + asRead +
+                        "), modelled as a short across the gap (" + std::to_string(gapPlan.edges.size()) +
+                        " edge(s))");
+    } else {
+      // Equal voltage per unit length across the gap's cells: a series chain of cells with parallel strips
+      // gives R for the whole gap with R_edge = R n dl / length (already set by the port code), L_edge =
+      // L n dl / length, and C_edge = C length / (n dl) (the same field in every cell, the same charge).
+      for (PortEdge& pe : gapPlan.edges) {
+        const double share = pe.share, n = static_cast<double>(gapPlan.parallel);
+        if (!(rOhm && *rOhm > 0))
+          pe.edge.resistance = std::numeric_limits<double>::infinity();
+        if (lHenry)
+          pe.edge.inductance = *lHenry * n * share;
+        if (cFarad)
+          pe.edge.capacitance = *cFarad / (n * share);
+      }
+      auto si = [](double v, const char* unit) {
+        char buf[40];
+        std::snprintf(buf, sizeof buf, "%.4g %s", v, unit);
+        return std::string(buf);
+      };
+      std::string parts;
+      if (rOhm && *rOhm > 0)
+        parts += si(*rOhm, "ohm");
+      if (lHenry)
+        parts += (parts.empty() ? "" : " || ") + si(*lHenry * 1e9, "nH");
+      if (cFarad)
+        parts += (parts.empty() ? "" : " || ") + si(*cFarad * 1e12, "pF");
+      m.notes.push_back("component " + c.ref + ": " + parts + " (" + asRead + "), " +
+                        std::to_string(gapPlan.series) + " cell(s) across the gap, " +
+                        std::to_string(gapPlan.parallel) + " strip(s); ideal elements, no parasitics");
+      m.ports.push_back(std::move(gapPlan));
     }
-    const std::string want = farad ? "C" : "R";
-    if (refPrefix(c.ref) != want)
-      m.notes.push_back("component " + c.ref + ": the reference says " + refPrefix(c.ref) +
-                        " but the value '" + c.value + "' is " +
-                        (farad ? "a capacitance, so it is modelled as a capacitor"
-                               : "a resistance, so it is modelled as a resistor"));
     lumpedRefs.insert(c.ref);
   }
 
@@ -486,6 +531,14 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
                                }),
                    m.pecEdges.end());
 
+  for (const std::string& n : sel.netNotes)
+    m.notes.push_back(n);
+  if (!netLeftOut.empty()) {
+    std::string list;
+    for (const std::string& n : netLeftOut)
+      list += (list.empty() ? "" : ", ") + n;
+    m.notes.push_back("left out of the model by the net selection (copper and vias on): " + list);
+  }
   for (const std::string& owner : leftOut)
     m.notes.push_back("left out of the model by the selection: " + owner);
   // Two-terminal parts (two pads on two nets) are not modelled yet: the gap between their pads is open.
@@ -498,9 +551,11 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       (c.dnp ? unfitted : fitted) += (c.dnp ? unfitted : fitted).empty() ? c.ref : ", " + c.ref;
     }
     if (!fitted.empty())
-      m.notes.push_back("two-terminal parts are not modelled yet (resistors, inductors, capacitors, ferrite "
-                        "beads, 0 ohm links): the gap between their pads is an open circuit: " +
-                        fitted);
+      m.notes.push_back(
+          "two-terminal parts whose value is not a resistance, capacitance or inductance are not modelled "
+          "yet (ferrite beads, part numbers): the gap between their pads is an open circuit; give "
+          "them values to model them: " +
+          fitted);
     if (!unfitted.empty())
       m.notes.push_back("do not populate, left open between the pads: " + unfitted);
   }

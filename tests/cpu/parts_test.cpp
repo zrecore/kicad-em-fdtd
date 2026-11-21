@@ -73,3 +73,33 @@ SCENARIO("A capacitor's value field is read in the forms found on schematics") {
       }
   }
 }
+
+SCENARIO("An inductor's value field is read, and only with its H") {
+  struct Case {
+    const char* text;
+    double henry;
+  };
+  GIVEN("common value fields") {
+    for (const Case c : {Case{"2.2nH", 2.2e-9}, Case{"10 nH", 10e-9}, Case{"3.9nH", 3.9e-9},
+                         Case{"1uH", 1e-6}, Case{"4n7H", 4.7e-9}, Case{"1mH", 1e-3}, Case{"100pH", 100e-12},
+                         Case{"1 \u00b5H", 1e-6}, Case{"2.2nH 5%", 2.2e-9}}) {
+      THEN(std::string("\"") + c.text + "\" is read to within 1e-9 relative") {
+        const auto v = board::parseInductance(c.text);
+        REQUIRE(v.has_value());
+        REQUIRE(*v == Approx(c.henry).epsilon(1e-9));
+      }
+    }
+  }
+  GIVEN("fields that are not an inductance") {
+    for (const char* text : {"", "10n", "100", "0R", "1pF", "BLM18", "4k7", "2.2H5", "DNP"})
+      THEN(std::string("\"") + text + "\" gives no value") {
+        REQUIRE(!board::parseInductance(text).has_value());
+      }
+  }
+  GIVEN("an F is not an H and an H is not an F") {
+    THEN("a capacitance is never read as an inductance or the reverse") {
+      REQUIRE(!board::parseInductance("1pF").has_value());
+      REQUIRE(!board::parseCapacitance("2.2nH").has_value());
+    }
+  }
+}

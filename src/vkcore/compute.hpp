@@ -14,6 +14,9 @@ namespace vkcore {
 struct Timing {
   double gpuMs = 0;  // from timestamp queries (device time)
   double wallMs = 0; // submit to fence, includes CPU-side costs
+  // False when the driver returned equal timestamps (KosmicKrisp does): gpuMs is then the wall time, which
+  // includes the submit floor, so it is only meaningful for submits much longer than that.
+  bool timestamps = true;
 };
 
 class ComputePipeline {

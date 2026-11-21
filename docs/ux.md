@@ -105,6 +105,22 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 - **Settings starts collapsed**; the button reads "Settings >>" when closed and "<< Hide settings" when open (`--ui-show-settings` opens it for screenshots and checks).
 - **3D volume:** drag rotates, right-drag, middle-drag or Shift+drag pans (the picture follows the pointer), the wheel zooms, double-click refits to the field's activity. Pan, rotate and zoom from the keyboard are still missing.
 
+## Layers, parts, sweeps and figures (2026-11-20; items marked "user" were decided by the user, the rest are my proposals, open to change)
+- **Layers (user):** the 3D tab has independent checkboxes for field, surface current, copper and isosurface; the slice tab for field, surface current (top or bottom copper), power flow and the board outline. Layers show alone or overlaid. The state is not saved between sessions.
+- **Camera views (user chose the axis triad over a cube):** six labelled axis ends in the corner of the 3D view snap to the +X, -X, +Y, -Y, +Z, -Z views, an Iso button, keys 1 to 6 and 0; the move glides unless Reduce Motion is on. No clickable cube (an Autodesk patent covers that widget; see docs/PLAN.md, "3D view controls").
+- **Animation control (proposal):** one phase for the slice, the volume and the surface current; a speed slider while playing and a phase slider while paused, so layers animate and freeze together.
+- **Model selection (proposal, default unchanged: model everything):** a collapsed section in the Preview tab: pick nets (parts and the nets they reach follow), a treatment per two-terminal part (Auto, Open, Short, Values for a parallel R, L, C) and per component body (Default, Ignore, Dielectric, Metal); saved in the sidecar file `em-fdtd/selection.json`, never in the KiCAD files. "Show the model as the solver sees it" draws the grid and the forced copper edges.
+- **S11 views (proposal):** dB plot (default), Smith chart, impedance and VSWR, pinned reference, sweep overlay; each has a spoken summary.
+- **Far field (user: in scope for the first release):** a Far field tab with three polar cuts, directivity, realised gain and radiation efficiency; no 3D pattern yet.
+- **Sweeps and probes (user asked for parametric-driven simulation):** collapsed sections in the Preview tab; a sweep runs the board once per value and overlays the S11 curves; probes record E at points and plot its spectrum.
+- **Export:** "Export for ParaView" writes the volume (legacy VTK) and the isosurface (OBJ) into the results folder.
+
+## Proposals awaiting the user's choice (2026-11-20, nothing built; options and sources in docs/PLAN.md, Next steps 7)
+1. **Ground nets:** a role combo per net (Auto with its evidence, Signal, Ground, Left out) in the model-selection section; one click undoes a wrong guess.
+2. **3D pattern:** a "pattern" layer in the 3D view (radius and colour follow the gain, translucent, same camera and triad), with a "View in 3D" button on the Far field tab; the cuts and numbers stay as the accessible form.
+3. **Wide ports:** show |S11| from the strip-summed power, the per-strip reflection coefficients as a band and a Smith-chart fan, and a one-click "narrow this port"; no silent change.
+4. **Refinement:** a list of boxes derived from the geometry with the reason and cell count, on/off each, in the Advanced tier; refuse below one cell across the smallest feature.
+
 ## Still open
 1. Whether user-saved profiles also travel with the board (today: per board in `settings.json`; per user saved profiles are next in the user configuration folder).
 2. Which colour map is the default per theme (decided 2026-11-20: a sequential map from `data/colormaps.json`, chosen by a View setting; see docs/PLAN.md Open questions) and whether the volume shows |E|, Ez or power flow first.

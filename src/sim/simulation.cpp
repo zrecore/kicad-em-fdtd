@@ -52,15 +52,12 @@ private:
   std::vector<std::vector<double>> series_;
 };
 
-// Port voltage after step n: mean over the parallel strips of the signed sum along a strip.
-double portVoltageAt(const board::PortPlan& port, const Engine& e, std::size_t n) {
+// Voltage of every parallel strip after step n: the signed sum along the strip.
+std::vector<double> stripVoltagesAt(const board::PortPlan& port, const Engine& e, std::size_t n) {
   std::vector<double> strip(port.parallel, 0.0);
   for (std::size_t i = 0; i < port.edges.size(); ++i)
     strip[port.edges[i].strip] += port.edges[i].sign * e.edgeVoltage(i)[n];
-  double sum = 0;
-  for (double v : strip)
-    sum += v;
-  return sum / static_cast<double>(port.parallel);
+  return strip;
 }
 
 } // namespace
@@ -86,7 +83,7 @@ fdtd::Solver<float> buildSolver(const board::Model& model, const RunOptions& opt
   solver.forcePecEdges(model.pecEdges);
   if (opt.cpmlCells)
     solver.enableCpml({.cells = opt.cpmlCells});
-  if (model.ports.empty())
+  if (model.ports.empty() || model.ports.front().lumped) // lumped parts are loads, never the source
     throw std::invalid_argument("the model has no port to drive");
   for (std::size_t p = 0; p < model.ports.size(); ++p)
     for (const board::PortEdge& pe : model.ports[p].edges) {
@@ -108,6 +105,8 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
   const board::PortPlan& port = model.ports[0];
   RunResult r;
   r.dt = solver.dt();
+  r.stripVoltage.assign(port.parallel, {});
+  r.stripResistance = port.impedance * static_cast<double>(port.parallel);
   const double tau = 1.1 / (exMax - exMin);
   const std::size_t pulseSteps = static_cast<std::size_t>(8.0 * tau / r.dt) + 1;
   const std::uint32_t kChunk = static_cast<std::uint32_t>(opt.sampleEvery);
@@ -119,7 +118,13 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
       opt.onSample(*engine, engine->time(), static_cast<double>(kChunk) * r.dt);
     double recent = 0;
     for (std::size_t n = r.steps; n < r.steps + kChunk; ++n) {
-      r.portVoltage.push_back(portVoltageAt(port, *engine, n));
+      const auto strips = stripVoltagesAt(port, *engine, n);
+      double mean = 0;
+      for (std::size_t k = 0; k < strips.size(); ++k) {
+        r.stripVoltage[k].push_back(strips[k]);
+        mean += strips[k];
+      }
+      r.portVoltage.push_back(mean / static_cast<double>(port.parallel));
       r.portSource.push_back(pulse((static_cast<double>(n) + 0.5) * r.dt));
       recent = std::max(recent, std::abs(r.portVoltage.back()));
     }

@@ -26,6 +26,8 @@ public:
   // Frames that are already RGBA (the UI path).
   bool presentRgba(const std::vector<std::uint8_t>& rgba, std::uint32_t width, std::uint32_t height);
   GLFWwindow* handle() const { return window_; }
+  vkcore::Context& context() { return *ctx_; }
+  vkcore::Swapchain& swapchain() { return *swapchain_; }
   void focus();             // restore, raise and ask for the user's attention (a new export arrived)
   float pixelScale() const; // framebuffer pixels per window point (2 on a Retina display)
 

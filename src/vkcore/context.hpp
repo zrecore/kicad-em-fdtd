@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace vkcore {
@@ -30,6 +31,10 @@ public:
   std::uint32_t queueFamily() const { return queueFamily_; }
   const VkPhysicalDeviceProperties& properties() const { return props_; }
   VkDeviceSize deviceLocalBytes() const { return deviceLocalBytes_; }
+  // What the device promises for 32-bit float arithmetic in shaders (Vulkan 1.2 float controls): whether
+  // denormals are kept or flushed and whether signed zeros, infinities and NaNs are preserved. Empty if the
+  // device does not report them. For the run summary: a reader checking a precision claim needs it.
+  const std::string& floatControls() const { return floatControls_; }
 
   VkMemoryPropertyFlags memoryTypeFlags(std::uint32_t index) const;
   std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags wanted) const;
@@ -46,6 +51,7 @@ private:
   std::uint32_t queueFamily_ = 0;
   VkPhysicalDeviceProperties props_{};
   VkDeviceSize deviceLocalBytes_ = 0;
+  std::string floatControls_;
   std::atomic<unsigned> validationErrors_{0};
 };
 

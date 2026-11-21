@@ -76,6 +76,13 @@ public:
   // Default field colours ("#RRGGBB") from data/ui_defaults.json; key is "dark_negative", "dark_positive",
   // ...
   const std::map<std::string, std::string>& uiColours() const { return uiColours_; }
+  // Sequential colour maps from data/colormaps.json (id -> 256 entries, dark to light, and the source's
+  // note).
+  struct ColourMapDef {
+    std::string note;
+    std::vector<std::array<std::uint8_t, 3>> colours;
+  };
+  const std::map<std::string, ColourMapDef>& colourMaps() const { return colourMaps_; }
 
 private:
   struct Profile {
@@ -89,6 +96,7 @@ private:
                                                 {"dark_positive", "#D2149F"},
                                                 {"light_negative", "#2150AA"},
                                                 {"light_positive", "#B2182B"}};
+  std::map<std::string, ColourMapDef> colourMaps_; // empty if data/colormaps.json is absent
   std::vector<Profile> profiles_;
   std::vector<FabProfile> fab_; // from fab_profiles.json next to the radio profiles; empty if absent
 };

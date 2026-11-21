@@ -415,3 +415,45 @@ SCENARIO("A draw list with more than 65535 vertices still draws every shape wher
     ImGui::DestroyContext(ctx);
   }
 }
+
+#include "viz/poynting.hpp"
+
+SCENARIO("The time-averaged Poynting vector of known fields") {
+  constexpr double kEta = 376.730313668; // free-space impedance, ohm
+  using C = std::complex<double>;
+  GIVEN("a plane wave travelling along +z: E = 1 V/m along x, H = 1/eta A/m along y") {
+    const viz::Phasor3 e{C(1, 0), 0, 0}, h{0, C(1 / kEta, 0), 0};
+    THEN("S points along +z with magnitude 1 / (2 eta), within 1e-12 relative") {
+      const auto s = viz::poynting(e, h);
+      REQUIRE(s[0] == 0.0);
+      REQUIRE(s[1] == 0.0);
+      REQUIRE(s[2] == Catch::Approx(1 / (2 * kEta)).epsilon(1e-12));
+    }
+    AND_THEN("a common phase on E and H changes nothing") {
+      const C rot = std::polar(1.0, 0.9);
+      const auto s = viz::poynting({e[0] * rot, 0, 0}, {0, h[1] * rot, 0});
+      REQUIRE(s[2] == Catch::Approx(1 / (2 * kEta)).epsilon(1e-12));
+    }
+  }
+  GIVEN("a standing wave: E and H a quarter period apart") {
+    const viz::Phasor3 e{C(1, 0), 0, 0}, h{0, C(0, 1 / kEta), 0};
+    THEN("no power flows on average: |S| below 1e-15 of the travelling-wave value") {
+      const auto s = viz::poynting(e, h);
+      REQUIRE(std::abs(s[2]) <= 1e-15 / (2 * kEta));
+    }
+  }
+  GIVEN("a wave travelling along -z: H reversed") {
+    THEN("S is negative along z") {
+      const auto s = viz::poynting({C(1, 0), 0, 0}, {0, C(-1 / kEta, 0), 0});
+      REQUIRE(s[2] == Catch::Approx(-1 / (2 * kEta)).epsilon(1e-12));
+    }
+  }
+  GIVEN("a wave travelling along +x: E along y, H along z") {
+    THEN("S points along +x") {
+      const auto s = viz::poynting({0, C(2, 0), 0}, {0, 0, C(2 / kEta, 0)});
+      REQUIRE(s[0] == Catch::Approx(4 / (2 * kEta)).epsilon(1e-12));
+      REQUIRE(s[1] == 0.0);
+      REQUIRE(s[2] == 0.0);
+    }
+  }
+}

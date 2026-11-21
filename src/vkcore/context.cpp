@@ -151,6 +151,17 @@ Context::Context(const ContextOptions& options) {
   physical_ = pickDevice(instance_, options);
   vkGetPhysicalDeviceProperties(physical_, &props_);
   deviceLocalBytes_ = vkcore::deviceLocalBytes(physical_);
+  if (props_.apiVersion >= VK_API_VERSION_1_2) { // float controls are core in 1.2
+    VkPhysicalDeviceFloatControlsProperties fc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &fc;
+    vkGetPhysicalDeviceProperties2(physical_, &p2);
+    auto yn = [](VkBool32 b) { return b ? "yes" : "no"; };
+    floatControls_ = std::string("fp32 denormals preserved ") + yn(fc.shaderDenormPreserveFloat32) +
+                     ", flushed " + yn(fc.shaderDenormFlushToZeroFloat32) +
+                     ", signed zero/inf/nan preserved " + yn(fc.shaderSignedZeroInfNanPreserveFloat32) +
+                     ", rounding RTE " + yn(fc.shaderRoundingModeRTEFloat32);
+  }
 
   std::uint32_t nq = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);

@@ -37,6 +37,9 @@ public:
     re_.assign(re.begin(), re.end());
     im_.assign(im.begin(), im.end());
   }
+  // One frequency's real and imaginary parts over the voxels (for the GPU renderer's upload).
+  std::span<const float> re(std::size_t k) const { return {&re_[k * voxels_], voxels_}; }
+  std::span<const float> im(std::size_t k) const { return {&im_[k * voxels_], voxels_}; }
   std::complex<float> phasor(std::size_t k, std::size_t voxel) const {
     return {re_[k * voxels_ + voxel], im_[k * voxels_ + voxel]};
   }
