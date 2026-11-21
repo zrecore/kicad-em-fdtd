@@ -3,10 +3,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <complex>
+#include <numbers>
 
 #include "fdtd/grid.hpp"
 #include "fdtd/solver.hpp"
 #include "fdtd/sparam.hpp"
+#include "sim/simulation.hpp"
 
 using Catch::Approx;
 using namespace fdtd;
@@ -110,6 +113,42 @@ SCENARIO("S11 is extracted from the port voltage and source", "[sparam]") {
         for (std::size_t i = 0; i < 3; ++i) {
           const auto expected = std::polar(gamma, -2 * 3.14159265358979323846 * s.frequenciesHz[i] * tau);
           REQUIRE(std::abs(s.s11[i] - expected) < 1e-3);
+        }
+      }
+    }
+  }
+}
+
+SCENARIO("A lumped capacitor on an edge gives the analytic RC response", "[slow][lumped]") {
+  GIVEN("a source of 50 ohm driving one Ez edge that also carries 10 pF, in a small PEC cavity") {
+    const auto grid = Grid::uniform({24, 24, 24}, {0.024, 0.024, 0.024});
+    Solver<double> s(grid, 0.95);
+    constexpr double kR = 50.0, kC = 10e-12;
+    const auto drive = sim::bandPulse(0.1e9, 1.5e9);
+    LumpedPort port{12, 12, 11, Z, kR, drive};
+    port.capacitance = kC;
+    s.addLumpedPort(std::move(port));
+    WHEN("the pulse is run in and V(edge) / Vs is taken at 318 MHz and at 1 GHz") {
+      const double dl = grid.cellSize(Z, 11);
+      std::vector<std::complex<double>> v(2), vs(2);
+      const double f[2] = {1 / (2 * std::numbers::pi * kR * kC), 1e9};
+      for (int n = 0; n < 6000; ++n) {
+        s.step();
+        const double t = s.time(), dt = s.dt();
+        for (int q = 0; q < 2; ++q) {
+          const auto w = std::polar(dt, -2 * std::numbers::pi * f[q] * t);
+          v[q] += s.e(Z, 12, 12, 11) * dl * w;
+          vs[q] += s.portSourceVoltage(0) * w;
+        }
+      }
+      THEN("the ratio is 1 / (1 + j w R C) within 4 % in magnitude and 0.04 rad in phase (the cell's own "
+           "permittivity and the cavity add a little)") {
+        for (int q = 0; q < 2; ++q) {
+          const std::complex<double> expect =
+              1.0 / (1.0 + std::complex<double>(0, 2 * std::numbers::pi * f[q] * kR * kC));
+          const auto got = v[q] / vs[q];
+          CHECK(std::abs(got) == Approx(std::abs(expect)).epsilon(0.04));
+          CHECK(std::abs(std::arg(got) - std::arg(expect)) < 0.04);
         }
       }
     }

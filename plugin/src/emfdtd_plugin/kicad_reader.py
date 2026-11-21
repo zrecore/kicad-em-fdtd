@@ -156,17 +156,87 @@ def read_vias(board):
     ]
 
 
-def read_components(board):
-    return [
-        {
+def _footprint_body(board, fp):
+    """The footprint's bounding rectangle as a polygon in metres, or None if the API cannot give one."""
+    try:
+        box = board.get_item_bounding_box(fp)
+    except Exception:  # noqa: BLE001 - an API without footprint boxes must not stop the export
+        return None
+    if box is None:
+        return None
+    x0, y0 = box.pos.x, box.pos.y
+    x1, y1 = x0 + box.size.x, y0 + box.size.y
+    return [[nm_to_m(x), nm_to_m(y)] for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+
+
+_MOUNTING = {1: "through_hole", 2: "smd"}  # kipy FootprintMountingStyle (0 and 3: unknown or unspecified)
+
+
+def _attributes(fp):
+    """do-not-populate and mounting style (DNP is a KiCAD 8 or later attribute); {} if the API lacks them."""
+    try:
+        a = fp.attributes
+        return {
+            "dnp": bool(a.do_not_populate),
+            "mounting": _MOUNTING.get(int(a.mounting_style), "unknown"),
+        }
+    except Exception:  # noqa: BLE001 - never stop the export for an attribute
+        return {}
+
+
+def _pads_by_footprint(board):
+    """Pads per footprint id: number, net and board position in metres. Layers are not exported here: the
+    copper polygons already carry them, and a two-terminal part's gap is found from the pad positions."""
+    out = {}
+    try:
+        pads = list(board.get_pads())
+    except Exception:  # noqa: BLE001
+        return out
+    for pad in pads:
+        parent = pad.parent.value if getattr(pad, "parent", None) else None
+        if parent is None:
+            continue
+        out.setdefault(parent, []).append(
+            {
+                "number": str(pad.number),
+                "net": pad.net.name,
+                "x": nm_to_m(pad.position.x),
+                "y": nm_to_m(pad.position.y),
+            }
+        )
+    return out
+
+
+def read_components(board, notes=None):
+    """Footprints with their bounding rectangle as an optional body outline (no height: KiCAD's API does not
+    report one, so the solver side supplies a default), their pads and their DNP and mounting attributes.
+    The rectangle may include the footprint's text."""
+    pads = _pads_by_footprint(board)
+    out = []
+    for fp in board.get_footprints():
+        comp = {
             "ref": fp.reference_field.text.value,
             "value": fp.value_field.text.value,
             "layer": layer_name(fp.layer),
             "x": nm_to_m(fp.position.x),
             "y": nm_to_m(fp.position.y),
         }
-        for fp in board.get_footprints()
-    ]
+        outline = _footprint_body(board, fp)
+        if outline:
+            comp["body"] = {"polygon": outline}
+        attrs = _attributes(fp)
+        if attrs:
+            comp["attributes"] = attrs
+        fid = fp.id.value if getattr(fp, "id", None) else None
+        if fid in pads:
+            comp["pads"] = pads[fid]
+        out.append(comp)
+    if notes is not None and out:
+        notes.append(
+            "component bodies are the footprints' bounding rectangles (may include their text); "
+            "heights are not available from KiCAD and come from a setting"
+        )
+    return out
 
 
 def read_board(kicad, ports=(), defaults=None, refill_zones=False):
@@ -185,7 +255,7 @@ def read_board(kicad, ports=(), defaults=None, refill_zones=False):
         stackup,
         read_copper(board, copper_layers, notes),
         read_vias(board),
-        read_components(board),
+        read_components(board, notes),
         ports,
         notes,
     )

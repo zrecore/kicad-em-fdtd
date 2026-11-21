@@ -1,4 +1,5 @@
 // BDD scenarios for the board snapshot reader and the voxelizer. Lengths in the fixture are metres.
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -14,7 +15,7 @@ namespace {
 
 // A 10 x 10 mm two-layer board: 0.8 mm dielectric (er 4.4, tan d 0.02), a ground plane inset 0.2 mm from the
 // edge on the bottom, and a 2.8 mm square pad (owned by footprint AE1) on top.
-std::string fixture(int version = 1, const std::string& ports = "") {
+std::string fixture(int version = 1, const std::string& ports = "", const std::string& body = "") {
   return R"({"format":"kicad-em-fdtd.snapshot","version":)" + std::to_string(version) + R"(,
     "board":{"name":"fixture","kicad_version":"10.0.7"},
     "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
@@ -25,7 +26,8 @@ std::string fixture(int version = 1, const std::string& ports = "") {
               {"layer":"F.Cu","owner":"AE1","net":"FEED","polygon":[[0.0036,0.0036],[0.0064,0.0036],[0.0064,0.0064],[0.0036,0.0064]]}],
     "vias":[],"ports":[)" +
          ports + R"(],
-    "components":[{"ref":"AE1","value":"antenna","x":0.005,"y":0.005,"layer":"F.Cu"}]})";
+    "components":[{"ref":"AE1","value":"antenna","x":0.005,"y":0.005,"layer":"F.Cu"})" +
+         body + R"(]})";
 }
 
 const board::GridPlan kPlan{
@@ -192,6 +194,267 @@ SCENARIO("Refinement boxes grade the lateral grid") {
     THEN("the port still spans the gap, now with several cells in series") {
       REQUIRE(model.ports.size() == 1);
       REQUIRE(model.ports[0].series >= 4);
+    }
+  }
+}
+
+namespace {
+// the antenna footprint's body: a 2.8 mm square over the pad, 1.8 mm tall (two 1 mm air cells above the
+// board)
+std::string withBody(const std::string& layer = "F.Cu", double height = 0.0018) {
+  return R"(,{"ref":"U1","value":"shield","x":0.005,"y":0.005,"layer":")" + layer +
+         R"(","body":{"polygon":[[0.0036,0.0036],[0.0064,0.0036],[0.0064,0.0064],[0.0036,0.0064]],"height":)" +
+         std::to_string(height) + "}}";
+}
+std::size_t cellsWith(const board::Model& m, std::uint8_t id) {
+  return static_cast<std::size_t>(std::count(m.cellMaterial.begin(), m.cellMaterial.end(), id));
+}
+} // namespace
+
+SCENARIO("A component body can be left out, made a dielectric block, or made metal") {
+  GIVEN("a board whose part U1 has a 2.8 mm square body 1.8 mm tall on the top side") {
+    const auto snap = board::parseSnapshot(fixture(1, "", withBody()));
+    auto epsAt = [](const board::Model& m, std::size_t i, std::size_t j, std::size_t k) {
+      return m.materials[m.cellMaterial[m.grid.cellIndex(i, j, k)]].epsR;
+    };
+    WHEN("the default treatment is used") {
+      const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
+      THEN("the body is not modelled: the cells above the board are all air") {
+        REQUIRE(epsAt(model, 6, 6, 4) == Approx(1.0));
+        REQUIRE(model.materials.size() == 2); // air and the one dielectric
+      }
+    }
+    WHEN("U1's body is a dielectric of permittivity 6") {
+      board::Selection sel;
+      sel.bodies["U1"] = {board::BodyKind::Dielectric, 6.0};
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("exactly the 2 x 2 x 2 cells under the outline (cell centres inside it, up to 1.8 mm) are eps 6") {
+        std::size_t n = 0;
+        for (std::size_t k = 0; k < model.grid.cells(fdtd::Z); ++k)
+          for (std::size_t j = 0; j < model.grid.cells(fdtd::Y); ++j)
+            for (std::size_t i = 0; i < model.grid.cells(fdtd::X); ++i)
+              n += epsAt(model, i, j, k) == Approx(6.0);
+        REQUIRE(n == 8);
+        REQUIRE(epsAt(model, 6, 6, 4) == Approx(6.0));
+        REQUIRE(epsAt(model, 7, 7, 5) == Approx(6.0));
+        REQUIRE(epsAt(model, 5, 6, 4) == Approx(1.0)); // beside it
+        REQUIRE(epsAt(model, 6, 6, 3) == Approx(4.4)); // the board itself is untouched
+      }
+      AND_THEN("the run notes name the part, the treatment and the cell count") {
+        bool found = false;
+        for (const auto& n : model.notes)
+          found = found || (n.find("U1") != std::string::npos && n.find("8 cells") != std::string::npos);
+        REQUIRE(found);
+      }
+    }
+    WHEN("U1's body is metal") {
+      board::Selection sel;
+      sel.bodies["U1"] = {board::BodyKind::Metal, 1.0};
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("the same 8 cells are perfect conductor") {
+        REQUIRE(model.materials.back().pec);
+        REQUIRE(cellsWith(model, static_cast<std::uint8_t>(model.materials.size() - 1)) == 8);
+      }
+    }
+    WHEN("U1 is a dielectric body but is not part of the selection") {
+      board::Selection sel;
+      sel.all = false;
+      sel.defaultBody = {board::BodyKind::Dielectric, 6.0};
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("it leaves no trace in the model") {
+        REQUIRE(epsAt(model, 6, 6, 4) == Approx(1.0));
+      }
+    }
+    WHEN("the body is taller than the air above the board") {
+      const auto tall = board::parseSnapshot(fixture(1, "", withBody("F.Cu", 0.02)));
+      board::Selection sel;
+      sel.defaultBody = {board::BodyKind::Dielectric, 6.0};
+      const auto model = board::voxelize(tall, sel, kPlan, kF0);
+      THEN("it is cut off at the grid edge and the notes say so") {
+        bool found = false;
+        for (const auto& n : model.notes)
+          found = found || n.find("cut off") != std::string::npos;
+        REQUIRE(found);
+      }
+    }
+    WHEN("a body has no outline in the snapshot") {
+      const auto bare = board::parseSnapshot(fixture());
+      board::Selection sel;
+      sel.defaultBody = {board::BodyKind::Dielectric, 6.0};
+      const auto model = board::voxelize(bare, sel, kPlan, kF0);
+      THEN("the part is left out with a note, not silently") {
+        bool found = false;
+        for (const auto& n : model.notes)
+          found = found || n.find("no body outline") != std::string::npos;
+        REQUIRE(found);
+      }
+    }
+  }
+}
+
+SCENARIO("A component's pads and do-not-populate flag are read from the snapshot") {
+  GIVEN("a part R5 with two pads on two nets, marked DNP and surface-mounted") {
+    const auto snap =
+        board::parseSnapshot(fixture(1, "",
+                                     R"(,{"ref":"R5","value":"0R","x":0.005,"y":0.005,"layer":"F.Cu",
+             "attributes":{"dnp":true,"mounting":"smd"},
+             "pads":[{"number":"1","net":"FEED","x":0.004,"y":0.005},{"number":"2","net":"ANT","x":0.006,"y":0.005}]})"));
+    THEN("the pads, their nets and positions, and the flags are available, within 1e-12 m") {
+      const auto& c = snap.components.at(1);
+      REQUIRE(c.dnp);
+      REQUIRE(c.mounting == "smd");
+      REQUIRE(c.pads.size() == 2);
+      REQUIRE(c.pads[0].net == "FEED");
+      REQUIRE(c.pads[1].x == Approx(0.006).margin(1e-12));
+    }
+    AND_THEN("the run notes name a fitted two-terminal part as not modelled and a DNP one as left open") {
+      const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
+      bool open = false, dnpNote = false;
+      for (const auto& n : model.notes) {
+        open = open || (n.find("not modelled yet") != std::string::npos);
+        dnpNote =
+            dnpNote || (n.find("do not populate") != std::string::npos && n.find("R5") != std::string::npos);
+      }
+      REQUIRE(!open); // R5 is DNP, so there is no fitted two-terminal part
+      REQUIRE(dnpNote);
+    }
+    AND_THEN("a part without them reads as fitted, with no pads") {
+      REQUIRE(!snap.components.at(0).dnp);
+      REQUIRE(snap.components.at(0).pads.empty());
+    }
+  }
+}
+
+SCENARIO("A fitted two-terminal part is reported as not modelled") {
+  GIVEN("a fitted 0 ohm link between two nets") {
+    const auto snap =
+        board::parseSnapshot(fixture(1, "",
+                                     R"(,{"ref":"R6","value":"0R","x":0.005,"y":0.005,"layer":"F.Cu",
+             "pads":[{"number":"1","net":"FEED","x":0.004,"y":0.005},{"number":"2","net":"ANT","x":0.006,"y":0.005}]})"));
+    THEN("the run notes say the gap is open and name the part") {
+      const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
+      bool found = false;
+      for (const auto& n : model.notes)
+        found =
+            found || (n.find("not modelled yet") != std::string::npos && n.find("R6") != std::string::npos);
+      REQUIRE(found);
+    }
+  }
+}
+
+namespace {
+// A part R6 on the top layer with pads 1 mm apart: pad 1 spans x 3-4 mm, pad 2 spans x 5-6 mm, both
+// y 7.5-8.5.
+board::Snapshot snapshotWithPart(const std::string& ref, const std::string& value, bool dnp = false) {
+  std::string json =
+      fixture(1, "",
+              R"(,{"ref":")" + ref + R"(","value":")" + value + R"(","x":0.0045,"y":0.008,"layer":"F.Cu",)" +
+                  (dnp ? R"("attributes":{"dnp":true},)" : "") +
+                  R"("pads":[{"number":"1","net":"A","x":0.0035,"y":0.008},)" +
+                  R"({"number":"2","net":"B","x":0.0055,"y":0.008}]})");
+  const std::string pads =
+      R"({"layer":"F.Cu","owner":")" + ref +
+      R"(","net":"A","polygon":[[0.003,0.0075],[0.004,0.0075],[0.004,0.0085],[0.003,0.0085]]},)" +
+      R"({"layer":"F.Cu","owner":")" + ref +
+      R"(","net":"B","polygon":[[0.005,0.0075],[0.006,0.0075],[0.006,0.0085],[0.005,0.0085]]},)";
+  json.replace(json.find(R"("copper":[)") + 10, 0, pads);
+  return board::parseSnapshot(json);
+}
+// the x edge across the gap: cell 4-5 mm (index 6 from the -2 mm origin), node y = 8 mm (index 10), top
+// copper
+bool gapIsShort(const board::Model& m) {
+  const auto& g = m.grid;
+  const std::size_t node = g.nodeIndex(6, 10, m.copperPlaneNode[0]);
+  return std::any_of(m.pecEdges.begin(), m.pecEdges.end(),
+                     [&](const fdtd::PecEdge& e) { return e.axis == fdtd::X && e.node == node; });
+}
+bool noteContains(const board::Model& m, const std::string& a, const std::string& b) {
+  return std::any_of(m.notes.begin(), m.notes.end(), [&](const std::string& n) {
+    return n.find(a) != std::string::npos && n.find(b) != std::string::npos;
+  });
+}
+} // namespace
+
+SCENARIO("A fitted 0 ohm link or resistor between two pads is modelled across the gap") {
+  GIVEN("a part R6 whose pads leave a one-cell gap") {
+    WHEN("it is a 0R link") {
+      const auto model = board::voxelize(snapshotWithPart("R6", "0R"), board::Selection{}, kPlan, kF0);
+      THEN("the gap edge is a short (a forced edge) and no extra load is added") {
+        REQUIRE(gapIsShort(model));
+        REQUIRE(model.ports.empty()); // the fixture has no port, and none is added
+        REQUIRE(noteContains(model, "R6", "short"));
+      }
+      AND_THEN("it is no longer reported as not modelled") {
+        REQUIRE(!noteContains(model, "not modelled yet", "R6"));
+      }
+    }
+    WHEN("it is a 100R resistor") {
+      const auto model = board::voxelize(snapshotWithPart("R6", "100R"), board::Selection{}, kPlan, kF0);
+      THEN("the gap edge is a lumped load of 100 ohm, within 1e-9, and not a short") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(model.ports.size() == 1);
+        REQUIRE(model.ports[0].name == "R6");
+        REQUIRE(model.ports[0].impedance == Approx(100.0));
+        REQUIRE(model.ports[0].edges.size() == 1);
+        REQUIRE(model.ports[0].edges[0].edge.resistance == Approx(100.0).epsilon(1e-9));
+      }
+    }
+    WHEN("it is marked do not populate") {
+      const auto model = board::voxelize(snapshotWithPart("R6", "0R", true), board::Selection{}, kPlan, kF0);
+      THEN("the gap stays open") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(model.ports.empty());
+      }
+    }
+    WHEN("it is not part of the selection") {
+      board::Selection sel;
+      sel.all = false;
+      const auto model = board::voxelize(snapshotWithPart("R6", "0R"), sel, kPlan, kF0);
+      THEN("it leaves no trace") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(model.ports.empty());
+      }
+    }
+    WHEN("it is an inductor footprint (L3) whose value is 0R, so a 0 ohm link was asked for") {
+      const auto model = board::voxelize(snapshotWithPart("L3", "0R"), board::Selection{}, kPlan, kF0);
+      THEN("the value wins: the gap is a short, and the notes say the reference disagreed") {
+        REQUIRE(gapIsShort(model));
+        REQUIRE(noteContains(model, "L3", "reference says L"));
+      }
+    }
+    WHEN("it is a part with a bare number value on a non-resistor reference") {
+      const auto model = board::voxelize(snapshotWithPart("C4", "47"), board::Selection{}, kPlan, kF0);
+      THEN("it is not guessed to be ohms: the gap stays open and the notes say so") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(noteContains(model, "not modelled yet", "C4"));
+      }
+    }
+    WHEN("it is a 2 pF capacitor") {
+      const auto model = board::voxelize(snapshotWithPart("C2", "2pF"), board::Selection{}, kPlan, kF0);
+      THEN("the gap edge is a lumped edge with 2 pF, no conductance, and is not a short") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(model.ports.size() == 1);
+        REQUIRE(model.ports[0].name == "C2");
+        REQUIRE(model.ports[0].edges.size() == 1);
+        REQUIRE(model.ports[0].edges[0].edge.capacitance == Approx(2e-12).epsilon(1e-9));
+        REQUIRE(std::isinf(model.ports[0].edges[0].edge.resistance));
+        REQUIRE(!noteContains(model, "not modelled yet", "C2"));
+      }
+    }
+    WHEN("it is a capacitor footprint whose value is 4p7 on reference R9, an odd reference") {
+      const auto model = board::voxelize(snapshotWithPart("R9", "4p7"), board::Selection{}, kPlan, kF0);
+      THEN("the value wins and the notes say the reference disagreed") {
+        REQUIRE(model.ports.size() == 1);
+        REQUIRE(model.ports[0].edges[0].edge.capacitance == Approx(4.7e-12).epsilon(1e-9));
+        REQUIRE(noteContains(model, "R9", "reference says R"));
+      }
+    }
+    WHEN("it is an inductor, which is not modelled yet") {
+      const auto model = board::voxelize(snapshotWithPart("L1", "2.2nH"), board::Selection{}, kPlan, kF0);
+      THEN("the gap stays open and the notes say so") {
+        REQUIRE(!gapIsShort(model));
+        REQUIRE(noteContains(model, "not modelled yet", "L1"));
+      }
     }
   }
 }

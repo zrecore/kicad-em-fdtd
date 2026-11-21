@@ -441,3 +441,56 @@ SCENARIO("PCB properties are editable settings with fab profiles as defaults") {
     }
   }
 }
+
+SCENARIO("Component bodies are an option that defaults to off and follows the settings") {
+  GIVEN("a board with a 6 mm square part, 3 mm tall, on the top side") {
+    const auto snap =
+        board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t"},
+      "outline":[[0,0],[0.03,0],[0.03,0.03],[0,0.03]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0016,"epsilon_r":4.5,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"B.Cu","owner":"","net":"G","polygon":[[-0.001,-0.001],[0.031,-0.001],[0.031,0.031],[-0.001,0.031]]},
+                {"layer":"F.Cu","owner":"","net":"S","polygon":[[0.010,0.010],[0.020,0.010],[0.020,0.020],[0.010,0.020]]}],
+      "vias":[],
+      "components":[{"ref":"U1","value":"can","x":0.022,"y":0.022,"layer":"F.Cu",
+                     "body":{"polygon":[[0.019,0.019],[0.025,0.019],[0.025,0.025],[0.019,0.025]],"height":0.003}}],
+      "ports":[{"name":"P1","layer":"F.Cu","layer_b":"B.Cu","a":[0.015,0.012],"width":0,"impedance":50}]})");
+    auto bodyCells = [](const app::Prepared& p) {
+      std::size_t n = 0;
+      for (const auto id : p.model.cellMaterial)
+        n += id >= 2; // air, the board dielectric, then bodies
+      return n;
+    };
+    WHEN("the settings are left at their defaults") {
+      app::Settings s(catalog());
+      const auto p = app::prepare(snap, s, board::Selection{});
+      THEN("the part's body is not modelled") {
+        REQUIRE(s.text("component_bodies") == "ignore");
+        REQUIRE(bodyCells(p) == 0);
+      }
+    }
+    WHEN("component bodies are set to dielectric with permittivity 9") {
+      app::Settings s(catalog());
+      s.set("component_bodies", std::string("dielectric"));
+      s.set("component_body_eps", 9.0);
+      const auto p = app::prepare(snap, s, board::Selection{});
+      THEN("the part's footprint is filled with permittivity 9 above the board, and nothing else changes") {
+        REQUIRE(bodyCells(p) > 0);
+        bool nine = false;
+        for (const auto& m : p.model.materials)
+          nine = nine || m.epsR == Approx(9.0);
+        REQUIRE(nine);
+      }
+    }
+    WHEN("component bodies are set to metal") {
+      app::Settings s(catalog());
+      s.set("component_bodies", std::string("metal"));
+      const auto p = app::prepare(snap, s, board::Selection{});
+      THEN("the body cells are perfect conductor") {
+        REQUIRE(p.model.materials.back().pec);
+        REQUIRE(bodyCells(p) > 0);
+      }
+    }
+  }
+}

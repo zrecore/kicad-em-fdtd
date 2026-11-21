@@ -3,6 +3,7 @@
 // own thickness is not modelled and the stackup's dielectric thickness is used as given. Vias are PEC
 // columns.
 #pragma once
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -13,10 +14,26 @@
 namespace board {
 
 // Which footprints take part in the model. Board-level items (owner "") are always included.
+// How a component's body (its footprint outline extruded by its height) enters the model. Ignore leaves it
+// out (the default: only its copper is modelled); Dielectric fills it with a lossless dielectric of the given
+// permittivity; Metal makes it a perfect conductor (a shield can, a connector shell).
+enum class BodyKind { Ignore, Dielectric, Metal };
+struct BodyTreatment {
+  BodyKind kind = BodyKind::Ignore;
+  double epsilonR = 4.0; // Dielectric only; a labelled default, the user's to set
+};
+
 struct Selection {
   bool all = true;
   std::set<std::string> owners; // used when all == false
+  BodyTreatment defaultBody;    // for every selected component without its own entry
+  double defaultBodyHeight = 0; // metres, for a body whose snapshot gives no height
+  std::map<std::string, BodyTreatment> bodies;
   bool includes(const std::string& owner) const { return owner.empty() || all || owners.count(owner) > 0; }
+  BodyTreatment bodyOf(const std::string& ref) const {
+    const auto it = bodies.find(ref);
+    return it == bodies.end() ? defaultBody : it->second;
+  }
 };
 
 struct RefineBox { // board coordinates, metres: cells of size `cell` inside the box, graded outward

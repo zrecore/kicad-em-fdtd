@@ -68,7 +68,8 @@ void usage() {
       "  --autorun                with --ui: start the run as soon as the model is ready\n"
       "  --ui-a11y-dump FILE      with --ui-screenshot: write what a screen reader is told; exit 1 if a "
       "control is unnamed\n"
-      "  --ui-screenshot FILE.png [--ui-size WxH] [--ui-query TEXT] [--ui-expand GROUP]  render that screen "
+      "  --ui-screenshot FILE.png [--ui-size WxH] [--ui-query TEXT] [--ui-expand GROUP] [--ui-layers "
+      "field,nofield,current]  render that screen "
       "to an image\n"
       "Settings saved for this board in DIR/em-fdtd/settings.json are loaded first; command-line values "
       "win.\n");
@@ -202,6 +203,7 @@ int main(int argc, char** argv) {
     bool shotRun = false, showSettings = false, hideControls = false;
     int benchFrames = 0;
     std::string shotTheme, a11yDump;
+    std::string layersFlag;
     int legendsFlag = -1; // -1 default, 0 collapsed, 1 expanded
     std::uint32_t shotW = 1280, shotH = 800;
     std::string backendFlag;
@@ -260,6 +262,8 @@ int main(int argc, char** argv) {
         a11yDump = next();
       else if (a == "--ui-theme")
         shotTheme = next();
+      else if (a == "--ui-layers")
+        layersFlag = next();
       else if (a == "--ui-legends")
         legendsFlag = std::string(next()) == "open" ? 1 : 0;
       else if (a == "--ui-bench")
@@ -331,6 +335,7 @@ int main(int argc, char** argv) {
           screen.expandGroup(shotExpand);
         screen.setPanels(showSettings, !hideControls);
         screen.setAccessWanted(!a11yDump.empty());
+        screen.setLayers(layersFlag);
         if (legendsFlag >= 0)
           screen.setLegends(legendsFlag == 1);
         if (!shotTheme.empty())

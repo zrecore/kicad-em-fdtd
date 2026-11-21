@@ -30,8 +30,9 @@ struct PecEdge {
 struct LumpedPort {
   std::size_t i, j, k; // the E sample it spans (interior, like a SoftSource)
   Axis component;
-  double resistance;
+  double resistance; // ohm; infinity: no conductance (a pure capacitor)
   std::function<double(double)> voltage;
+  double capacitance = 0; // farad across this edge, added as permittivity C dl / area (a lumped capacitor)
 };
 
 // Convolution PML on all six walls (kappa = 1, polynomial sigma, linearly falling alpha) [4][5].

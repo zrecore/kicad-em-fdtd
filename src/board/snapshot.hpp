@@ -30,9 +30,20 @@ struct Via {
   std::string net, owner;
 };
 
+struct ComponentPad { // a footprint's pad: what a two-terminal part's two ends are
+  std::string number, net;
+  double x, y; // board position, metres
+};
+
 struct Component {
   std::string ref, value, layer;
   double x, y;
+  Ring body; // footprint outline on the board plane (courtyard or bounding box); empty: unknown
+  std::vector<ComponentPad> pads; // empty: the exporter gave none
+  bool dnp = false;               // do not populate: not fitted, so open between its pads
+  std::string mounting;           // "smd", "through_hole" or empty
+  double bodyHeight = 0; // metres above (top side) or below (bottom side) the board surface; 0: not given,
+                         // the run's default height applies
 };
 
 // A lumped port across a gap in one copper layer: from point a (positive) to point b (negative), along x or

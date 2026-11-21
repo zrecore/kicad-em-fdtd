@@ -116,9 +116,11 @@ void Solver<T>::buildCoefficients(const std::vector<Material>& table,
           eps = eps / count * kEps0;
           sigma /= count;
           for (const LumpedPort& p : ports_)
-            if (p.component == a && portNode(p) == grid_.nodeIndex(i, j, k))
-              sigma +=
-                  grid_.cellSize(a, std::array<std::size_t, 3>{i, j, k}[a]) / (p.resistance * portArea(p));
+            if (p.component == a && portNode(p) == grid_.nodeIndex(i, j, k)) {
+              const double dl = grid_.cellSize(a, std::array<std::size_t, 3>{i, j, k}[a]);
+              sigma += dl / (p.resistance * portArea(p));
+              eps += p.capacitance * dl / portArea(p); // a lumped capacitor is extra permittivity on the edge
+            }
           const double loss = sigma * dt_ / (2 * eps);
           const std::size_t n = grid_.nodeIndex(i, j, k);
           ca_[a][n] = static_cast<T>((1 - loss) / (1 + loss));

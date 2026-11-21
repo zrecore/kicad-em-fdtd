@@ -1,7 +1,10 @@
 #include "board/voxelize.hpp"
 
+#include "board/parts.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <stdexcept>
 
@@ -177,6 +180,77 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     copperNode[i] = nearestEdge(edges[2], zInterface + zShift);
     m.copperPlaneNode[i] = copperNode[i];
   }
+  // Component bodies: the footprint outline extruded away from the board on the component's side. Only air
+  // cells whose centre lies inside are changed, so a body never overwrites the board, and a body thinner than
+  // half a cell (or beyond the air margin) is reported, not silently dropped.
+  {
+    std::size_t topCopper = s.stackup.size(), bottomCopper = s.stackup.size();
+    for (std::size_t i = 0; i < s.stackup.size(); ++i)
+      if (s.stackup[i].copper) {
+        if (topCopper == s.stackup.size())
+          topCopper = i;
+        bottomCopper = i;
+      }
+    std::vector<std::pair<BodyTreatment, std::uint8_t>> bodyMaterial; // one material per distinct treatment
+    for (const Component& c : s.components) {
+      const BodyTreatment t = sel.bodyOf(c.ref);
+      if (!sel.includes(c.ref) || t.kind == BodyKind::Ignore)
+        continue;
+      const double height = c.bodyHeight > 0 ? c.bodyHeight : sel.defaultBodyHeight;
+      if (c.body.empty() || !(height > 0)) {
+        m.notes.push_back("component " + c.ref +
+                          ": no body outline (or no height) in the snapshot, body left out");
+        continue;
+      }
+      const bool top = topCopper < s.stackup.size() && c.layer == s.stackup[topCopper].name;
+      const bool bottom = bottomCopper < s.stackup.size() && c.layer == s.stackup[bottomCopper].name;
+      if (!top && !bottom) {
+        m.notes.push_back("component " + c.ref + ": its layer '" + c.layer +
+                          "' is not an outer copper layer, body left out");
+        continue;
+      }
+      std::uint8_t id = 0;
+      for (const auto& [bt, bid] : bodyMaterial)
+        if (bt.kind == t.kind && (t.kind == BodyKind::Metal || bt.epsilonR == t.epsilonR))
+          id = bid;
+      if (id == 0) {
+        id = static_cast<std::uint8_t>(m.materials.size());
+        m.materials.push_back(t.kind == BodyKind::Metal ? fdtd::Material{1.0, 0.0, true}
+                                                        : fdtd::Material{t.epsilonR, 0.0, false});
+        bodyMaterial.push_back({t, id});
+      }
+      const double surface = top ? z.interfaceZ.back() + zShift : z.interfaceZ.front() + zShift;
+      const double zLo = top ? surface : surface - height, zHi = top ? surface + height : surface;
+      std::size_t cells = 0;
+      for (std::size_t kk = 0; kk < g.cells(fdtd::Z); ++kk) {
+        const double cz = g.edge(fdtd::Z, kk) + 0.5 * g.cellSize(fdtd::Z, kk);
+        if (cz <= zLo || cz >= zHi)
+          continue;
+        for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
+          for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) {
+            const double cx = toBoardX(g.edge(fdtd::X, i) + 0.5 * g.cellSize(fdtd::X, i));
+            const double cy = toBoardY(g.edge(fdtd::Y, j) + 0.5 * g.cellSize(fdtd::Y, j));
+            std::uint8_t& cell = m.cellMaterial[g.cellIndex(i, j, kk)];
+            if (cell == 0 && insideRing(c.body, cx, cy)) {
+              cell = id;
+              ++cells;
+            }
+          }
+      }
+      const double reach = top ? g.edge(fdtd::Z, g.cells(fdtd::Z)) - surface : surface - g.edge(fdtd::Z, 0);
+      std::string how = t.kind == BodyKind::Metal
+                            ? "metal body"
+                            : "dielectric body, epsilon_r " + std::to_string(t.epsilonR);
+      if (cells == 0)
+        m.notes.push_back("component " + c.ref + ": " + how +
+                          " covers no cell (too thin or too small for the grid), left out");
+      else if (height > reach)
+        m.notes.push_back("component " + c.ref + ": " + how +
+                          " is taller than the air margin, cut off at the grid edge");
+      else
+        m.notes.push_back("component " + c.ref + ": " + how + ", " + std::to_string(cells) + " cells");
+    }
+  }
   auto layerIndex = [&](const std::string& name) -> std::size_t {
     for (std::size_t i = 0; i < s.stackup.size(); ++i)
       if (s.stackup[i].copper && s.stackup[i].name == name)
@@ -236,7 +310,7 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
         best = j;
     return best;
   };
-  for (const PortDef& def : s.ports) {
+  auto expandGap = [&](const PortDef& def) {
     const bool vertical = !def.layerB.empty();
     Axis d, t, f;          // along the gap, across it (parallel strips), and the fixed third axis
     double a0, b0, across; // gap ends along d (a positive) and the strip centre along t
@@ -306,7 +380,101 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
                                         }),
                          m.pecEdges.end());
       }
-    m.ports.push_back(std::move(plan2));
+    return plan2;
+  };
+  for (const PortDef& def : s.ports)
+    m.ports.push_back(expandGap(def));
+
+  // Fitted two-terminal resistors (and 0 ohm links) across the gap between their two pads: the gap runs from
+  // the inner edge of one pad's copper to the inner edge of the other, across the overlap of the two pads'
+  // widths. A 0 ohm value forces the gap edges (a short); another value is a passive lumped load.
+  std::set<std::string> lumpedRefs;
+  for (const Component& c : s.components) {
+    if (!sel.includes(c.ref) || c.dnp || c.pads.size() != 2 || c.pads[0].net == c.pads[1].net)
+      continue;
+    // The value decides, not the reference: an inductor footprint marked 0R is a 0 ohm link. A bare number
+    // needs an R reference to count as ohms.
+    const bool byValue = valueSaysResistance(c.value), byPrefix = refPrefix(c.ref) == "R";
+    const auto farad = byValue ? std::nullopt : parseCapacitance(c.value);
+    if (!byValue && !byPrefix && !farad)
+      continue; // an inductor or bead by its value: not modelled yet, reported below
+    const auto ohm = farad ? std::optional<double>(1.0) : parseResistance(c.value);
+    if (!ohm) {
+      m.notes.push_back("component " + c.ref + ": value '" + c.value + "' is not a resistance, left open");
+      continue;
+    }
+    auto padBox = [&](const ComponentPad& p, std::array<double, 4>& box) {
+      for (const CopperShape& cs : s.copper)
+        if (cs.owner == c.ref && cs.layer == c.layer && insideRing(cs.outer, p.x, p.y)) {
+          box = {1e9, 1e9, -1e9, -1e9};
+          for (const Point& q : cs.outer) {
+            box[0] = std::min(box[0], q.x);
+            box[1] = std::min(box[1], q.y);
+            box[2] = std::max(box[2], q.x);
+            box[3] = std::max(box[3], q.y);
+          }
+          return true;
+        }
+      return false;
+    };
+    std::array<double, 4> A{}, B{};
+    if (!padBox(c.pads[0], A) || !padBox(c.pads[1], B) || layerIndex(c.layer) >= s.stackup.size()) {
+      m.notes.push_back("component " + c.ref + ": its pads are not found as copper on " + c.layer +
+                        ", left open");
+      continue;
+    }
+    const bool alongX = std::abs(c.pads[1].x - c.pads[0].x) >= std::abs(c.pads[1].y - c.pads[0].y);
+    const int lo = alongX ? 0 : 1, hi = alongX ? 2 : 3, tl = alongX ? 1 : 0, th = alongX ? 3 : 2;
+    const bool aFirst = (A[lo] + A[hi]) <= (B[lo] + B[hi]);
+    const auto& first = aFirst ? A : B;
+    const auto& second = aFirst ? B : A;
+    const double gapLo = first[hi], gapHi = second[lo];
+    const double wLo = std::max(A[tl], B[tl]), wHi = std::min(A[th], B[th]);
+    if (!(gapHi > gapLo) || !(wHi > wLo)) {
+      m.notes.push_back("component " + c.ref +
+                        ": its pads touch, overlap or do not face each other, left open");
+      continue;
+    }
+    PortDef def;
+    def.name = c.ref;
+    def.layer = c.layer;
+    def.impedance = *ohm > 0 ? *ohm : 1.0;
+    def.width = wHi - wLo;
+    const double across = 0.5 * (wLo + wHi);
+    def.a = alongX ? Point{gapLo, across} : Point{across, gapLo};
+    def.b = alongX ? Point{gapHi, across} : Point{across, gapHi};
+    PortPlan gapPlan = expandGap(def);
+    if (farad) {
+      // series cells in a row and parallel strips side by side: C_edge = C * series / parallel gives C
+      // overall
+      const double perEdge =
+          *farad * static_cast<double>(gapPlan.series) / static_cast<double>(gapPlan.parallel);
+      for (PortEdge& pe : gapPlan.edges) {
+        pe.edge.resistance = std::numeric_limits<double>::infinity();
+        pe.edge.capacitance = perEdge;
+      }
+      m.notes.push_back("component " + c.ref + ": " + c.value + " capacitor, " +
+                        std::to_string(gapPlan.series) + " cell(s) across the gap, " +
+                        std::to_string(gapPlan.parallel) + " strip(s)");
+      m.ports.push_back(std::move(gapPlan));
+    } else if (*ohm > 0) {
+      m.notes.push_back("component " + c.ref + ": " + c.value + " resistor, " +
+                        std::to_string(gapPlan.series) + " cell(s) across the gap, " +
+                        std::to_string(gapPlan.parallel) + " strip(s)");
+      m.ports.push_back(std::move(gapPlan));
+    } else {
+      for (const PortEdge& pe : gapPlan.edges)
+        m.pecEdges.push_back({pe.edge.component, g.nodeIndex(pe.edge.i, pe.edge.j, pe.edge.k)});
+      m.notes.push_back("component " + c.ref + ": 0 ohm, modelled as a short across the gap (" +
+                        std::to_string(gapPlan.edges.size()) + " edge(s))");
+    }
+    const std::string want = farad ? "C" : "R";
+    if (refPrefix(c.ref) != want)
+      m.notes.push_back("component " + c.ref + ": the reference says " + refPrefix(c.ref) +
+                        " but the value '" + c.value + "' is " +
+                        (farad ? "a capacitance, so it is modelled as a capacitor"
+                               : "a resistance, so it is modelled as a resistor"));
+    lumpedRefs.insert(c.ref);
   }
 
   std::sort(m.pecEdges.begin(), m.pecEdges.end(), [](const fdtd::PecEdge& a, const fdtd::PecEdge& b) {
@@ -320,6 +488,22 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
 
   for (const std::string& owner : leftOut)
     m.notes.push_back("left out of the model by the selection: " + owner);
+  // Two-terminal parts (two pads on two nets) are not modelled yet: the gap between their pads is open.
+  {
+    std::string fitted, unfitted;
+    for (const Component& c : s.components) {
+      if (!sel.includes(c.ref) || c.pads.size() != 2 || c.pads[0].net == c.pads[1].net ||
+          lumpedRefs.count(c.ref))
+        continue;
+      (c.dnp ? unfitted : fitted) += (c.dnp ? unfitted : fitted).empty() ? c.ref : ", " + c.ref;
+    }
+    if (!fitted.empty())
+      m.notes.push_back("two-terminal parts are not modelled yet (resistors, inductors, capacitors, ferrite "
+                        "beads, 0 ohm links): the gap between their pads is an open circuit: " +
+                        fitted);
+    if (!unfitted.empty())
+      m.notes.push_back("do not populate, left open between the pads: " + unfitted);
+  }
   m.notes.push_back("copper is modelled as zero-thickness PEC sheets; dielectric thickness is used as given");
   return m;
 }

@@ -4,6 +4,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <complex>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "app/prepare.hpp"
 #include "app/settings.hpp"
 #include "board/snapshot.hpp"
+#include "fdtd/surface_current.hpp"
 #include "viz/access.hpp"
 #include "viz/imgui_soft.hpp"
 #include "viz/slice.hpp"
@@ -25,6 +27,9 @@
 #include "viz/volume.hpp"
 
 struct ImGuiContext;
+
+struct ImDrawList;
+struct ImVec2;
 
 namespace ui {
 
@@ -84,7 +89,17 @@ public:
   const viz::access::Tree& accessTree() const { return access_; }
   void perform(const std::vector<viz::access::Action>& actions);
   void setTheme(const std::string& mode) { env_.settings.set("ui_theme", mode); } // for layout checks
-  void setLegends(bool open) {                                                    // for layout checks
+  // for screenshots: layers is a comma list of field, nofield, current, nocurrent (both tabs)
+  void setLayers(const std::string& layers) {
+    auto has = [&](const char* w) {
+      return ("," + layers + ",").find(std::string(",") + w + ",") != std::string::npos;
+    };
+    if (has("nofield"))
+      showFieldSlice_ = showField3d_ = false;
+    if (has("current"))
+      showCurrentSlice_ = showCurrent3d_ = true;
+  }
+  void setLegends(bool open) { // for layout checks
     for (bool& l : legendOpen_)
       l = open;
   }
@@ -163,6 +178,21 @@ private:
                             // published-figure look
   bool showOutline_ = true; // board outline drawn over the field slice
   std::array<double, 4> sliceCrop_{0, 0, 0, 0}; // visible window of the last slice frame: u0, u1, v0, v1 (m)
+  // Layers of the animated views, each switched on its own so they can be seen alone or overlaid.
+  bool showFieldSlice_ = true, showCurrentSlice_ = false, currentBottom_ = false; // slice tab
+  bool showField3d_ = true, showCurrent3d_ = false;                               // 3D tab
+  fdtd::SurfaceCurrentList
+      currentList_; // copper cells and their two H channels (see fdtd/surface_current.hpp)
+  std::unique_ptr<viz::PhasorAccumulator> currentH_; // 2 channels per cell
+  std::vector<std::complex<double>> currentJ_;       // J_s phasor per cell at freq_
+  double currentScale_ = 0;                          // |J_s| at the 92nd percentile, A/m
+  std::uint64_t currentVersion_ = ~0ull;
+  std::size_t currentFreq_ = ~std::size_t(0);
+  void refreshCurrent();
+  // Draws the surface current of the cells on copper plane `onlyK` (or all if npos) as coloured quads;
+  // `project` maps grid coordinates (m) to the screen.
+  void drawCurrent(ImDrawList* dl, const std::function<bool(double, double, double, ImVec2&)>& project,
+                   bool light, std::size_t onlyK);
   bool showGeometry_ = true; // copper, vias, port and board thickness drawn over the 3D view
   // Legends are collapsible: preview, S11, slice, volume field, volume board (the preview's starts closed
   // because it sits over the drawing).

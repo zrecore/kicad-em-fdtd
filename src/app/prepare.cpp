@@ -110,7 +110,16 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
                              .airCell = plan.coarseCell,
                              .refine = refine,
                              .snapToGeometry = true};
-  p.model = board::voxelize(snapshot, selection, grid, 0.5 * (plan.bandHz[0] + plan.bandHz[1]));
+  board::Selection withBodies = selection;
+  if (withBodies.defaultBody.kind == board::BodyKind::Ignore) { // the settings give the default treatment
+    const std::string mode = settings.text("component_bodies");
+    withBodies.defaultBody.kind = mode == "dielectric" ? board::BodyKind::Dielectric
+                                  : mode == "metal"    ? board::BodyKind::Metal
+                                                       : board::BodyKind::Ignore;
+    withBodies.defaultBody.epsilonR = settings.number("component_body_eps");
+    withBodies.defaultBodyHeight = settings.number("component_body_height_mm") * 1e-3;
+  }
+  p.model = board::voxelize(snapshot, withBodies, grid, 0.5 * (plan.bandHz[0] + plan.bandHz[1]));
   p.model.notes.insert(p.model.notes.end(), pcbNotes.begin(), pcbNotes.end());
 
   p.options.fMinHz = plan.sweepHz[0];

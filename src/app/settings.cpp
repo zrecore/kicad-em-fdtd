@@ -353,6 +353,24 @@ void Settings::build() {
     slot("diel" + n + "_loss_tangent", "Dielectric " + n + " loss tangent", "Loss tangent (Df, tan delta).",
          "", 1, {"df", "tan", "loss"});
   }
+  choice(
+      "component_bodies", "Component bodies",
+      "What to do with the bodies of the parts on the board (their footprint outline, extruded by the part's "
+      "height). ignore: only a part's copper is modelled (default). dielectric: a block of the "
+      "permittivity below, for plastic or ceramic packages. metal: a perfect conductor, for shield cans and "
+      "connector shells. Applies to every part in the model; a part the board file gives no outline or "
+      "height for is left out and named in the run summary.",
+      "PCB", Tier::Essential,
+      {"component", "package", "body", "3d", "shield", "ic", "footprint", "courtyard"});
+  num("component_body_eps", "Component body permittivity",
+      "Relative permittivity of a dielectric component body. Assumed: package materials vary (about 3.5 to "
+      "4.5 "
+      "for moulded plastic, 6 to 10 for ceramic); set it from the part's datasheet.",
+      "PCB", "", Tier::Essential, 1, 100, {"component", "package", "dk", "epsilon", "ceramic"});
+  num("component_body_height_mm", "Component body height",
+      "Height used for a part's body when the board file gives none (KiCAD's API does not report footprint "
+      "heights). Assumed: set it to the tallest relevant part, such as a shield can or connector.",
+      "PCB", "mm", Tier::Essential, 0.05, 30, {"component", "package", "height", "tall", "shield"});
   num("copper_outer_um", "Outer copper thickness",
       "Finished copper on the outer layers. Recorded in the run summary; the solver models copper as a "
       "zero-thickness sheet for now. 0 keeps the board's value.",
@@ -424,6 +442,12 @@ Value Settings::defaultValue(const std::string& key) const {
     return 64.0;
   if (key == "backend")
     return std::string("auto");
+  if (key == "component_bodies")
+    return std::string("ignore");
+  if (key == "component_body_eps")
+    return 4.0;
+  if (key == "component_body_height_mm")
+    return 1.0;
   if (key == "pcb_profile")
     return std::string("board");
   if (const std::string pid = pcbProfileId(); pid != "board") {
@@ -499,6 +523,8 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
   }
   if (key == "backend")
     return {"auto", "gpu", "cpu"};
+  if (key == "component_bodies")
+    return {"ignore", "dielectric", "metal"};
   if (key == "pcb_profile") {
     std::vector<std::string> ids{"board"};
     for (const FabProfile& f : catalog_.fabProfiles())

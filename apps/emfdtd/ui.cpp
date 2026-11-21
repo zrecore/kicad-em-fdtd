@@ -407,6 +407,8 @@ bool Ui::setSnapshot(board::Snapshot s) {
   snapshot_ = std::move(s);
   phasors_.reset();
   volPhasors_.reset();
+  currentH_.reset();
+  currentList_ = {};
   volImg_.clear();
   statsVersion_ = ~0ull;
   screen_ = Screen::Preview;
@@ -490,6 +492,12 @@ void Ui::start() {
     dv_ = viz::makeDisplayVolume(g, prepared_->plan.volumeResolution, box);
     volPhasors_ = std::make_unique<viz::PhasorAccumulator>(freqs, dv_.voxels());
   }
+  currentList_ = fdtd::surfaceCurrentList(g, prepared_->model.pecEdges);
+  currentH_ = currentList_.channels.empty()
+                  ? nullptr
+                  : std::make_unique<viz::PhasorAccumulator>(freqs, currentList_.channels.size());
+  currentJ_.clear();
+  currentVersion_ = ~0ull;
   freq_ = freqs.size() / 2;
   mask_.assign(plane_.nu * plane_.nv, 0);
   const std::size_t plate = g.nodes(fdtd::X) * g.nodes(fdtd::Y);
@@ -547,15 +555,22 @@ void Ui::runWorker() {
                                         g.nodeIndex(dv_.nodeOf[0][i], dv_.nodeOf[1][j], dv_.nodeOf[2][k]))});
     app::PhasorFeed sliceFeed(*phasors_, std::move(sliceChannels), frequenciesOf(*phasors_));
     app::PhasorFeed volumeFeed(*volPhasors_, std::move(volumeChannels), frequenciesOf(*volPhasors_));
+    std::unique_ptr<app::PhasorFeed> currentFeed;
+    if (currentH_)
+      currentFeed =
+          std::make_unique<app::PhasorFeed>(*currentH_, currentList_.channels, frequenciesOf(*currentH_));
     opt.onSample = [&](sim::Engine& eng, double, double dtSample) {
       const bool a = sliceFeed.sample(eng, dtSample, mu_);
       const bool b = volumeFeed.sample(eng, dtSample, mu_);
-      if (a || b)
+      const bool c = currentFeed && currentFeed->sample(eng, dtSample, mu_);
+      if (a || b || c)
         ++phasorVersion_;
     };
     opt.onFinish = [&](sim::Engine& eng) {
       sliceFeed.sync(eng, mu_);
       volumeFeed.sync(eng, mu_);
+      if (currentFeed)
+        currentFeed->sync(eng, mu_);
       ++phasorVersion_;
     };
     double lastLive = -10;
@@ -1093,6 +1108,62 @@ void Ui::drawS11Tab(float w, float h) {
   ImGui::Dummy({w, h});
 }
 
+void Ui::refreshCurrent() {
+  if (!currentH_ || (currentVersion_ == phasorVersion_ && currentFreq_ == freq_ && !currentJ_.empty()))
+    return;
+  std::lock_guard<std::mutex> lock(mu_);
+  currentJ_.resize(currentList_.cells.size());
+  std::vector<float> mags;
+  mags.reserve(currentJ_.size());
+  for (std::size_t c = 0; c < currentJ_.size(); ++c) {
+    currentJ_[c] = fdtd::surfaceCurrent(currentList_.cells[c], currentH_->phasor(freq_, 2 * c),
+                                        currentH_->phasor(freq_, 2 * c + 1));
+    mags.push_back(static_cast<float>(std::abs(currentJ_[c])));
+  }
+  const std::size_t nth = static_cast<std::size_t>(0.92 * static_cast<double>(mags.size() - 1));
+  std::nth_element(mags.begin(), mags.begin() + static_cast<std::ptrdiff_t>(nth), mags.end());
+  currentScale_ = std::max(static_cast<double>(mags[nth]), 1e-30);
+  currentVersion_ = phasorVersion_;
+  currentFreq_ = freq_;
+}
+
+void Ui::drawCurrent(ImDrawList* dl, const std::function<bool(double, double, double, ImVec2&)>& project,
+                     bool light, std::size_t onlyK) {
+  refreshCurrent();
+  if (currentJ_.empty())
+    return;
+  const fdtd::Grid& g = prepared_->model.grid;
+  const viz::Rgb neg = fieldColour(light, false), pos = fieldColour(light, true);
+  const std::complex<double> rot = std::polar(1.0, phase_);
+  for (std::size_t c = 0; c < currentJ_.size(); ++c) {
+    const fdtd::SurfaceCurrentCell& cell = currentList_.cells[c];
+    if (onlyK != static_cast<std::size_t>(-1) && cell.k != onlyK)
+      continue;
+    const double mag = std::abs(currentJ_[c]) / currentScale_;
+    if (mag < 0.04)
+      continue;
+    // the signed component along the cell's direction at the animation phase shared with the field layers,
+    // so both animate together and freeze together when paused
+    const double v = (currentJ_[c] * rot).real() / currentScale_;
+    const double strength = std::min(1.0, std::abs(v));
+    if (strength < 0.04)
+      continue;
+    const viz::Rgb col = v >= 0 ? pos : neg;
+    const double x0 = cell.direction == fdtd::X ? g.edge(fdtd::X, cell.i)
+                                                : g.edge(fdtd::X, cell.i) - 0.5 * g.dualSize(fdtd::X, cell.i);
+    const double x1 = cell.direction == fdtd::X ? g.edge(fdtd::X, cell.i + 1)
+                                                : g.edge(fdtd::X, cell.i) + 0.5 * g.dualSize(fdtd::X, cell.i);
+    const double y0 = cell.direction == fdtd::Y ? g.edge(fdtd::Y, cell.j)
+                                                : g.edge(fdtd::Y, cell.j) - 0.5 * g.dualSize(fdtd::Y, cell.j);
+    const double y1 = cell.direction == fdtd::Y ? g.edge(fdtd::Y, cell.j + 1)
+                                                : g.edge(fdtd::Y, cell.j) + 0.5 * g.dualSize(fdtd::Y, cell.j);
+    const double z = g.edge(fdtd::Z, cell.k);
+    ImVec2 a, b, d, e;
+    if (project(x0, y0, z, a) && project(x1, y0, z, b) && project(x1, y1, z, d) && project(x0, y1, z, e))
+      dl->AddQuadFilled(a, b, d, e, IM_COL32(col.r, col.g, col.b, static_cast<int>(60 + 195 * strength)));
+  }
+}
+
 void Ui::drawSliceTab(float w, float h) {
   const PanelColours panelColours(lightSlice_, dark_);
   if (!phasors_) {
@@ -1116,6 +1187,16 @@ void Ui::drawSliceTab(float w, float h) {
     checkbox("pause", &paused_);
     ImGui::SameLine();
     checkbox("board outline", &showOutline_);
+    ImGui::SameLine();
+    checkbox("field", &showFieldSlice_);
+    if (currentH_) {
+      ImGui::SameLine();
+      checkbox("surface current", &showCurrentSlice_);
+      if (showCurrentSlice_) {
+        ImGui::SameLine();
+        checkbox("bottom layer", &currentBottom_);
+      }
+    }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(px(160));
     sliderFloat("Brightness", "##b", &brightness, -2.0f, 2.0f, "brightness %.1f");
@@ -1156,7 +1237,9 @@ void Ui::drawSliceTab(float w, float h) {
     std::string component = env_.settings.text("field_component");
     component[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(component[0])));
     char title[96];
-    if (sliceScale_ > 0)
+    if (!showFieldSlice_ && showCurrentSlice_ && currentScale_ > 0)
+      std::snprintf(title, sizeof title, "Surface current (full colour = %.2g A/m)", currentScale_);
+    else if (sliceScale_ > 0)
       std::snprintf(title, sizeof title, "%s field value (full colour = +/-%.2g, solver units)",
                     component.c_str(), sliceScale_);
     else
@@ -1186,6 +1269,31 @@ void Ui::drawSliceTab(float w, float h) {
       pts.push_back({static_cast<float>(offX + (pt.x - m.originX - sliceCrop_[0]) * ppm),
                      static_cast<float>(offY + (sliceCrop_[3] - (pt.y - m.originY)) * ppm)});
     dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), pal.geoOutline, ImDrawFlags_Closed, 2.0f);
+    dl->PopClipRect();
+  }
+  if (showCurrentSlice_ && currentH_ && sliceCrop_[1] > sliceCrop_[0]) {
+    const double lenU = sliceCrop_[1] - sliceCrop_[0], lenV = sliceCrop_[3] - sliceCrop_[2];
+    const double ppm = std::min(sliceRect_.w / lenU, sliceRect_.h / lenV);
+    const double offX = sliceRect_.x + 0.5 * (sliceRect_.w - lenU * ppm),
+                 offY = sliceRect_.y + 0.5 * (sliceRect_.h - lenV * ppm);
+    std::size_t layerK = currentBottom_ ? ~std::size_t(0) : 0, lo = ~std::size_t(0);
+    for (std::size_t i = 0; i < snapshot_.stackup.size(); ++i)
+      if (snapshot_.stackup[i].copper) {
+        const std::size_t k = prepared_->model.copperPlaneNode[i];
+        layerK = currentBottom_ ? std::min(layerK, k) : std::max(layerK, k);
+        lo = std::min(lo, k);
+      }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect({sliceRect_.x, sliceRect_.y}, {sliceRect_.x + sliceRect_.w, sliceRect_.y + sliceRect_.h},
+                     true);
+    drawCurrent(
+        dl,
+        [&](double gx, double gy, double, ImVec2& out) {
+          out = {static_cast<float>(offX + (gx - sliceCrop_[0]) * ppm),
+                 static_cast<float>(offY + (sliceCrop_[3] - gy) * ppm)};
+          return true;
+        },
+        lightSlice_, layerK);
     dl->PopClipRect();
   }
   ImGui::TextColored(ImColor(pal.dim),
@@ -1219,6 +1327,12 @@ void Ui::drawVolumeTab(float w, float h) {
     checkbox("auto-fit", &autoFit_);
     ImGui::SameLine();
     checkbox("copper", &showGeometry_);
+    ImGui::SameLine();
+    checkbox("field", &showField3d_);
+    if (currentH_) {
+      ImGui::SameLine();
+      checkbox("surface current", &showCurrent3d_);
+    }
     float b = static_cast<float>(volBrightness_), d = static_cast<float>(density_);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(px(140));
@@ -1357,6 +1471,22 @@ void Ui::drawVolumeTab(float w, float h) {
         p1[a] = hi[a];
         line3(p0, p1, pal.geoBox);
       }
+  if (showCurrent3d_ && currentH_) {
+    const auto w1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.w * sc)),
+               h1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.h * sc));
+    drawCurrent(
+        dl,
+        [&](double gx, double gy, double gz, ImVec2& out) {
+          float qx, qy;
+          if (gx < dv_.origin[0] || gx > dv_.origin[0] + dv_.extent[0] || gy < dv_.origin[1] ||
+              gy > dv_.origin[1] + dv_.extent[1] ||
+              !viz::projectPoint(dv_, cam_, w1, h1, {gx, gy, gz}, qx, qy))
+            return false;
+          out = {volRect_.x + qx / sc, volRect_.y + qy / sc};
+          return true;
+        },
+        lightVolume_, static_cast<std::size_t>(-1));
+  }
   if (showGeometry_) {
     // Copper, vias, the port and the board's thickness, drawn over the volume with the same camera (no depth
     // ordering against the field: the fills are translucent and big pours are outlined only).
@@ -1473,12 +1603,15 @@ void Ui::drawVolumeTab(float w, float h) {
         },
         "faint", "", "strong", "legendVolNeg", legendOpen_[3]);
     if (showGeometry_) {
-      const std::vector<LegendItem> items = {
+      std::vector<LegendItem> items = {
           {LegendItem::Line, panelColours.saved.geoTop, "top copper"},
           {LegendItem::Line, panelColours.saved.geoOther, "bottom copper"},
           {LegendItem::Dot, panelColours.saved.geoVia, "via"},
           {LegendItem::Dot, panelColours.saved.geoPort, "port"},
           {LegendItem::Line, panelColours.saved.geoOutline, "board (outline and thickness)"}};
+      if (showCurrent3d_ && currentScale_ > 0)
+        items.push_back({LegendItem::Line, panelColours.saved.geoTop,
+                         strf("surface current: field colours, full = %.2g A/m", currentScale_)});
       const float height = 16 + ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(items.size() + 1);
       drawLegend(dl,
                  {volRect_.x + 8, volRect_.y + volRect_.h -
@@ -1796,6 +1929,8 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
           }
         phase_ = -0.5 * std::arg(sum);
       }
+      if (!showFieldSlice_)
+        spec.colourScale = 1e30; // field layer off: draws as an empty background
       rgb = viz::renderFrame(prepared_->model.grid, plane_, *phasors_, freq_, phase_, spec, mask_, fw, fh);
     }
     const int ox = static_cast<int>(sliceRect_.x * scale), oy = static_cast<int>(sliceRect_.y * scale);
@@ -1859,7 +1994,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
         cam_.target[a] += ease * (fitCam_.target[a] - cam_.target[a]);
       cam_.distance += ease * (fitCam_.distance - cam_.distance);
     }
-    rs.colourScale = volMagScale_ / std::pow(10.0, volBrightness_);
+    rs.colourScale = showField3d_ ? volMagScale_ / std::pow(10.0, volBrightness_) : 1e30; // off: empty volume
     // Render size: a fraction of the screen rectangle that adapts to the measured cost (target ~20 ms), so
     // the view stays above 24 fps even on a Retina screen. Still images (headless) render at full size.
     const double res = adaptive_ ? volRes_ : 1.0;

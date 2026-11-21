@@ -77,9 +77,25 @@ Snapshot parseSnapshot(std::string_view textIn) {
       s.vias.push_back({require(v, "x").get<double>(), require(v, "y").get<double>(),
                         require(v, "diameter").get<double>(), v.value("drill", 0.0), text(v, "net"),
                         text(v, "owner")});
-    for (const Json& c : require(j, "components"))
-      s.components.push_back({require(c, "ref").get<std::string>(), text(c, "value"), text(c, "layer"),
-                              c.value("x", 0.0), c.value("y", 0.0)});
+    for (const Json& c : require(j, "components")) {
+      Component comp{require(c, "ref").get<std::string>(), text(c, "value"), text(c, "layer"),
+                     c.value("x", 0.0), c.value("y", 0.0)};
+      if (c.contains("body")) {
+        comp.body = ring(require(c.at("body"), "polygon"), "component body");
+        comp.bodyHeight = c.at("body").value("height", 0.0); // 0: the run's default height applies
+        if (comp.bodyHeight < 0)
+          throw SnapshotError("component '" + comp.ref + "': body height must not be negative");
+      }
+      if (c.contains("pads"))
+        for (const Json& p : c.at("pads"))
+          comp.pads.push_back({text(p, "number"), text(p, "net"), require(p, "x").get<double>(),
+                               require(p, "y").get<double>()});
+      if (c.contains("attributes")) {
+        comp.dnp = c.at("attributes").value("dnp", false);
+        comp.mounting = text(c.at("attributes"), "mounting");
+      }
+      s.components.push_back(std::move(comp));
+    }
     if (j.contains("ports"))
       for (const Json& p : j.at("ports")) {
         PortDef port;

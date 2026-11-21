@@ -11,7 +11,7 @@ The one file the KiCAD plugin writes and the native app (`emfdtd`) reads. JSON, 
 | `stackup` | top to bottom: `{name, kind: "copper"}` or `{name, kind: "dielectric", thickness, epsilon_r, loss_tangent, material}`. Copper is a zero-thickness PEC sheet on the dielectric interface; solder mask, silkscreen and paste are not modelled |
 | `copper` | filled polygons: `{layer, owner, net, polygon, holes?}`. `owner` is the footprint reference for pads, `""` for tracks, zones and other board-level copper |
 | `vias` | `{x, y, diameter, drill, net, owner}`; modelled as PEC columns between the outermost copper layers |
-| `components` | `{ref, value, layer, x, y}`: what the user can select |
+| `components` | `{ref, value, layer, x, y, body?}`: what the user can select. `body` is `{polygon, height?}`: the footprint outline on the board plane (v1 writes its bounding rectangle) and optionally its height in metres. Without a height the run's "Component body height" setting applies. Bodies are used only if the "Component bodies" setting is not `ignore`. Also optional: `pads` = `[{number, net, x, y}]` (board position; a part is two-terminal when it has exactly 2 pads on 2 different nets) and `attributes` = `{dnp, mounting}` (`dnp` is KiCAD's do-not-populate flag, KiCAD 8 or later: not fitted, so open between the pads; `mounting` is `smd` or `through_hole`) |
 | `ports` | optional. In-plane: `{name, layer, a, b, width, impedance}` across a gap from `a` (positive) to `b`. Vertical: `{name, layer, layer_b, a, width, impedance}` from `layer` (positive) to `layer_b` |
 | `notes` | what the exporter simplified, copied into the run summary |
 
