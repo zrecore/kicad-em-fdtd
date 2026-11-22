@@ -11,7 +11,7 @@ namespace board {
 
 using Json = nlohmann::json;
 
-std::vector<AntennaRule> parseAntennaRules(std::string_view text) {
+std::vector<AntennaRule> parseAntennaRules(std::string_view text, bool fromProject) {
   std::vector<AntennaRule> out;
   try {
     const Json j = Json::parse(text);
@@ -20,6 +20,8 @@ std::vector<AntennaRule> parseAntennaRules(std::string_view text) {
       a.id = r.at("id");
       a.source = r.value("source", "");
       a.status = r.value("status", "unverified");
+      a.placement = r.value("placement", "");
+      a.fromProject = fromProject;
       a.parts = r.value("parts", std::vector<std::string>{});
       a.keepoutAlongMm = r.value("keepout_along_mm", 0.0);
       a.keepoutDepthMm = r.value("keepout_depth_mm", 0.0);
@@ -31,6 +33,19 @@ std::vector<AntennaRule> parseAntennaRules(std::string_view text) {
     }
   } catch (const std::exception& e) {
     throw SnapshotError(std::string("antenna rules: ") + e.what());
+  }
+  return out;
+}
+
+std::vector<AntennaRule> mergeRules(const std::vector<AntennaRule>& shipped,
+                                    const std::vector<AntennaRule>& project) {
+  std::vector<AntennaRule> out = project;
+  for (const AntennaRule& r : shipped) {
+    bool redefined = false;
+    for (const AntennaRule& p : project)
+      redefined = redefined || p.id == r.id;
+    if (!redefined)
+      out.push_back(r);
   }
   return out;
 }
@@ -118,8 +133,10 @@ struct Frame {
 } // namespace
 
 AntennaReport checkAntenna(const Snapshot& s, const Component& part, double alongMm, double depthMm,
-                           const std::set<std::string>& groundNets, double testLengthMm, double testWidthMm) {
+                           const std::set<std::string>& groundNets, double testLengthMm, double testWidthMm,
+                           Placement placement) {
   AntennaReport r;
+  r.corner = placement == Placement::Corner;
   r.ref = part.ref;
   r.alongMm = alongMm;
   r.depthMm = depthMm;
@@ -145,6 +162,7 @@ AntennaReport checkAntenna(const Snapshot& s, const Component& part, double alon
   // the nearest outline segment
   double best = 1e300;
   Frame f{};
+  P bestA{}, bestB{};
   const Ring& o = s.outline;
   for (std::size_t i = 0, n = o.size(); i < n; ++i) {
     const P a = o[i], b = o[(i + 1) % n];
@@ -155,6 +173,8 @@ AntennaReport checkAntenna(const Snapshot& s, const Component& part, double alon
     const double px = a.x + t * dx, py = a.y + t * dy, d = std::hypot(cx - px, cy - py);
     if (d < best) {
       best = d;
+      bestA = a;
+      bestB = b;
       const double ux = dx / len, uy = dy / len;
       // the foot of the part's centre on the segment's line (the edge may end before it: keep the line)
       const double tl = ((cx - a.x) * dx + (cy - a.y) * dy) / len;
@@ -169,7 +189,22 @@ AntennaReport checkAntenna(const Snapshot& s, const Component& part, double alon
   }
   r.edgeDistanceMm = best * 1e3;
   const double mm = 1e-3;
-  const double u0 = -alongMm * mm / 2, u1 = alongMm * mm / 2, v0 = 0, v1 = depthMm * mm;
+  double u0 = -alongMm * mm / 2, u1 = alongMm * mm / 2;
+  const double v0 = 0, v1 = depthMm * mm;
+  if (placement == Placement::Corner) { // anchor at the end of the nearest edge that is nearer the part
+    const bool aNearer = std::hypot(cx - bestA.x, cy - bestA.y) <= std::hypot(cx - bestB.x, cy - bestB.y);
+    const P corner = aNearer ? bestA : bestB, other = aNearer ? bestB : bestA;
+    const double len = std::hypot(other.x - corner.x, other.y - corner.y);
+    const double ux = (other.x - corner.x) / len, uy = (other.y - corner.y) / len;
+    f = {corner.x, corner.y, ux, uy, -uy, ux};
+    const P mid{(corner.x + other.x) / 2, (corner.y + other.y) / 2};
+    if (!insideRing(o, {mid.x + f.vx * 1e-4, mid.y + f.vy * 1e-4})) {
+      f.vx = -f.vx;
+      f.vy = -f.vy;
+    }
+    u0 = 0;
+    u1 = alongMm * mm;
+  }
 
   auto toFrame = [&](const Ring& r) {
     Ring o;

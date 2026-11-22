@@ -16,6 +16,7 @@ struct StoredSelection {
   std::map<std::string, board::PartTreatment> parts;
   std::map<std::string, board::BodyTreatment> bodies;
   board::BodyTreatment defaultBody;
+  std::string antennaRef; // the footprint the Antenna tab checks (empty: the first one a rule recognises)
 };
 
 void saveSelection(const std::filesystem::path& file, const StoredSelection& s);

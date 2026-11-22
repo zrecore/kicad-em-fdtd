@@ -32,3 +32,30 @@ SCENARIO("With no GPU context the volume view uses the CPU renderer and draws th
     }
   }
 }
+
+SCENARIO("A colour-map volume view animates with the phase, and its peak-magnitude view does not") {
+  GIVEN("a small field as phasors, a colour table, and the CPU renderer") {
+    viz::DisplayVolume dv;
+    dv.dims = {16, 12, 10};
+    dv.extent = {0.016, 0.012, 0.010};
+    std::vector<float> re(dv.voxels(), 0.f), im(dv.voxels(), 0.f);
+    for (std::size_t i = 6; i < 10; ++i) {
+      re[dv.index(i, 6, 5)] = 1.f;
+      im[dv.index(i, 6, 5)] = 0.3f;
+    }
+    auto r = viz::makeVolumeRenderer(nullptr, dv, nullptr);
+    r->setPhasors(re, im);
+    viz::RenderSpec rs;
+    rs.width = 64;
+    rs.height = 48;
+    rs.colourScale = 1.0;
+    rs.lut = {{10, 0, 60}, {120, 40, 140}, {250, 230, 40}};
+    viz::Camera cam;
+    WHEN("it is drawn at two phases") {
+      THEN("the instantaneous colour-map view differs between them, and the peak-magnitude view does not") {
+        REQUIRE(r->render(cam, rs, 0.0, false) != r->render(cam, rs, 1.0, false));
+        REQUIRE(r->render(cam, rs, 0.0, true) == r->render(cam, rs, 1.0, true));
+      }
+    }
+  }
+}

@@ -17,7 +17,7 @@ build/release/apps/emfdtd/emfdtd --list-settings        # every setting, with he
 
 PCB properties are editable in Settings, PCB: use the board's own stackup or start from a fab profile (OSH Park 2, 4, 6 layers; PCBWay 2, 4 layers) and change any layer's thickness, permittivity or loss tangent. Values a fab does not publish are marked as assumed.
 
-Results go to `<KiCAD project>/em-fdtd/results/`, with the field data, so a past run can be reopened without solving ("Open run..." in the window, or `--open-run DIR`; `--prune-runs N` frees disk space). The plugin only reads the board. A board drawn inside a panel is modelled without its frame unless the setting "Board outline" is set to whole.
+Results go to `<KiCAD project>/em-fdtd/results/`, with the field data, so a past run can be reopened without solving ("Open run..." in the window, or `--open-run DIR`; `--prune-runs N` frees disk space). The window's Antenna tab checks a chip antenna's keepout, ground and stackup against rules in `data/antenna_rules.json` (how to configure it: `docs/ux.md`, "Antenna tab"). The plugin only reads the board. A board drawn inside a panel is modelled without its frame unless the setting "Board outline" is set to whole.
 
 ## Versions and releases
 

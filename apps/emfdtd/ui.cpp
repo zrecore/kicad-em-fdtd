@@ -1280,6 +1280,8 @@ void Ui::loadSelectionOnce() {
     if (env_.selection.bodies.empty())
       env_.selection.bodies = st.bodies;
     extraGroundNets_ = st.extraGroundNets;
+    if (antennaRef_.empty())
+      antennaRef_ = st.antennaRef;
     pickedNets_ = env_.selection.netFilter ? env_.selection.pickedNets : st.pickedNets;
     if (!pickedNets_.empty() && !env_.selection.netFilter)
       applyNets();
@@ -1295,6 +1297,7 @@ void Ui::saveSelection() {
   st.parts = env_.selection.parts;
   st.bodies = env_.selection.bodies;
   st.defaultBody = env_.selection.defaultBody;
+  st.antennaRef = antennaRef_;
   try {
     app::saveSelection(env_.paths.selectionFile, st);
   } catch (const std::exception& e) {
@@ -2377,15 +2380,29 @@ void Ui::drawProbePanel() {
 void Ui::drawAntennaTab(float, float) {
   if (!antennaRulesLoaded_) {
     antennaRulesLoaded_ = true;
-    try {
-      std::ifstream in(core::resourceDir("data", FDTD_DATA_DIR) + "/antenna_rules.json");
+    auto slurp = [](const fs::path& f) {
+      std::ifstream in(f);
       std::stringstream ss;
       ss << in.rdbuf();
-      antennaRules_ = board::parseAntennaRules(ss.str());
+      return ss.str();
+    };
+    try {
+      antennaRules_ =
+          board::parseAntennaRules(slurp(core::resourceDir("data", FDTD_DATA_DIR) + "/antenna_rules.json"));
     } catch (const std::exception& e) {
       antennaRulesError_ = e.what();
     }
+    if (fs::exists(env_.paths.antennaRulesFile)) { // the project's own rules win over the shipped ones
+      try {
+        antennaRules_ = board::mergeRules(antennaRules_,
+                                          board::parseAntennaRules(slurp(env_.paths.antennaRulesFile), true));
+      } catch (const std::exception& e) {
+        antennaRulesError_ += (antennaRulesError_.empty() ? "" : " ") + std::string(e.what()) + " (" +
+                              env_.paths.antennaRulesFile.string() + " was not used)";
+      }
+    }
   }
+  loadSelectionOnce(); // brings back the antenna part chosen last time
   wrapped("Checks of the antenna's surroundings against its published integration rules. They read the board "
           "as drawn and need no run. They say where the board departs from the vendor's layout, not how the "
           "antenna will perform.");
@@ -2396,7 +2413,10 @@ void Ui::drawAntennaTab(float, float) {
     wrapped("The export holds no footprints, so there is no antenna part to check.");
     return;
   }
-  // the antenna part: the user's pick, else the first part a rule recognises
+  // the antenna part: the user's pick (kept in the sidecar), else the first part a rule recognises
+  if (!antennaRef_.empty() && std::none_of(comps.begin(), comps.end(),
+                                           [&](const board::Component& c) { return c.ref == antennaRef_; }))
+    antennaRef_.clear(); // the saved part is not on this board
   if (antennaRef_.empty())
     for (const auto& c : comps)
       if (board::ruleFor(antennaRules_, c)) {
@@ -2410,6 +2430,7 @@ void Ui::drawAntennaTab(float, float) {
       current = label(c);
   ImGui::TextUnformatted("Antenna part");
   ImGui::SetNextItemWidth(fitW(px(330)));
+  std::string beforePick = antennaRef_;
   const bool open = ImGui::BeginCombo("##antpart", current.c_str());
   note(viz::access::Role::ComboBox, "Antenna part", current,
        "The footprint the checks are made around. Parts whose value matches a known antenna are picked "
@@ -2420,6 +2441,8 @@ void Ui::drawAntennaTab(float, float) {
         antennaRef_ = c.ref;
     ImGui::EndCombo();
   }
+  if (antennaRef_ != beforePick)
+    saveSelection(); // the pick is kept in the project's sidecar file
   const board::Component* part = nullptr;
   for (const auto& c : comps)
     if (c.ref == antennaRef_)
@@ -2431,7 +2454,8 @@ void Ui::drawAntennaTab(float, float) {
   antennaRule_ = board::ruleFor(antennaRules_, *part);
   if (antennaRule_) {
     coloured(ImColor(antennaRule_->status == "verified" ? pal.good : pal.warn),
-             "Rule: " + antennaRule_->id + " (" + antennaRule_->status + ")");
+             "Rule: " + antennaRule_->id + " (" + antennaRule_->status +
+                 (antennaRule_->fromProject ? ", from this project's rules" : "") + ")");
     ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
     wrapped(antennaRule_->source);
     ImGui::PopStyleColor();
@@ -2445,16 +2469,25 @@ void Ui::drawAntennaTab(float, float) {
     along = antennaRule_->keepoutAlongMm;
   if (depth <= 0 && antennaRule_)
     depth = antennaRule_->keepoutDepthMm;
-  const double testL = antennaRule_ ? antennaRule_->testBoardLengthMm : 0,
-               testW = antennaRule_ ? antennaRule_->testBoardWidthMm : 0;
-  const std::string key = strf("%s|%g|%g|%s|%zu", antennaRef_.c_str(), along, depth,
-                               env_.settings.text("board_outline").c_str(), snapshot_.copper.size());
+  double testL = env_.settings.number("antenna_testboard_length_mm"),
+         testW = env_.settings.number("antenna_testboard_width_mm");
+  if (testL <= 0 && antennaRule_)
+    testL = antennaRule_->testBoardLengthMm;
+  if (testW <= 0 && antennaRule_)
+    testW = antennaRule_->testBoardWidthMm;
+  const std::string placeSetting = env_.settings.text("antenna_keepout_placement");
+  const bool corner = placeSetting == "corner" ||
+                      (placeSetting == "rule" && antennaRule_ && antennaRule_->placement == "corner");
+  const std::string key =
+      strf("%s|%g|%g|%g|%g|%d|%s|%zu", antennaRef_.c_str(), along, depth, testL, testW, corner ? 1 : 0,
+           env_.settings.text("board_outline").c_str(), snapshot_.copper.size());
   if (key != antennaKey_) {
     antennaKey_ = key;
     board::Snapshot s = snapshot_;
     if (env_.settings.text("board_outline") != "whole")
       board::restrictToBoardProper(s);
-    antennaReport_ = board::checkAntenna(s, *part, along, depth, board::guessGroundNets(s), testL, testW);
+    antennaReport_ = board::checkAntenna(s, *part, along, depth, board::guessGroundNets(s), testL, testW,
+                                         corner ? board::Placement::Corner : board::Placement::Edge);
   }
   const board::AntennaReport& r = antennaReport_;
   ImGui::Separator();
@@ -2484,10 +2517,13 @@ void Ui::drawAntennaTab(float, float) {
                r.totalThicknessMm, r.toNextPlaneMm));
   ImGui::Spacing();
   ImGui::Separator();
-  ImGui::TextColored(ImColor(pal.accent), "Keepout size");
-  noteText("Keepout size");
+  ImGui::TextColored(ImColor(pal.accent), "Keepout and test board");
+  noteText("Keepout and test board");
   drawSetting("antenna_keepout_along_mm");
   drawSetting("antenna_keepout_depth_mm");
+  drawSetting("antenna_keepout_placement");
+  drawSetting("antenna_testboard_length_mm");
+  drawSetting("antenna_testboard_width_mm");
   ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
   wrapped("Not checked yet: the feed line's impedance for this stackup, the matching network, nearby metal, "
           "and the simulated antenna. A chip antenna's resonance depends on the ground it sits on, so the "
@@ -3737,10 +3773,14 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     const double res = adaptive_ ? volRes_ : 1.0;
     rs.width = std::max<std::uint32_t>(16, static_cast<std::uint32_t>(ow * res));
     rs.height = std::max<std::uint32_t>(16, static_cast<std::uint32_t>(oh * res));
+    // A colour-map view animates like the signed one (the colour follows the instantaneous field's size, so
+    // it pulses at twice the frequency); paused, or in a still image, it shows the field's peak magnitude
+    // |X|.
+    const bool staticMag = !rs.lut.empty() && (paused_ || headless_);
     // Reuse the last image if nothing that affects it changed (paused, camera still).
     const std::array<double, 20> key{
         static_cast<double>(freq_),
-        rs.lut.empty() ? phase_ : 0.0, // a magnitude view does not animate: one image per setting
+        staticMag ? 0.0 : phase_,
         cam_.azimuth,
         cam_.elevation,
         cam_.distance,
@@ -3790,11 +3830,11 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
             renderFreq_ = freq_;
           }
         }
-        volImg_ = volRenderer_->render(cam_, rs, phase_, !rs.lut.empty());
+        volImg_ = volRenderer_->render(cam_, rs, phase_, staticMag);
       } else {
         {
           std::lock_guard<std::mutex> lock(mu_);
-          if (rs.lut.empty())
+          if (!staticMag)
             viz::reconstruct(*volPhasors_, freq_, phase_, volField_);
           else
             volField_ = volMag_; // the magnitude of the phasor: no sign, no phase

@@ -35,6 +35,7 @@ ProjectPaths::ProjectPaths(const fs::path& projectDir) {
   settingsFile = root / "settings.json";
   selectionFile = root / "selection.json";
   resultsRoot = root / "results";
+  antennaRulesFile = root / "antenna_rules.json";
 }
 
 fs::path ProjectPaths::newRunDir(const std::string& stamp) const {

@@ -142,5 +142,45 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 - Setting "Board outline" (PCB group, Essential): proper (default) or whole. For a board drawn inside a panel, proper models only the board found between the slots and breakaway tabs; the frame, its copper and its parts are left out. The run notes say which was used. It lives in the window's settings, not in the plugin.
 
 ## Antenna tab (decided by the user 2026-11-21: a separate "Antenna" section)
-- A tab next to Preview, available before any run (the checks read the board as drawn). Top to bottom: what it is, the antenna part (picked automatically when a footprint's value matches a stored rule, else chosen from a list), the rule and its source with a verified or unverified mark, the findings (copper and vias in the keepout per layer, in the warning colour; a good-news line when there are none), the ground per layer, the stackup under the part, then the keepout size settings and a note on what is not checked yet.
-- It says where the board departs from the vendor's layout, never how the antenna will perform.
+A tab next to Preview, available before any run: the checks read the board as drawn. It says where the board departs from the vendor's layout, never how the antenna will perform.
+
+### What it shows, top to bottom
+1. The antenna part, the rule and its source (marked verified or unverified).
+2. Findings, in the warning colour: copper of other parts or nets inside the keepout, per copper layer, with the area; vias inside the keepout; the ground against the vendor's test board when it is much smaller. A good-news line when nothing is found.
+3. Ground by layer (area, reach from the board edge, width), and the stackup under the part (total dielectric thickness, and the dielectric between the part's layer and the next copper layer).
+4. The keepout size settings, and a note on what is not checked yet (the feed line's impedance, the matching network, nearby metal, metal outside the board such as a case or a host, and the simulated antenna).
+
+### How the antenna part is chosen
+- **Automatically:** the first footprint whose value or reference contains (ignoring case) a part number listed in a rule's `parts`. The project's own rules are checked before the shipped ones.
+- **By you:** the "Antenna part" list in the tab holds every footprint of the export. Your pick is saved in the project's `em-fdtd/selection.json` and comes back next time (if that footprint is no longer on the board, the automatic choice is used).
+
+### How to configure it
+- **Settings, group Antenna (also in the tab, under "Keepout and test board"):**
+  - "Antenna keepout, width" (along the board edge) and "Antenna keepout, depth" (into the board), mm, from the part's datasheet. 0 uses the rule's value.
+  - "Antenna keepout placement": `rule` (default: as the rule says, else edge), `edge` or `corner` (see below).
+  - "Vendor test board, length" and "width", mm: the datasheet's evaluation board, for the ground-size comparison. 0 uses the rule's value.
+  These are saved with the other settings for the board.
+- **Add your own parts, per project:** create `em-fdtd/antenna_rules.json` next to the board (the same folder as `settings.json`), with the same layout as the shipped `data/antenna_rules.json`. Its rules are read alongside the shipped ones: a project rule wins when a part number matches both, and a project rule with the same `id` as a shipped one replaces it. The tab marks rules read from the project. A file that cannot be read is reported in the tab and ignored.
+- **Change the shipped rules:** edit `data/antenna_rules.json` (in an installed package: `share/emfdtd/data/antenna_rules.json`), for rules you want everywhere. Each entry in `rules`:
+
+  | field | meaning |
+  |---|---|
+  | `id` | name shown in the tab (required) |
+  | `parts` | list of part numbers matched in a footprint's value or reference; empty for a generic entry that no footprint matches |
+  | `keepout_along_mm`, `keepout_depth_mm` | the copper-free keepout from the datasheet; omit when unknown (then the two settings above are needed) |
+  | `placement` | `"edge"` (default) or `"corner"`, for parts the datasheet says to mount in a corner |
+  | `test_board_mm` | `[length, width]` of the vendor's test board; enables the ground-size comparison |
+  | `layers` | the layers the rule applies to (text, informational) |
+  | `source` | where the values were read: datasheet name, revision and date, or the vendor note. Never enter a value from memory |
+  | `status` | `"verified"` (read from the datasheet) or `"unverified"` |
+
+  Part variants often differ in their clearances (a letter after the part number): give each variant its own entry.
+- **Where the keepout box sits:**
+  - `edge`: centred on the part's pads, starting at the nearest edge of the board outline and reaching inward by the depth. This is how most chip-antenna datasheets draw it.
+  - `corner`: starting at the outline's corner nearest the part, `width` mm along the nearer edge towards the part and `depth` mm inward. On a rounded corner the "corner" is the nearest point of the outline's polygon, so check the result against the datasheet drawing.
+  The tab states which placement it used.
+- **Panel boards:** the checks use the board proper when the export found a panel (setting "Board outline"), so the frame's edge is not mistaken for the board's.
+- **Ground nets** are guessed (nets named GND, VSS and similar, or one net covering a quarter of the board's rectangle). They cannot be overridden in the tab yet.
+
+### Limits to keep in mind
+Metal outside the PCB (a case, a connector shell, the host the board plugs into) is not in the board file, so it is not in these numbers, and it can matter more than anything on the board. The tab's ground figures describe the PCB only.

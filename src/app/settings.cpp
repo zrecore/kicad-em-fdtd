@@ -357,13 +357,16 @@ void Settings::build() {
   num("volume_resolution", "3D volume resolution",
       "Voxels along the longest side of the volume view. Higher is sharper and uses more memory.", "View",
       "voxels", Tier::Advanced, 16, 160, {"3d", "volume", "detail", "voxel"});
-  choice("volume_colour_map", "3D volume colours",
-         "How the 3D view colours the field. signed: two colours by sign, animated through the phase of the "
-         "wave (default). The others show the field's magnitude at the chosen frequency with a sequential "
-         "colour map (dark to light, no sign, not animated): useful for finding hot spots and the pattern of "
-         "an antenna. viridis, magma, inferno and plasma are CC0 maps by Smith, van der Walt and Firing; "
-         "viridis was designed to stay readable with common colour-vision deficiencies.",
-         "View", Tier::Common, {"colour map", "viridis", "magma", "inferno", "plasma", "magnitude", "heat"});
+  choice(
+      "volume_colour_map", "3D volume colours",
+      "How the 3D view colours the field. signed: two colours by sign, animated through the phase of the "
+      "wave (default). The others colour the size of the field with a sequential colour map (dark to "
+      "light, no sign); they animate too (the colour pulses at twice the wave's frequency), and when paused "
+      "they show the peak magnitude at the chosen frequency, which is the one to use for finding hot spots "
+      "and the pattern of an antenna. viridis, magma, inferno and plasma are CC0 maps by Smith, van der Walt "
+      "and Firing; "
+      "viridis was designed to stay readable with common colour-vision deficiencies.",
+      "View", Tier::Common, {"colour map", "viridis", "magma", "inferno", "plasma", "magnitude", "heat"});
   choice(
       "board_outline", "Board outline",
       "proper (default): when the board is drawn inside a panel, only the board itself is modelled and the "
@@ -437,6 +440,20 @@ void Settings::build() {
       "How far the keepout reaches into the board from its edge, from the part's datasheet. 0 uses the "
       "antenna rule's value. Used by the Antenna tab.",
       "Antenna", "mm", Tier::Essential, 0, 100, {"antenna", "keepout", "clearance", "keep out"});
+  choice(
+      "antenna_keepout_placement", "Antenna keepout placement",
+      "Where the keepout box sits. rule (default): as the antenna rule says, else edge. edge: centred on "
+      "the part, starting at the nearest board edge and reaching inward. corner: starting at the corner of "
+      "the outline nearest the part, along the nearer edge towards the part and inward; for parts the "
+      "datasheet says to mount in a corner. Used by the Antenna tab.",
+      "Antenna", Tier::Essential, {"antenna", "keepout", "corner", "edge", "placement", "mounting"});
+  num("antenna_testboard_length_mm", "Vendor test board, length",
+      "Length of the vendor's evaluation board, from the datasheet. The Antenna tab compares the board's "
+      "ground with it. 0 uses the antenna rule's value, if any.",
+      "Antenna", "mm", Tier::Advanced, 0, 1000, {"antenna", "test board", "evaluation board", "ground"});
+  num("antenna_testboard_width_mm", "Vendor test board, width",
+      "Width of the vendor's evaluation board, from the datasheet. 0 uses the antenna rule's value, if any.",
+      "Antenna", "mm", Tier::Advanced, 0, 1000, {"antenna", "test board", "evaluation board", "ground"});
   choice("backend", "Compute backend", "auto uses the GPU when one is available.", "Run", Tier::Advanced,
          {"gpu", "cpu", "vulkan", "device"});
 }
@@ -515,8 +532,11 @@ Value Settings::defaultValue(const std::string& key) const {
     return std::string("proper");
   if (key == "save_fields")
     return std::string("on");
-  if (key == "antenna_keepout_along_mm" || key == "antenna_keepout_depth_mm")
+  if (key == "antenna_keepout_along_mm" || key == "antenna_keepout_depth_mm" ||
+      key == "antenna_testboard_length_mm" || key == "antenna_testboard_width_mm")
     return 0.0; // 0: the matching antenna rule's value
+  if (key == "antenna_keepout_placement")
+    return std::string("rule");
   if (const std::string pid = pcbProfileId(); pid != "board") {
     const FabProfile& f = catalog_.fabProfile(pid);
     if (key == "copper_outer_um")
@@ -602,6 +622,8 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
     return {"proper", "whole"};
   if (key == "save_fields")
     return {"on", "off"};
+  if (key == "antenna_keepout_placement")
+    return {"rule", "edge", "corner"};
   if (key == "pcb_profile") {
     std::vector<std::string> ids{"board"};
     for (const FabProfile& f : catalog_.fabProfiles())

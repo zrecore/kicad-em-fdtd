@@ -1,5 +1,5 @@
 {
-  "about": "Integration rules for chip antennas, read from datasheets and vendor notes. The Antenna tab compares a board with them. Values are the vendor's: they hold for the vendor's own test board and layout, not for every board.",
+  "about": "Integration rules for chip antennas, read from datasheets and vendor notes. The Antenna tab compares a board with them. Values are the vendor's: they hold for the vendor's own test board and layout, not for every board. To add a part for one project, put an entry in em-fdtd/antenna_rules.json next to the board (it wins over this file); to add it for everyone, copy an entry here. Fields are described in docs/ux.md, Antenna tab. Give each part variant its own entry and cite where every value was read.",
   "rules": [
     {
       "id": "w3008-v2.7",

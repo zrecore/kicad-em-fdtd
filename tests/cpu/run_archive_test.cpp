@@ -8,6 +8,7 @@
 
 #include "app/run_archive.hpp"
 #include "app/run_store.hpp"
+#include "app/selection_store.hpp"
 #include "fdtd/sparam.hpp"
 
 namespace fs = std::filesystem;
@@ -145,6 +146,20 @@ SCENARIO("A project's saved runs are listed, reopened and pruned") {
         REQUIRE(runs[0].fields);
         REQUIRE(!runs[1].fields);
       }
+    }
+  }
+}
+
+SCENARIO("The antenna part the user picked is kept in the project's selection file") {
+  GIVEN("a selection with an antenna part") {
+    const fs::path file = scratch("selection_antenna.json");
+    fs::remove(file);
+    app::StoredSelection st;
+    st.antennaRef = "ANT7";
+    app::saveSelection(file, st);
+    THEN("it is read back, and a file without one gives an empty pick") {
+      REQUIRE(app::loadSelection(file).antennaRef == "ANT7");
+      REQUIRE(app::loadSelection(scratch("does_not_exist.json")).antennaRef.empty());
     }
   }
 }

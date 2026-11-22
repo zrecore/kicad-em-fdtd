@@ -40,6 +40,7 @@ void saveSelection(const std::filesystem::path& file, const StoredSelection& s) 
   Json j;
   j["format"] = "kicad-em-fdtd.selection";
   j["version"] = 1;
+  j["antenna_ref"] = s.antennaRef;
   j["picked_nets"] = Json::array();
   for (const auto& n : s.pickedNets)
     j["picked_nets"].push_back(n);
@@ -87,6 +88,7 @@ StoredSelection loadSelection(const std::filesystem::path& file) {
     in >> j;
     if (j.value("format", "") != "kicad-em-fdtd.selection")
       throw SettingsError("not a selection file: " + file.string());
+    s.antennaRef = j.value("antenna_ref", "");
     for (const auto& n : j.value("picked_nets", Json::array()))
       s.pickedNets.insert(n.get<std::string>());
     for (const auto& n : j.value("extra_ground_nets", Json::array()))

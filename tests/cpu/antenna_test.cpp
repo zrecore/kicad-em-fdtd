@@ -125,3 +125,65 @@ SCENARIO("The antenna rule is found by part number in the shipped data") {
     }
   }
 }
+
+SCENARIO("A corner-mounted keepout starts at the nearest corner, not at the part's centre") {
+  GIVEN(
+      "the 40 x 30 mm board with the part 6 mm from the bottom-left corner, and copper at 2 mm and at 8 mm") {
+    board::Snapshot s = fixture();
+    s.components[0].pads = {{"1", "RF", 0.0058, 0.001}, {"2", "GND", 0.0062, 0.001}};
+    s.copper.clear();
+    s.copper.push_back(
+        {"In1.Cu", "", "GND", rect(0.0015, 0.0005, 0.0025, 0.0015), {}}); // 1 mm2 at x 1.5 to 2.5
+    s.copper.push_back(
+        {"In2.Cu", "", "GND", rect(0.0075, 0.0005, 0.0085, 0.0015), {}}); // 1 mm2 at x 7.5 to 8.5
+    WHEN("the 4.00 x 4.25 mm keepout is anchored at the corner") {
+      const auto r =
+          board::checkAntenna(s, s.components[0], 4.0, 4.25, {"GND"}, 0, 0, board::Placement::Corner);
+      THEN("only the copper within 4 mm of the corner is reported") {
+        REQUIRE(r.ok);
+        REQUIRE(r.corner);
+        REQUIRE(r.keepout.size() == 1);
+        REQUIRE(r.keepout[0].layer == "In1.Cu");
+        REQUIRE(r.keepout[0].areaMm2 == Approx(1.0).epsilon(2e-3));
+      }
+    }
+    AND_WHEN("it is centred on the part instead") {
+      const auto r = board::checkAntenna(s, s.components[0], 4.0, 4.25, {"GND"});
+      THEN("the box spans x 4 to 8 mm, so the other copper is the one reported (the first sits outside it)") {
+        REQUIRE(r.keepout.size() == 1);
+        REQUIRE(r.keepout[0].layer == "In2.Cu");
+      }
+    }
+  }
+}
+
+SCENARIO("A project's own antenna rules win over the shipped ones") {
+  GIVEN("a shipped rule for one part and a project rule for the same part number and another part") {
+    const auto shipped = board::parseAntennaRules(
+        R"({"rules":[{"id":"shipped-a","parts":["AAA1"],"keepout_along_mm":4,"keepout_depth_mm":4},
+                     {"id":"shipped-b","parts":["BBB2"],"keepout_along_mm":5,"keepout_depth_mm":5}]})");
+    const auto project = board::parseAntennaRules(
+        R"({"rules":[{"id":"mine","parts":["AAA1"],"keepout_along_mm":7,"keepout_depth_mm":6,"placement":"corner"},
+                     {"id":"shipped-b","parts":["BBB2"],"keepout_along_mm":9,"keepout_depth_mm":9}]})",
+        true);
+    const auto merged = board::mergeRules(shipped, project);
+    THEN("the project's rule is used for the shared part number, and a redefined id replaces the shipped "
+         "one") {
+      board::Component c;
+      c.value = "aaa1";
+      const board::AntennaRule* r = board::ruleFor(merged, c);
+      REQUIRE(r);
+      REQUIRE(r->id == "mine");
+      REQUIRE(r->fromProject);
+      REQUIRE(r->placement == "corner");
+      REQUIRE(merged.size() == 3); // mine, the redefined shipped-b, and the untouched shipped-a
+      c.value = "BBB2";
+      REQUIRE(board::ruleFor(merged, c)->keepoutAlongMm == Approx(9.0));
+    }
+  }
+  GIVEN("a rules file that is not valid JSON") {
+    THEN("it is refused with a message naming the problem") {
+      REQUIRE_THROWS_AS(board::parseAntennaRules("{ not json", true), board::SnapshotError);
+    }
+  }
+}
