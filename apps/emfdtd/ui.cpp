@@ -15,6 +15,7 @@
 #include "app/results.hpp"
 #include "app/selection_store.hpp"
 #include "board/netwalk.hpp"
+#include "core/resources.hpp"
 #include "fdtd/impedance.hpp"
 #include "fdtd/sparam.hpp"
 #include "imgui.h"
@@ -2371,6 +2372,130 @@ void Ui::drawProbePanel() {
     ImGui::TextColored(ImColor(pal.bad), "%s", probeStatus_.c_str());
 }
 
+// Static checks of the antenna's surroundings against its published rules (docs/PLAN.md, "Reference-guided
+// antenna tuning", Tier 1). No solve: it answers from the board as drawn.
+void Ui::drawAntennaTab(float, float) {
+  if (!antennaRulesLoaded_) {
+    antennaRulesLoaded_ = true;
+    try {
+      std::ifstream in(core::resourceDir("data", FDTD_DATA_DIR) + "/antenna_rules.json");
+      std::stringstream ss;
+      ss << in.rdbuf();
+      antennaRules_ = board::parseAntennaRules(ss.str());
+    } catch (const std::exception& e) {
+      antennaRulesError_ = e.what();
+    }
+  }
+  wrapped("Checks of the antenna's surroundings against its published integration rules. They read the board "
+          "as drawn and need no run. They say where the board departs from the vendor's layout, not how the "
+          "antenna will perform.");
+  if (!antennaRulesError_.empty())
+    coloured(ImColor(pal.bad), "The antenna rules could not be read: " + antennaRulesError_);
+  const auto& comps = snapshot_.components;
+  if (comps.empty()) {
+    wrapped("The export holds no footprints, so there is no antenna part to check.");
+    return;
+  }
+  // the antenna part: the user's pick, else the first part a rule recognises
+  if (antennaRef_.empty())
+    for (const auto& c : comps)
+      if (board::ruleFor(antennaRules_, c)) {
+        antennaRef_ = c.ref;
+        break;
+      }
+  auto label = [&](const board::Component& c) { return c.ref + "  " + c.value; };
+  std::string current = "choose the antenna part";
+  for (const auto& c : comps)
+    if (c.ref == antennaRef_)
+      current = label(c);
+  ImGui::TextUnformatted("Antenna part");
+  ImGui::SetNextItemWidth(fitW(px(330)));
+  const bool open = ImGui::BeginCombo("##antpart", current.c_str());
+  note(viz::access::Role::ComboBox, "Antenna part", current,
+       "The footprint the checks are made around. Parts whose value matches a known antenna are picked "
+       "automatically.");
+  if (open) {
+    for (const auto& c : comps)
+      if (selectable(label(c), c.ref == antennaRef_))
+        antennaRef_ = c.ref;
+    ImGui::EndCombo();
+  }
+  const board::Component* part = nullptr;
+  for (const auto& c : comps)
+    if (c.ref == antennaRef_)
+      part = &c;
+  if (!part) {
+    wrapped("Pick the footprint that is your antenna.");
+    return;
+  }
+  antennaRule_ = board::ruleFor(antennaRules_, *part);
+  if (antennaRule_) {
+    coloured(ImColor(antennaRule_->status == "verified" ? pal.good : pal.warn),
+             "Rule: " + antennaRule_->id + " (" + antennaRule_->status + ")");
+    ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
+    wrapped(antennaRule_->source);
+    ImGui::PopStyleColor();
+  } else {
+    wrapped("No rule is stored for this part number. Enter its keepout from the datasheet below; the general "
+            "vendor guidance still applies.");
+  }
+  double along = env_.settings.number("antenna_keepout_along_mm"),
+         depth = env_.settings.number("antenna_keepout_depth_mm");
+  if (along <= 0 && antennaRule_)
+    along = antennaRule_->keepoutAlongMm;
+  if (depth <= 0 && antennaRule_)
+    depth = antennaRule_->keepoutDepthMm;
+  const double testL = antennaRule_ ? antennaRule_->testBoardLengthMm : 0,
+               testW = antennaRule_ ? antennaRule_->testBoardWidthMm : 0;
+  const std::string key = strf("%s|%g|%g|%s|%zu", antennaRef_.c_str(), along, depth,
+                               env_.settings.text("board_outline").c_str(), snapshot_.copper.size());
+  if (key != antennaKey_) {
+    antennaKey_ = key;
+    board::Snapshot s = snapshot_;
+    if (env_.settings.text("board_outline") != "whole")
+      board::restrictToBoardProper(s);
+    antennaReport_ = board::checkAntenna(s, *part, along, depth, board::guessGroundNets(s), testL, testW);
+  }
+  const board::AntennaReport& r = antennaReport_;
+  ImGui::Separator();
+  if (!r.ok) {
+    coloured(ImColor(pal.warn), "Not checked: " + r.why);
+    return;
+  }
+  wrapped(
+      strf("Keepout %.2f x %.2f mm, centred on the part (%.1f mm from the nearest board edge) and reaching "
+           "into the board from that edge, on every copper layer.",
+           r.alongMm, r.depthMm, r.edgeDistanceMm));
+  if (r.findings.empty())
+    coloured(ImColor(pal.good), "No copper of other parts or nets inside the keepout, on any layer.");
+  for (const std::string& f : r.findings)
+    coloured(ImColor(pal.warn), f);
+  ImGui::Spacing();
+  ImGui::TextColored(ImColor(pal.accent), "Ground, by layer");
+  noteText("Ground, by layer");
+  if (r.ground.empty())
+    wrapped("No ground net was found (nets named GND or VSS, or a net covering a quarter of the board).");
+  for (const auto& g : r.ground)
+    wrapped(strf("%s: %.0f mm2, reaching %.1f mm from the edge, %.1f mm wide", g.layer.c_str(), g.areaMm2,
+                 g.reachMm, g.widthMm));
+  ImGui::Spacing();
+  wrapped(strf("Stackup: %.2f mm of dielectric in all; %.3f mm between the part's layer and the next copper "
+               "layer.",
+               r.totalThicknessMm, r.toNextPlaneMm));
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::TextColored(ImColor(pal.accent), "Keepout size");
+  noteText("Keepout size");
+  drawSetting("antenna_keepout_along_mm");
+  drawSetting("antenna_keepout_depth_mm");
+  ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
+  wrapped("Not checked yet: the feed line's impedance for this stackup, the matching network, nearby metal, "
+          "and the simulated antenna. A chip antenna's resonance depends on the ground it sits on, so the "
+          "vendor's figures hold only for the vendor's layout; a measurement at the feed separates antenna "
+          "faults from radio faults.");
+  ImGui::PopStyleColor();
+}
+
 void Ui::drawProbesTab(float w, float h) {
   std::vector<std::vector<double>> db(probes_.size());
   std::vector<double> peakHz(probes_.size(), 0.0);
@@ -3407,6 +3532,10 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
   if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
     if (tabItem("Preview", nullptr, pendingTab_ == "Preview" ? ImGuiTabItemFlags_SetSelected : 0)) {
       drawPreviewTab(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+      ImGui::EndTabItem();
+    }
+    if (tabItem("Antenna", nullptr, pendingTab_ == "Antenna" ? ImGuiTabItemFlags_SetSelected : 0)) {
+      drawAntennaTab(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
       ImGui::EndTabItem();
     }
     if (tabItem("S11 plot", nullptr, pendingTab_ == "S11 plot" ? ImGuiTabItemFlags_SetSelected : 0)) {

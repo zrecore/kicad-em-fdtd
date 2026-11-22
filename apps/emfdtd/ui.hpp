@@ -22,6 +22,7 @@
 #include "app/run_store.hpp"
 #include "app/settings.hpp"
 #include "app/sweep.hpp"
+#include "board/antenna.hpp"
 #include "board/snapshot.hpp"
 #include "fdtd/ntff.hpp"
 #include "fdtd/surface_current.hpp"
@@ -162,6 +163,12 @@ public:
 
 private:
   void setupViewer();
+  void drawAntennaTab(float w, float h);
+  std::vector<board::AntennaRule> antennaRules_;
+  bool antennaRulesLoaded_ = false;
+  std::string antennaRef_, antennaKey_, antennaRulesError_;
+  board::AntennaReport antennaReport_;
+  const board::AntennaRule* antennaRule_ = nullptr;
   void drawOpenRun();
   bool openRunPopup_ = false;
   std::vector<app::RunManifest> runList_;

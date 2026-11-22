@@ -429,6 +429,14 @@ void Settings::build() {
       "megabytes per run. off: only the S11 and the summary are kept. Runs can be pruned later (Open run, "
       "or the command line).",
       "Run", Tier::Advanced, {"save", "disk", "reload", "open run", "fields", "space", "prune"});
+  num("antenna_keepout_along_mm", "Antenna keepout, width",
+      "Width of the antenna's copper-free keepout along the board edge, from the part's datasheet. 0 uses "
+      "the value of the antenna rule that matches the part, if any. Used by the Antenna tab.",
+      "Antenna", "mm", Tier::Essential, 0, 100, {"antenna", "keepout", "clearance", "keep out"});
+  num("antenna_keepout_depth_mm", "Antenna keepout, depth",
+      "How far the keepout reaches into the board from its edge, from the part's datasheet. 0 uses the "
+      "antenna rule's value. Used by the Antenna tab.",
+      "Antenna", "mm", Tier::Essential, 0, 100, {"antenna", "keepout", "clearance", "keep out"});
   choice("backend", "Compute backend", "auto uses the GPU when one is available.", "Run", Tier::Advanced,
          {"gpu", "cpu", "vulkan", "device"});
 }
@@ -507,6 +515,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return std::string("proper");
   if (key == "save_fields")
     return std::string("on");
+  if (key == "antenna_keepout_along_mm" || key == "antenna_keepout_depth_mm")
+    return 0.0; // 0: the matching antenna rule's value
   if (const std::string pid = pcbProfileId(); pid != "board") {
     const FabProfile& f = catalog_.fabProfile(pid);
     if (key == "copper_outer_um")

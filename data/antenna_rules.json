@@ -1,0 +1,22 @@
+{
+  "about": "Integration rules for chip antennas, read from datasheets and vendor notes. The Antenna tab compares a board with them. Values are the vendor's: they hold for the vendor's own test board and layout, not for every board.",
+  "rules": [
+    {
+      "id": "w3008-v2.7",
+      "parts": ["W3008"],
+      "keepout_along_mm": 4.0,
+      "keepout_depth_mm": 4.25,
+      "test_board_mm": [80, 37],
+      "layers": "every copper layer",
+      "source": "vendor datasheet v2.7 (read 2026-11-21): clearance 4.00 x 4.25 mm at the board edge, test board 80 x 37 mm. The C and G variants of this part family have different clearances.",
+      "status": "verified"
+    },
+    {
+      "id": "generic-chip-antenna",
+      "parts": [],
+      "layers": "every copper layer",
+      "source": "vendor application notes (Ezurio/Laird, Analog Devices AN-1370, Digi, Antenova), search summaries: no copper on any layer of the host board under the antenna's clearance; ground stitching along its edge; a pi match close to the antenna; keep metal structures about 25 mm away. The clearance size comes from the part's own datasheet.",
+      "status": "unverified"
+    }
+  ]
+}

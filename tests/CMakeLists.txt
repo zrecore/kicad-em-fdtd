@@ -3,7 +3,7 @@ FetchContent_Declare(Catch2 GIT_REPOSITORY https://github.com/catchorg/Catch2.gi
 FetchContent_MakeAvailable(Catch2)
 
 # Labels: `ctest -L cpu` runs anywhere; `ctest -L gpu` needs a GPU and runs under the GPU lock.
-add_executable(tests_cpu cpu/units_test.cpp cpu/solver_test.cpp cpu/boundary_test.cpp cpu/board_test.cpp cpu/sim_test.cpp cpu/mesh_test.cpp cpu/viz_test.cpp cpu/settings_test.cpp cpu/volume_test.cpp cpu/phasor_test.cpp cpu/view_axes_test.cpp cpu/surface_current_test.cpp cpu/parts_test.cpp cpu/netwalk_test.cpp cpu/ntff_test.cpp cpu/sweep_test.cpp cpu/geometry_override_test.cpp cpu/vtk_test.cpp cpu/isosurface_test.cpp cpu/probes_test.cpp cpu/dft_known_test.cpp cpu/volume_renderer_test.cpp cpu/run_archive_test.cpp)
+add_executable(tests_cpu cpu/units_test.cpp cpu/solver_test.cpp cpu/boundary_test.cpp cpu/board_test.cpp cpu/sim_test.cpp cpu/mesh_test.cpp cpu/viz_test.cpp cpu/settings_test.cpp cpu/volume_test.cpp cpu/phasor_test.cpp cpu/view_axes_test.cpp cpu/surface_current_test.cpp cpu/parts_test.cpp cpu/netwalk_test.cpp cpu/ntff_test.cpp cpu/sweep_test.cpp cpu/geometry_override_test.cpp cpu/vtk_test.cpp cpu/isosurface_test.cpp cpu/probes_test.cpp cpu/dft_known_test.cpp cpu/volume_renderer_test.cpp cpu/run_archive_test.cpp cpu/antenna_test.cpp)
 # Test scratch files live in the build tree, not in the system temp folder (which is ephemeral).
 target_link_libraries(tests_cpu PRIVATE fdtd_solver board sim viz viz_vk viz_ui appcore fdtd_options Catch2::Catch2WithMain)
 # Long numerical scenarios are tagged [slow] and run from the optimised preset (the sanitizer build is ~50x slower).

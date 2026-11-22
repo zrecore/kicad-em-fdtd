@@ -6,3 +6,11 @@ out/
 __pycache__/
 boards/w3008-testboard/
 imgui.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes

@@ -140,3 +140,7 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 
 ## Board outline (decided by the user 2026-11-21)
 - Setting "Board outline" (PCB group, Essential): proper (default) or whole. For a board drawn inside a panel, proper models only the board found between the slots and breakaway tabs; the frame, its copper and its parts are left out. The run notes say which was used. It lives in the window's settings, not in the plugin.
+
+## Antenna tab (decided by the user 2026-11-21: a separate "Antenna" section)
+- A tab next to Preview, available before any run (the checks read the board as drawn). Top to bottom: what it is, the antenna part (picked automatically when a footprint's value matches a stored rule, else chosen from a list), the rule and its source with a verified or unverified mark, the findings (copper and vias in the keepout per layer, in the warning colour; a good-news line when there are none), the ground per layer, the stackup under the part, then the keepout size settings and a note on what is not checked yet.
+- It says where the board departs from the vendor's layout, never how the antenna will perform.
