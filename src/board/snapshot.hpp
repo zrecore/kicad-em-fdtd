@@ -62,6 +62,10 @@ struct Snapshot {
   std::string boardName, kicadVersion;
   Ring outline;
   std::vector<Ring> cutouts; // holes in the board (routed slots, openings): no dielectric inside
+  // Optional: the board without its panel frame (outline and cutouts above are as drawn on Edge.Cuts).
+  bool hasBoardProper = false;
+  Ring properOutline;
+  std::vector<Ring> properCutouts;
   std::vector<Layer> stackup;
   std::vector<CopperShape> copper;
   std::vector<Via> vias;
@@ -72,6 +76,10 @@ struct Snapshot {
 struct SnapshotError : std::runtime_error {
   using std::runtime_error::runtime_error;
 };
+
+// Replaces the outline and cutouts by the board proper and drops copper, vias and parts that lie off it.
+// Returns false (and changes nothing) when the snapshot carries no board proper.
+bool restrictToBoardProper(Snapshot& s);
 
 Snapshot parseSnapshot(std::string_view json); // throws SnapshotError naming the offending field
 

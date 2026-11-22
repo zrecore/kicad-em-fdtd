@@ -22,6 +22,13 @@ BoardFacts boardFacts(const board::Snapshot& s) {
 
 std::vector<std::string> applyPcbSettings(const Settings& settings, board::Snapshot& snapshot) {
   std::vector<std::string> notes;
+  if (snapshot.hasBoardProper) {
+    if (settings.text("board_outline") == "whole")
+      notes.push_back("board outline: the whole Edge.Cuts as drawn, panel frame included (your setting)");
+    else if (board::restrictToBoardProper(snapshot))
+      notes.push_back("board outline: the board proper only; the panel frame, its copper and its parts are "
+                      "left out (setting 'Board outline' = whole keeps them)");
+  }
   const std::string pid = settings.text("pcb_profile");
   const FabProfile* fab = pid == "board" ? nullptr : &settings.catalog().fabProfile(pid);
   std::size_t copperLayers = 0;

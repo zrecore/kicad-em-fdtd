@@ -36,5 +36,7 @@ SParam1 s11FromPort(const std::vector<double>& voltage, const std::vector<double
 
 // Touchstone v1 one-port file, real/imaginary format, frequencies in Hz.
 void writeTouchstone(std::ostream& out, const SParam1& s, const std::string& comment);
+// Reads what writeTouchstone wrote (Hz, RI, one port). Throws std::runtime_error for another format.
+SParam1 readTouchstone(std::istream& in);
 
 } // namespace fdtd

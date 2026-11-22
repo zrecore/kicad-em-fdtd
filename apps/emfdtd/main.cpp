@@ -56,6 +56,10 @@ void usage() {
   std::fprintf(
       stderr,
       "usage: emfdtd SNAPSHOT.json [options]\n"
+      "  --open-run DIR           show a saved run (a folder under em-fdtd/results) without solving (--ui or "
+      "--ui-screenshot)\n"
+      "  --prune-runs N           delete the field data of all but the newest N saved runs, keep their S11, "
+      "and exit\n"
       "  --project-dir DIR        the KiCAD project folder; results go to DIR/em-fdtd/results/run-<time>/\n"
       "                           (default: the folder holding SNAPSHOT.json)\n"
       "  --profile ID[:VARIANT]   radio profile: wifi, bluetooth, zigbee, lwmesh, uwb, custom (default "
@@ -223,7 +227,8 @@ int main(int argc, char** argv) {
     std::string layersFlag;
     int legendsFlag = -1; // -1 default, 0 collapsed, 1 expanded
     std::uint32_t shotW = 1280, shotH = 800;
-    std::string backendFlag;
+    std::string backendFlag, openRunDir;
+    int pruneKeep = -1;
     for (int i = 2; i < argc; ++i) {
       const std::string a = argv[i];
       auto next = [&]() -> const char* {
@@ -362,6 +367,11 @@ int main(int argc, char** argv) {
         shotTab = next();
       else if (a == "--ui-run")
         shotRun = true;
+      else if (a ==
+               "--open-run") // show a saved run (its folder) without solving; needs --ui or --ui-screenshot
+        openRunDir = next();
+      else if (a == "--prune-runs") // delete the field data of all but the newest N saved runs, then exit
+        pruneKeep = std::atoi(next());
       else if (a == "--ui-a11y-dump")
         a11yDump = next();
       else if (a == "--ui-theme")
@@ -387,6 +397,13 @@ int main(int argc, char** argv) {
     }
 
     const app::ProjectPaths paths(projectDir);
+    if (pruneKeep >= 0) {
+      const auto freed = app::pruneFields(paths.resultsRoot, static_cast<std::size_t>(pruneKeep));
+      std::printf("removed the field data of all but the newest %d runs: %.1f MB freed (S11 and summaries "
+                  "kept)\n",
+                  pruneKeep, static_cast<double>(freed) / 1e6);
+      return 0;
+    }
     if (fs::exists(paths.settingsFile)) { // this board's saved settings, then the command line on top
       std::vector<std::string> problems;
       settings.fromJson(slurp(paths.settingsFile), problems);
@@ -453,6 +470,14 @@ int main(int argc, char** argv) {
       if (!shotFile.empty()) { // render one screen to an image, no window
         ui::Ui screen(std::move(env));
         screen.setHeadless(shotW, shotH);
+        if (!openRunDir.empty()) {
+          std::vector<std::uint8_t> warm;
+          screen.frame(0.0, shotW, shotH, warm); // a first frame, so the widgets exist
+          if (!screen.openRun(openRunDir)) {
+            std::fprintf(stderr, "emfdtd: %s\n", screen.statusMessage().c_str());
+            return 1;
+          }
+        }
         if (!shotQuery.empty())
           screen.setSearch(shotQuery);
         if (!shotExpand.empty())
@@ -537,6 +562,8 @@ int main(int argc, char** argv) {
       viz::Window window("kicad-em-fdtd", 1280, 800);
       env.pixelScale = window.pixelScale();
       ui::Ui screen(std::move(env));
+      if (!openRunDir.empty() && !screen.openRun(openRunDir))
+        std::fprintf(stderr, "emfdtd: %s\n", screen.statusMessage().c_str());
       ImGui_ImplGlfw_InitForOther(window.handle(), true);
       std::unique_ptr<viz::GpuUi>
           gpuUi; // the UI drawn by the GPU; the CPU rasteriser if that is not possible

@@ -131,3 +131,12 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 ## Still open
 1. Whether user-saved profiles also travel with the board (today: per board in `settings.json`; per user saved profiles are next in the user configuration folder).
 2. Which colour map is the default per theme (decided 2026-11-20: a sequential map from `data/colormaps.json`, chosen by a View setting; see docs/PLAN.md Open questions) and whether the volume shows |E|, Ez or power flow first.
+
+## Saved runs (decided by the user 2026-11-21)
+- "Open run..." is a button next to "Open results folder" on the results screen (and next to "Run simulation" on the Preview). It opens a list of the project's saved runs, newest first: time, board, best match, whether fields were kept, size on disk. Opening one shows its results without solving; "Adjust settings and run again" then starts from that run's settings.
+- The list has "Remove the fields of older runs (keep the newest 3)": the S11 and the summary stay. The same is `--prune-runs N` on the command line.
+- Fields are kept by default (setting "Keep field data of each run", Run group, Advanced).
+- A run whose fields were removed is listed as "S11 only" and cannot be opened; the Open button is disabled for it.
+
+## Board outline (decided by the user 2026-11-21)
+- Setting "Board outline" (PCB group, Essential): proper (default) or whole. For a board drawn inside a panel, proper models only the board found between the slots and breakaway tabs; the frame, its copper and its parts are left out. The run notes say which was used. It lives in the window's settings, not in the plugin.

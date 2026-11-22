@@ -590,3 +590,35 @@ SCENARIO("The sequential colour maps are data with a source and a licence, and m
     }
   }
 }
+
+SCENARIO("A board drawn in a panel is modelled without the frame unless the user keeps it") {
+  GIVEN("a snapshot whose outline is a 30 mm panel and whose board proper is the 10 mm square inside it") {
+    board::Snapshot b = board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,
+      "board":{"name":"t"},"outline":[[0,0],[0.03,0],[0.03,0.03],[0,0.03]],
+      "board_proper":{"outline":[[0.01,0.01],[0.02,0.01],[0.02,0.02],[0.01,0.02]],"cutouts":[]},
+      "stackup":[{"name":"F.Cu","kind":"copper"}],
+      "copper":[{"layer":"F.Cu","owner":"","net":"A","polygon":[[0.012,0.012],[0.014,0.012],[0.014,0.014]]},
+                {"layer":"F.Cu","owner":"","net":"B","polygon":[[0.002,0.002],[0.004,0.002],[0.004,0.004]]}],
+      "vias":[],"components":[],"ports":[]})");
+    app::Settings s(catalog());
+    WHEN("the default setting is used") {
+      board::Snapshot copy = b;
+      const auto notes = app::applyPcbSettings(s, copy);
+      THEN("the outline is the board proper and the frame's copper is dropped") {
+        REQUIRE(copy.outline.size() == 4);
+        REQUIRE(copy.outline[0].x == Catch::Approx(0.01));
+        REQUIRE(copy.copper.size() == 1);
+        REQUIRE(copy.copper[0].net == "A");
+        REQUIRE(!notes.empty());
+      }
+    }
+    WHEN("the user keeps the whole outline") {
+      s.set("board_outline", std::string("whole"));
+      app::applyPcbSettings(s, b);
+      THEN("nothing is dropped") {
+        REQUIRE(b.outline[1].x == Catch::Approx(0.03));
+        REQUIRE(b.copper.size() == 2);
+      }
+    }
+  }
+}

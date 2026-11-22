@@ -9,6 +9,7 @@ The one file the KiCAD plugin writes and the native app (`emfdtd`) reads. JSON, 
 | `board` | `{name, kicad_version}` |
 | `outline` | polygon `[[x, y], ...]` (v1 writes the bounding rectangle of Edge.Cuts and says so in `notes`) |
 | `cutouts` | optional: polygons `[[x, y], ...]`, holes in the board (routed slots, openings); no dielectric inside them. Copper never covers a hole (zone fills already exclude it) |
+| `board_proper` | optional: `{"outline": ring, "cutouts": [rings]}`, the board without its panel frame when the exporter found one (`outline` and `cutouts` stay as drawn). The setting `board_outline` (proper or whole) picks which one the model uses; with `proper`, copper, vias and parts off that ring are dropped |
 | `stackup` | top to bottom: `{name, kind: "copper"}` or `{name, kind: "dielectric", thickness, epsilon_r, loss_tangent, material}`. Copper is a zero-thickness PEC sheet on the dielectric interface; solder mask, silkscreen and paste are not modelled |
 | `copper` | filled polygons: `{layer, owner, net, polygon, holes?}`. `owner` is the footprint reference for pads, `""` for tracks, zones and other board-level copper |
 | `vias` | `{x, y, diameter, drill, net, owner, from?, to?}`; modelled as PEC columns between the outermost copper layers, or between the copper layers named in `from` and `to` (a blind or micro via; either order). The plugin exporter writes through vias only so far |

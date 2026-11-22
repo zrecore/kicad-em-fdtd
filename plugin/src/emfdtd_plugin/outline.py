@@ -285,9 +285,9 @@ def board_proper(outer, cuts, seed, mm=1e6):
     slot_ids = {id(s[1]) for s in slots}
     rest = [c for c in cuts if id(c) not in slot_ids and inside(ring, c[0])]
     note = (
-        f"panel frame excluded: board proper {area(ring) / mm**2:.0f} mm2 of the "
+        f"panel frame found: board proper {area(ring) / mm**2:.0f} mm2 of the "
         f"{area(outer) / mm**2:.0f} mm2 drawn, {len(slots)} slots and {len(bridges)} tabs bridged "
-        "(slot-end bridging)"
+        "(slot-end bridging); the window's Board outline setting picks which is modelled"
     )
     return ring, rest, [note]
 

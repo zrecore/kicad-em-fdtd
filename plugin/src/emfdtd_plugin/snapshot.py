@@ -9,7 +9,17 @@ class SnapshotError(ValueError):
 
 
 def build_snapshot(
-    board_name, kicad_version, outline, stackup, copper, vias, components, ports=(), notes=(), cutouts=()
+    board_name,
+    kicad_version,
+    outline,
+    stackup,
+    copper,
+    vias,
+    components,
+    ports=(),
+    notes=(),
+    cutouts=(),
+    board_proper=None,
 ):
     """Lengths in metres, layers top to bottom; `copper` items: dict(layer, owner, net, polygon, holes)."""
     snap = {
@@ -26,6 +36,8 @@ def build_snapshot(
     }
     if cutouts:
         snap["cutouts"] = [list(c) for c in cutouts]
+    if board_proper:  # (ring, cutouts): the board without its panel frame; the solver side picks (setting)
+        snap["board_proper"] = {"outline": board_proper[0], "cutouts": [list(c) for c in board_proper[1]]}
     validate_snapshot(snap)
     return snap
 

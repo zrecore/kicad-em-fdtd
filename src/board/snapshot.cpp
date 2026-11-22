@@ -52,6 +52,14 @@ Snapshot parseSnapshot(std::string_view textIn) {
     if (j.contains("cutouts"))
       for (const Json& c : j.at("cutouts"))
         s.cutouts.push_back(ring(c, "cutout"));
+    if (j.contains("board_proper")) {
+      const Json& bp = j.at("board_proper");
+      s.hasBoardProper = true;
+      s.properOutline = ring(require(bp, "outline"), "board_proper outline");
+      if (bp.contains("cutouts"))
+        for (const Json& c : bp.at("cutouts"))
+          s.properCutouts.push_back(ring(c, "board_proper cutout"));
+    }
     for (const Json& l : require(j, "stackup")) {
       Layer layer;
       layer.name = require(l, "name").get<std::string>();
@@ -124,4 +132,37 @@ Snapshot parseSnapshot(std::string_view textIn) {
   }
 }
 
+} // namespace board
+
+namespace board {
+namespace {
+bool insideRing(const Ring& r, double x, double y) {
+  bool hit = false;
+  for (std::size_t i = 0, n = r.size(); i < n; ++i) {
+    const Point &a = r[i], &b = r[(i + 1) % n];
+    if ((a.y > y) != (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x)
+      hit = !hit;
+  }
+  return hit;
+}
+} // namespace
+
+bool restrictToBoardProper(Snapshot& s) {
+  if (!s.hasBoardProper)
+    return false;
+  const Ring& ring = s.properOutline;
+  auto onBoard = [&](const Ring& poly) {
+    for (const Point& p : poly)
+      if (insideRing(ring, p.x, p.y))
+        return true;
+    return !poly.empty() && !ring.empty() && insideRing(poly, ring[0].x, ring[0].y);
+  };
+  std::erase_if(s.copper, [&](const CopperShape& c) { return !onBoard(c.outer); });
+  std::erase_if(s.vias, [&](const Via& v) { return !insideRing(ring, v.x, v.y); });
+  std::erase_if(s.components, [&](const Component& c) { return !insideRing(ring, c.x, c.y); });
+  s.outline = s.properOutline;
+  s.cutouts = s.properCutouts;
+  s.hasBoardProper = false;
+  return true;
+}
 } // namespace board

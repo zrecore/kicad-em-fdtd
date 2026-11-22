@@ -7,6 +7,8 @@
 #include <random>
 
 #include "app/run_archive.hpp"
+#include "app/run_store.hpp"
+#include "fdtd/sparam.hpp"
 
 namespace fs = std::filesystem;
 
@@ -73,6 +75,76 @@ SCENARIO("A damaged phasor file is refused, not half-read") {
       REQUIRE_THROWS(app::loadPhasors(file));
       REQUIRE_THROWS(app::loadPhasors(other));
       REQUIRE_THROWS(app::loadPhasors(scratch("missing.f16")));
+    }
+  }
+}
+
+SCENARIO("A project's saved runs are listed, reopened and pruned") {
+  GIVEN("three run folders, each with fields, one without a manifest") {
+    const fs::path root = scratch("runs");
+    fs::remove_all(root);
+    for (const char* id : {"run-20260101-000001", "run-20260102-000001", "run-20260103-000001"}) {
+      const fs::path dir = root / id;
+      fs::create_directories(dir);
+      viz::PhasorAccumulator acc({2.4e9, 2.5e9}, 10);
+      std::vector<float> re(20, 1e-7f), im(20, -2e-7f);
+      acc.load(re, im);
+      app::FarResult far;
+      far.frequencyHz = 2.4e9;
+      far.field.nTheta = 1;
+      far.field.nPhi = 2;
+      far.field.theta = {0.1};
+      far.field.phi = {0.2, 0.3};
+      far.field.u = {1.5, 2.5};
+      far.field.peak = 2.5;
+      far.figures.gain = 1.25;
+      app::saveFields(dir, {{"slice_e", &acc}, {"missing", nullptr}}, {far});
+      fdtd::SParam1 s;
+      s.frequenciesHz = {2.4e9, 2.5e9};
+      s.s11 = {{0.5, 0.0}, {0.1, 0.0}};
+      std::ofstream f(dir / "s11.s1p");
+      fdtd::writeTouchstone(f, s, "test");
+    }
+    app::RunManifest m;
+    m.id = "run-20260103-000001";
+    m.board = "demo";
+    m.bestDb = -20;
+    m.bestHz = 2.5e9;
+    m.fields = true;
+    app::writeManifest(root / m.id, m);
+    WHEN("the runs are scanned") {
+      const auto runs = app::scanRuns(root);
+      THEN("they are listed newest first, with the manifest or the S11 file as the source") {
+        REQUIRE(runs.size() == 3);
+        REQUIRE(runs[0].id == "run-20260103-000001");
+        REQUIRE(runs[0].board == "demo");
+        REQUIRE(runs[1].bestDb == Catch::Approx(-20.0).margin(0.01)); // from s11.s1p: |0.1| = -20 dB
+        REQUIRE(runs[1].bestHz == Catch::Approx(2.5e9));
+        REQUIRE(runs[1].fields);
+        REQUIRE(fs::exists(root / "index.json"));
+      }
+      AND_THEN("a saved quantity and the far field read back, and a missing one is null") {
+        const auto acc = app::loadField(root / "run-20260101-000001", "slice_e");
+        REQUIRE(acc);
+        REQUIRE(acc->phasor(1, 3).real() == Catch::Approx(1e-7f).epsilon(1e-3));
+        REQUIRE(app::loadField(root / "run-20260101-000001", "volume_e") == nullptr);
+        const auto far = app::loadFar(root / "run-20260101-000001");
+        REQUIRE(far.size() == 1);
+        REQUIRE(far[0].field.u[1] == Catch::Approx(2.5));
+        REQUIRE(far[0].figures.gain == Catch::Approx(1.25));
+      }
+    }
+    WHEN("all but the newest run are pruned") {
+      const auto freed = app::pruneFields(root, 1);
+      THEN("their field data is gone, the S11 stays, and the newest keeps its fields") {
+        REQUIRE(freed > 0);
+        REQUIRE(!fs::exists(root / "run-20260101-000001" / "fields"));
+        REQUIRE(fs::exists(root / "run-20260101-000001" / "s11.s1p"));
+        REQUIRE(fs::exists(root / "run-20260103-000001" / "fields"));
+        const auto runs = app::scanRuns(root);
+        REQUIRE(runs[0].fields);
+        REQUIRE(!runs[1].fields);
+      }
     }
   }
 }

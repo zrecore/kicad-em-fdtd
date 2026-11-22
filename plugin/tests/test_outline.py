@@ -125,7 +125,7 @@ def _t_proper(context, w, h, n):
 
 @then("the notes mention the panel frame")
 def _t_panel_note(context):
-    assert any("panel frame excluded" in n for n in context["result"][2])
+    assert any("panel frame found" in n for n in context["result"][2])
 
 
 @then("no panel is found")

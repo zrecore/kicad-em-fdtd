@@ -19,6 +19,7 @@
 #include "app/paths.hpp"
 #include "app/prepare.hpp"
 #include "app/probes.hpp"
+#include "app/run_store.hpp"
 #include "app/settings.hpp"
 #include "app/sweep.hpp"
 #include "board/snapshot.hpp"
@@ -91,6 +92,9 @@ public:
   }
   void expandGroup(const std::string& g) { expanded_.insert(g); }
   void start(); // begin the solve (the Run button)
+  // Opens a saved run (its folder under <project>/em-fdtd/results) without solving: the board, settings, S11
+  // and field data it kept. False, with statusMessage() saying why, when it cannot be opened.
+  bool openRun(const std::filesystem::path& dir);
   // A new export from KiCAD: replace the board and go back to the preview. Refused (false) while a run is
   // going.
   bool setSnapshot(board::Snapshot s);
@@ -131,6 +135,7 @@ public:
     if (has("nofield"))
       showFieldSlice_ = showField3d_ = false;
     openModelOnce_ = has("model");
+    openRunPopup_ = has("openrun");
     showPowerSlice_ = has("power");
     showIso_ = has("iso");
     showVoxelModel_ = has("voxels");
@@ -156,6 +161,12 @@ public:
   const FrameTimes& frameTimes() const { return times_; }
 
 private:
+  void setupViewer();
+  void drawOpenRun();
+  bool openRunPopup_ = false;
+  std::vector<app::RunManifest> runList_;
+  int runPick_ = -1;
+  std::string runListMessage_;
   void drawSettings();
   void drawSetting(const std::string& key);
   void drawPreviewTab(float w, float h);
@@ -274,12 +285,7 @@ private:
   void refreshPoynting();
   // Far field (docs/PLAN.md, Next steps 11f): a Huygens box around the board, accumulated at a few
   // frequencies of the sweep, transformed after the run.
-  struct FarResult {
-    double frequencyHz = 0;
-    fdtd::FarField field;
-    fdtd::AntennaFigures figures;
-    double s11Db = 0;
-  };
+  using FarResult = app::FarResult;
   fdtd::NtffPlan ntffPlan_;
   std::unique_ptr<viz::PhasorAccumulator> ntffAcc_;
   std::vector<double> ntffFreqs_;

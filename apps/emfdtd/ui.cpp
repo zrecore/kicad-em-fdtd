@@ -512,14 +512,8 @@ void Ui::refreshPrepared(double now) {
   }
 }
 
-void Ui::start() {
-  if (screen_ != Screen::Preview)
-    return;
-  lastEdit_ = -1;
-  dirty_ = true;
-  refreshPrepared(now_ + 1);
-  if (!blockedReason().empty())
-    return;
+// The viewer's accumulators and masks for the prepared model: filled by a run, or loaded from a saved one.
+void Ui::setupViewer() {
   // Animation: Ez on a plane mid-way between the outer copper layers, at 25 frequencies across the sweep.
   const fdtd::Grid& g = prepared_->model.grid;
   std::size_t kTop = 0, kBottom = g.nodes(fdtd::Z);
@@ -635,6 +629,17 @@ void Ui::start() {
       if (filled[n] && filled[n - 1] && filled[n + 1] && filled[n - plane_.nu] && filled[n + plane_.nu])
         mask_[n] = 0;
     }
+}
+
+void Ui::start() {
+  if (screen_ != Screen::Preview)
+    return;
+  lastEdit_ = -1;
+  dirty_ = true;
+  refreshPrepared(now_ + 1);
+  if (!blockedReason().empty())
+    return;
+  setupViewer();
   runDir_ = env_.paths.newRunDir(app::timestamp());
   stop_ = false;
   finished_ = false;
@@ -781,6 +786,37 @@ void Ui::runWorker() {
     }
     app::writeResults(runDir_, env_.snapshotPath, snapshot_, env_.settings, *prepared_, estimate_, result_,
                       backend_.details.empty() ? backend_.name : backend_.name + "; " + backend_.details);
+    { // the manifest, and the field data unless the user turned that off (a stopped run is incomplete)
+      app::RunManifest m;
+      m.id = runDir_.filename().string();
+      m.board = snapshot_.boardName;
+      m.profile = env_.settings.text("profile");
+      m.backend = backend_.name;
+      m.steps = result_.steps;
+      m.wallSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart_).count();
+      for (std::size_t i = 0; i < result_.s.s11.size(); ++i) {
+        const double db = 20 * std::log10(std::max(std::abs(result_.s.s11[i]), 1e-6));
+        if (i == 0 || db < m.bestDb) {
+          m.bestDb = db;
+          m.bestHz = result_.s.frequenciesHz[i];
+        }
+      }
+      if (env_.settings.text("save_fields") == "on" && !stop_) {
+        try {
+          app::saveFields(runDir_,
+                          {{"slice_e", phasors_.get()},
+                           {"volume_e", volPhasors_.get()},
+                           {"current_h", currentH_.get()},
+                           {"power_eh", poyntingH_.get()},
+                           {"ntff", ntffAcc_.get()}},
+                          farResults_);
+          m.fields = true;
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "emfdtd: could not save the field data: %s\n", e.what());
+        }
+      }
+      app::writeManifest(runDir_, m);
+    }
     if (probeAcc_) { // the probes' spectra next to the S11
       std::vector<std::vector<std::complex<double>>> ph(probes_.size());
       for (std::size_t p = 0; p < probes_.size(); ++p)
@@ -793,6 +829,144 @@ void Ui::runWorker() {
   }
   runSeconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart_).count();
   finished_ = true;
+}
+
+bool Ui::openRun(const fs::path& dir) {
+  auto fail = [&](const std::string& why) {
+    message_ = "Could not open the run " + dir.filename().string() + ": " + why;
+    return false;
+  };
+  if (screen_ == Screen::Running)
+    return fail("a run is going; stop it first");
+  try {
+    auto slurp = [](const fs::path& f) {
+      std::ifstream in(f);
+      if (!in)
+        throw std::runtime_error("missing " + f.filename().string());
+      std::stringstream ss;
+      ss << in.rdbuf();
+      return ss.str();
+    };
+    board::Snapshot snap = board::parseSnapshot(slurp(dir / "board.json"));
+    fdtd::SParam1 s11;
+    {
+      std::ifstream in(dir / "s11.s1p");
+      s11 = fdtd::readTouchstone(in);
+    }
+    if (!fs::exists(dir / "fields"))
+      return fail("its field data was removed (only the S11 is kept)");
+    env_.settings.resetAll();
+    std::vector<std::string> problems;
+    env_.settings.fromJson(slurp(dir / "settings.json"), problems);
+    setSnapshot(std::move(snap));
+    refreshPrepared(now_ + 1); // dirty_ is set: the model is rebuilt from the saved board and settings
+    if (!prepared_)
+      return fail("the saved model could not be prepared: " + prepareError_);
+    setupViewer();
+    auto take = [&](const char* name, std::unique_ptr<viz::PhasorAccumulator>& into, std::size_t voxels) {
+      auto acc = app::loadField(dir, name);
+      if (!acc) {
+        into.reset();
+        return;
+      }
+      if (acc->voxels() != voxels || acc->frequencies() != into->frequencies())
+        throw std::runtime_error(std::string(name) + " does not fit the rebuilt model (the model selection "
+                                                     "or the program version differs from the run's)");
+      into = std::move(acc);
+    };
+    take("slice_e", phasors_, plane_.nu * plane_.nv);
+    take("volume_e", volPhasors_, dv_.voxels());
+    if (currentH_)
+      take("current_h", currentH_, currentList_.channels.size());
+    take("power_eh", poyntingH_, 6 * plane_.nu * plane_.nv);
+    farResults_ = app::loadFar(dir);
+    ntffAcc_.reset(); // the far-field figures were computed at the end of the run and are kept as results
+    if (farResults_.empty())
+      ntffNote_ = "The run kept no far field (the board fills the space inside the absorbing layer).";
+    result_ = {};
+    result_.s = s11;
+    liveS11_ = s11;
+    app::RunManifest info;
+    for (const auto& m : app::scanRuns(dir.parent_path()))
+      if (m.dir == dir)
+        info = m;
+    result_.steps = info.steps;
+    runSeconds_ = info.wallSeconds;
+    runDir_ = dir;
+    runError_.clear();
+    jumped_ = false;
+    freq_ = phasors_->frequencies() / 2;
+    ++phasorVersion_;
+    finished_ = true;
+    screen_ = Screen::Done;
+    pendingTab_ = "S11 plot";
+    message_ = "Opened the saved run " + dir.filename().string() + " (no solve).";
+    for (const std::string& p : problems)
+      message_ += " Setting not applied: " + p;
+    return true;
+  } catch (const std::exception& e) {
+    return fail(e.what());
+  }
+}
+
+// The list of this project's saved runs: pick one to open it, or free disk space by dropping the field data
+// of the older ones (the S11 and the summary stay).
+void Ui::drawOpenRun() {
+  if (openRunPopup_) {
+    runList_ = app::scanRuns(env_.paths.resultsRoot);
+    runPick_ = -1;
+    runListMessage_.clear();
+    ImGui::OpenPopup("Open a saved run");
+    openRunPopup_ = false;
+  }
+  const ImVec2 view = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowSize({std::min(px(640), view.x - px(16)), std::min(px(420), view.y - px(16))},
+                           ImGuiCond_Always);
+  ImGui::SetNextWindowPos({view.x / 2, view.y / 2}, ImGuiCond_Always, {0.5f, 0.5f});
+  if (!ImGui::BeginPopupModal("Open a saved run", nullptr, ImGuiWindowFlags_NoResize)) {
+    return;
+  }
+  wrapped("Runs saved in this project's results folder, newest first. Opening one shows its results without "
+          "solving again.");
+  const float listH = std::max(px(80), ImGui::GetContentRegionAvail().y - px(110));
+  ImGui::BeginChild("runs", {0, listH}, true);
+  if (runList_.empty())
+    wrapped("No saved runs yet.");
+  for (std::size_t i = 0; i < runList_.size(); ++i) {
+    const app::RunManifest& m = runList_[i];
+    const std::string head = m.time + (m.board.empty() ? "" : "  " + m.board);
+    if (selectable(head, runPick_ == static_cast<int>(i)))
+      runPick_ = static_cast<int>(i);
+    ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
+    wrapped(strf("best %.1f dB at %.3f GHz, %s, %.1f MB on disk%s%s", m.bestDb, m.bestHz * 1e-9,
+                 m.fields ? "fields kept" : "S11 only", static_cast<double>(m.bytes) / 1e6,
+                 m.profile.empty() ? "" : ", profile ", m.profile.c_str()));
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndChild();
+  const bool canOpen = runPick_ >= 0 && runList_[static_cast<std::size_t>(runPick_)].fields;
+  ImGui::BeginDisabled(!canOpen);
+  if (button("Open")) {
+    if (openRun(runList_[static_cast<std::size_t>(runPick_)].dir))
+      ImGui::CloseCurrentPopup();
+    else
+      runListMessage_ = message_;
+  }
+  ImGui::EndDisabled();
+  sameLineIfFits("Remove the fields of older runs (keep the newest 3)");
+  if (button("Remove the fields of older runs (keep the newest 3)")) {
+    const std::uint64_t freed = app::pruneFields(env_.paths.resultsRoot, 3);
+    runList_ = app::scanRuns(env_.paths.resultsRoot);
+    runPick_ = -1;
+    runListMessage_ =
+        strf("Freed %.1f MB. Their S11 and summaries are kept.", static_cast<double>(freed) / 1e6);
+  }
+  sameLineIfFits("Close");
+  if (button("Close"))
+    ImGui::CloseCurrentPopup();
+  if (!runListMessage_.empty())
+    wrapped(runListMessage_);
+  ImGui::EndPopup();
 }
 
 void Ui::applyToProject() {
@@ -3018,6 +3192,9 @@ void Ui::drawStatusBar() {
     if (button("Run simulation", ImVec2(px(180), 0)))
       start();
     ImGui::EndDisabled();
+    sameLineIfFits("Open run...");
+    if (button("Open run..."))
+      openRunPopup_ = true;
     const char* status = reason.empty() ? "Ready." : reason.c_str();
     if (fitsOnLine(ImGui::CalcTextSize("Ready.").x))
       ImGui::SameLine();
@@ -3058,6 +3235,9 @@ void Ui::drawStatusBar() {
     sameLineIfFits("Copy path");
     if (button("Copy path"))
       ImGui::SetClipboardText(runDir_.string().c_str());
+    sameLineIfFits("Open run...");
+    if (button("Open run..."))
+      openRunPopup_ = true;
     sameLineIfFits("Adjust settings and run again");
     if (button("Adjust settings and run again")) {
       if (worker_.joinable())
@@ -3222,6 +3402,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
   }
   ImGui::BeginChild("##right", ImVec2(0, 0));
   drawStatusBar();
+  drawOpenRun();
   ImGui::Separator();
   if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
     if (tabItem("Preview", nullptr, pendingTab_ == "Preview" ? ImGuiTabItemFlags_SetSelected : 0)) {

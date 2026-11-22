@@ -364,6 +364,13 @@ void Settings::build() {
          "an antenna. viridis, magma, inferno and plasma are CC0 maps by Smith, van der Walt and Firing; "
          "viridis was designed to stay readable with common colour-vision deficiencies.",
          "View", Tier::Common, {"colour map", "viridis", "magma", "inferno", "plasma", "magnitude", "heat"});
+  choice(
+      "board_outline", "Board outline",
+      "proper (default): when the board is drawn inside a panel, only the board itself is modelled and the "
+      "frame, its copper and the parts on it are left out (the export found the board between the slots "
+      "and tabs). whole: the whole Edge.Cuts as drawn, frame included. Has no effect when the export found "
+      "no panel.",
+      "PCB", Tier::Essential, {"panel", "frame", "breakaway", "tabs", "edge.cuts", "outline", "slots"});
   choice("pcb_profile", "PCB stackup",
          "Where the board's layers come from: the open board's own stackup (default), or a fabricator's "
          "published stackup for the same number of copper layers. The values below start from it and you can "
@@ -415,6 +422,13 @@ void Settings::build() {
       "Copper on the inner layers (boards with 4 or more layers). Recorded in the run summary; not modelled "
       "yet. 0 keeps the board's value.",
       "PCB", "um", Tier::Advanced, 0, 500, {"pcb", "oz", "weight", "copper", "foil"});
+  choice(
+      "save_fields", "Keep field data of each run",
+      "on (default): a finished run keeps its field data (the 3D and slice views, the surface current, power "
+      "flow and far field) so it can be opened again without solving; this takes tens to hundreds of "
+      "megabytes per run. off: only the S11 and the summary are kept. Runs can be pruned later (Open run, "
+      "or the command line).",
+      "Run", Tier::Advanced, {"save", "disk", "reload", "open run", "fields", "space", "prune"});
   choice("backend", "Compute backend", "auto uses the GPU when one is available.", "Run", Tier::Advanced,
          {"gpu", "cpu", "vulkan", "device"});
 }
@@ -489,6 +503,10 @@ Value Settings::defaultValue(const std::string& key) const {
     return 1.0;
   if (key == "pcb_profile")
     return std::string("board");
+  if (key == "board_outline")
+    return std::string("proper");
+  if (key == "save_fields")
+    return std::string("on");
   if (const std::string pid = pcbProfileId(); pid != "board") {
     const FabProfile& f = catalog_.fabProfile(pid);
     if (key == "copper_outer_um")
@@ -570,6 +588,10 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
   }
   if (key == "component_bodies")
     return {"ignore", "dielectric", "metal"};
+  if (key == "board_outline")
+    return {"proper", "whole"};
+  if (key == "save_fields")
+    return {"on", "off"};
   if (key == "pcb_profile") {
     std::vector<std::string> ids{"board"};
     for (const FabProfile& f : catalog_.fabProfiles())

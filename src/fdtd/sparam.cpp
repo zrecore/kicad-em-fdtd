@@ -1,7 +1,9 @@
 #include "fdtd/sparam.hpp"
 
 #include <iomanip>
+#include <istream>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
 
 #include "fdtd/dft.hpp"
@@ -62,6 +64,35 @@ void writeTouchstone(std::ostream& out, const SParam1& s, const std::string& com
   out << "! " << comment << "\n# Hz S RI R " << s.referenceOhm << "\n" << std::setprecision(9);
   for (std::size_t i = 0; i < s.s11.size(); ++i)
     out << s.frequenciesHz[i] << ' ' << s.s11[i].real() << ' ' << s.s11[i].imag() << '\n';
+}
+
+SParam1 readTouchstone(std::istream& in) {
+  SParam1 s;
+  std::string line;
+  bool header = false;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '!')
+      continue;
+    if (line[0] == '#') {
+      std::istringstream h(line.substr(1));
+      std::string unit, kind, fmt, r;
+      h >> unit >> kind >> fmt >> r;
+      if (unit != "Hz" || kind != "S" || fmt != "RI")
+        throw std::runtime_error("touchstone: only '# Hz S RI R n' is read");
+      h >> s.referenceOhm;
+      header = true;
+      continue;
+    }
+    std::istringstream row(line);
+    double f, re, im;
+    if (!(row >> f >> re >> im))
+      throw std::runtime_error("touchstone: bad data line");
+    s.frequenciesHz.push_back(f);
+    s.s11.emplace_back(re, im);
+  }
+  if (!header)
+    throw std::runtime_error("touchstone: no option line");
+  return s;
 }
 
 } // namespace fdtd
