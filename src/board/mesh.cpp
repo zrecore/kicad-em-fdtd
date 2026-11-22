@@ -90,7 +90,7 @@ std::vector<double> gradedEdges(double lo, double hi, double hMax, const std::ve
     trial[i] = target;
     bool ok = true;
     for (std::size_t e = 1; e < trial.size() && ok; ++e)
-      ok = trial[e] - trial[e - 1] >= 0.4 * (original[e] - original[e - 1]);
+      ok = trial[e] - trial[e - 1] >= 0.6 * (original[e] - original[e - 1]);
     if (!ok)
       continue; // a neighbouring snap or the end is too close; leave this one unsnapped
     edges = std::move(trial);

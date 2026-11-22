@@ -156,3 +156,142 @@ def board_and_cutouts(items):
     if unclosed:
         notes.append(f"{unclosed} Edge.Cuts piece(s) do not close into a loop and are ignored")
     return outer, cuts, notes
+
+
+# Panel frames and breakaway tabs: the board proper is the face, among the slots' rings and the bridges across
+# the tabs, that holds the seed point (see "Excluding breakaway tabs" in docs/PLAN.md). Distances in mm.
+SLOT_MAX_WIDTH_MM = 3.0
+SLOT_MIN_ASPECT = 4.0
+TAB_MAX_MM = 6.0
+BOARD_MIN_SHARE = 0.2  # a face smaller than this share of the outer loop is not taken for the board
+
+
+def _slot_axes(ring):
+    """(length, width, unit direction along the length, centre) from the covariance of the ring's points."""
+    n = len(ring)
+    cx, cy = sum(p[0] for p in ring) / n, sum(p[1] for p in ring) / n
+    sxx = sum((p[0] - cx) ** 2 for p in ring)
+    syy = sum((p[1] - cy) ** 2 for p in ring)
+    sxy = sum((p[0] - cx) * (p[1] - cy) for p in ring)
+    ang = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    d = (math.cos(ang), math.sin(ang))
+    along = [(p[0] - cx) * d[0] + (p[1] - cy) * d[1] for p in ring]
+    across = [-(p[0] - cx) * d[1] + (p[1] - cy) * d[0] for p in ring]
+    return max(along) - min(along), max(across) - min(across), d, (cx, cy)
+
+
+def _slot_corners(ring, d, centre, seed):
+    """The two end corners of a slot on the seed's side: for each end, the extreme point across the slot
+    that is nearer the seed. Returns [corner of the first end, corner of the other end]."""
+    along = [(p[0] - centre[0]) * d[0] + (p[1] - centre[1]) * d[1] for p in ring]
+    across = [-(p[0] - centre[0]) * d[1] + (p[1] - centre[1]) * d[0] for p in ring]
+    width = max(across) - min(across)
+    corners = []
+    for end in (min(along), max(along)):
+        cap = [i for i in range(len(ring)) if abs(along[i] - end) <= width]
+        lo = min(cap, key=lambda i: across[i])
+        hi = max(cap, key=lambda i: across[i])
+        near = min((lo, hi), key=lambda i: math.hypot(ring[i][0] - seed[0], ring[i][1] - seed[1]))
+        corners.append(ring[near])
+    return corners
+
+
+def board_proper(outer, cuts, seed, mm=1e6):
+    """Remove a panel frame: (board ring, remaining cutouts, notes) or None when the loops form no panel.
+
+    A slot is a thin, long cutout. Each slot end is bridged to the nearest end of another slot within a tab's
+    reach by the segment between their corners on the seed's side; the board is the face of the slots'
+    edges and these bridges that holds `seed` (coordinates in the unit where 1 mm is `mm`)."""
+    slots = []
+    for i, ring in enumerate(cuts):
+        length, width, d, centre = _slot_axes(ring)
+        if width <= SLOT_MAX_WIDTH_MM * mm and length >= SLOT_MIN_ASPECT * width:
+            slots.append((i, ring, d, centre))
+    if len(slots) < 2:
+        return None
+    ends = []  # (slot index in `slots`, corner)
+    for k, (_, ring, d, centre) in enumerate(slots):
+        for corner in _slot_corners(ring, d, centre, seed):
+            ends.append((k, corner))
+
+    def nearest(a):
+        """The closest end on another slot within a tab's reach, or None."""
+        ka, pa = ends[a]
+        best = None
+        for b, (kb, pb) in enumerate(ends):
+            dist = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            if kb != ka and dist <= TAB_MAX_MM * mm and (best is None or dist < best[0]):
+                best = (dist, b)
+        return best[1] if best else None
+
+    bridges = {tuple(sorted((a, nearest(a)))) for a in range(len(ends)) if nearest(a) is not None}
+    bridges = {(a, b) for a, b in bridges if nearest(a) == b and nearest(b) == a}  # mutual nearest only
+    # planar graph: nodes are points, edges are slot ring segments and bridges
+    index, pts, adj = {}, [], {}
+
+    def node(p):
+        key = (round(p[0]), round(p[1]))
+        if key not in index:
+            index[key] = len(pts)
+            pts.append(p)
+            adj[index[key]] = set()
+        return index[key]
+
+    def link(p, q):
+        u, v = node(p), node(q)
+        if u != v:
+            adj[u].add(v)
+            adj[v].add(u)
+
+    for _, ring, _, _ in slots:
+        for i in range(len(ring)):
+            link(ring[i], ring[(i + 1) % len(ring)])
+    for a, b in bridges:
+        link(ends[a][1], ends[b][1])
+    if len(bridges) < 2:
+        return None
+    # the first edge the +x ray from the seed meets, oriented upward, has the seed's face on its left
+    hit = None
+    for u in adj:
+        for v in adj[u]:
+            (xa, ya), (xb, yb) = pts[u], pts[v]
+            if ya < yb and ya <= seed[1] < yb:
+                x = xa + (seed[1] - ya) * (xb - xa) / (yb - ya)
+                if x > seed[0] and (hit is None or x < hit[0]):
+                    hit = (x, u, v)
+    if hit is None:
+        return None
+    start = (hit[1], hit[2])
+    walk, edge = [], start
+    for _ in range(2 * sum(len(v) for v in adj.values()) + 2):
+        walk.append(edge[0])
+        u, v = edge
+        back = math.atan2(pts[u][1] - pts[v][1], pts[u][0] - pts[v][0])
+
+        def turn(w, v=v, back=back, u=u):
+            if w == u:
+                return 2 * math.pi
+            ang = math.atan2(pts[w][1] - pts[v][1], pts[w][0] - pts[v][0])
+            return (back - ang) % (2 * math.pi) or 2 * math.pi
+
+        edge = (v, min(adj[v], key=turn))
+        if edge == start:
+            break
+    else:
+        return None
+    ring = [pts[i] for i in walk]
+    if not inside(ring, seed) or area(ring) < BOARD_MIN_SHARE * area(outer):
+        return None
+    slot_ids = {id(s[1]) for s in slots}
+    rest = [c for c in cuts if id(c) not in slot_ids and inside(ring, c[0])]
+    note = (
+        f"panel frame excluded: board proper {area(ring) / mm**2:.0f} mm2 of the "
+        f"{area(outer) / mm**2:.0f} mm2 drawn, {len(slots)} slots and {len(bridges)} tabs bridged "
+        "(slot-end bridging)"
+    )
+    return ring, rest, [note]
+
+
+def keeps(ring, polygon):
+    """True when the polygon is on the board: a vertex of it is inside the ring, or the ring is inside it."""
+    return any(inside(ring, p) for p in polygon) or inside(polygon, ring[0])

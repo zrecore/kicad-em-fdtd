@@ -98,8 +98,10 @@ def _edge_items(board):
     return items
 
 
-def read_outline(board, notes):
-    """(outline ring, cutout rings) in metres from Edge.Cuts: arcs, circles, slots and openings are kept."""
+def read_outline(board, notes, seed=None):
+    """(outline ring, cutout rings) in metres from Edge.Cuts: arcs, circles, slots and openings are kept.
+    With `seed` (nm, a point on the board: the middle of the footprints) a panel frame is cut away at its
+    breakaway tabs and the notes say so."""
     items = _edge_items(board)
     if not items:
         raise snapshot.SnapshotError("the board has no outline on Edge.Cuts")
@@ -115,6 +117,11 @@ def read_outline(board, notes):
         outer, cuts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], []
         more = []
     notes.extend(more)
+    if seed is not None and cuts:
+        proper = outline.board_proper(outer, cuts, seed)
+        if proper:
+            outer, cuts, more = proper
+            notes.extend(more)
     ring = lambda r: [[nm_to_m(x), nm_to_m(y)] for x, y in r]  # noqa: E731
     return ring(outer), [ring(c) for c in cuts]
 
@@ -291,15 +298,31 @@ def read_board(kicad, ports=(), defaults=None, refill_zones=False):
     notes = ["silkscreen, solder mask and paste layers are not modelled"]
     stackup = read_stackup(board, defaults, notes)
     copper_layers = [e["name"] for e in stackup if e["kind"] == "copper"]
-    board_outline, cutouts = read_outline(board, notes)
+    fps = list(board.get_footprints())
+    seed = None
+    if fps:  # the middle of the footprints is on the board even when a panel frame carries a few fiducials
+        seed = (
+            sorted(fp.position.x for fp in fps)[len(fps) // 2],
+            sorted(fp.position.y for fp in fps)[len(fps) // 2],
+        )
+    board_outline, cutouts = read_outline(board, notes, seed)
+    copper, vias, components = (
+        read_copper(board, copper_layers, notes),
+        read_vias(board),
+        read_components(board, notes),
+    )
+    if any("panel frame excluded" in n for n in notes):  # what lies on the frame is not part of the model
+        copper = [c for c in copper if outline.keeps(board_outline, c["polygon"])]
+        vias = [v for v in vias if outline.inside(board_outline, (v["x"], v["y"]))]
+        components = [c for c in components if outline.inside(board_outline, (c["x"], c["y"]))]
     return snapshot.build_snapshot(
         board.name,
         str(kicad.get_version()),
         board_outline,
         stackup,
-        read_copper(board, copper_layers, notes),
-        read_vias(board),
-        read_components(board, notes),
+        copper,
+        vias,
+        components,
         ports,
         notes,
         cutouts,

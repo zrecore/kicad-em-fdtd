@@ -917,3 +917,23 @@ SCENARIO("A via that lands on copper of another net is reported") {
     }
   }
 }
+
+SCENARIO("A via is checked against the copper of every layer it crosses, not only its end layers") {
+  GIVEN("a through via on a three-copper-layer board whose middle layer has a strip of another net there") {
+    const std::string text =
+        R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"d1","kind":"dielectric","thickness":0.0004,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"In1.Cu","kind":"copper"},
+                 {"name":"d2","kind":"dielectric","thickness":0.0004,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"In1.Cu","owner":"","net":"RF","polygon":[[0.002,0.0045],[0.006,0.0045],[0.006,0.0055],[0.002,0.0055]]}],
+      "vias":[{"x":0.004,"y":0.005,"diameter":0.0006,"drill":0.0003,"net":"GND","owner":""}],
+      "components":[]})";
+    const auto m = board::voxelize(board::parseSnapshot(text), board::Selection{}, kPlan, kF0);
+    THEN("the notes say it short-circuits the RF strip on In1.Cu") {
+      REQUIRE(anyNote(m, "via of net 'GND'", "In1.Cu"));
+    }
+  }
+}

@@ -85,3 +85,49 @@ def _t_cut(context, n, a):
 @then(parsers.parse("the notes mention {n:d} piece that does not close"))
 def _t_notes(context, n):
     assert any(f"{n} Edge.Cuts piece" in note for note in context["notes"])
+
+
+def _panel_items():
+    """60 x 40 mm frame, a 40 x 20 mm board centred, four 1.6 mm slots just outside its edges that stop 2 mm
+    short of the corners (the tabs)."""
+    s, g = 1.6 * MM, 2 * MM
+    x0, x1, y0, y1 = 10 * MM, 50 * MM, 10 * MM, 30 * MM
+    items = [("poly", [(0, 0), (60 * MM, 0), (60 * MM, 40 * MM), (0, 40 * MM)])]
+    for a, b, c, d in (
+        (x0 + g, y0 - s, x1 - g, y0),
+        (x0 + g, y1, x1 - g, y1 + s),
+        (x0 - s, y0 + g, x0, y1 - g),
+        (x1, y0 + g, x1 + s, y1 - g),
+    ):
+        items.append(("poly", [(a, b), (c, b), (c, d), (a, d)]))
+    return items
+
+
+@given("a 60 mm by 40 mm panel with a 40 mm by 20 mm board held by four corner tabs across 1.6 mm slots")
+def _g_panel(context):
+    context["items"] = _panel_items()
+
+
+@when("the panel frame is excluded around the board centre")
+def _w_panel(context):
+    outer, cuts, _ = outline.board_and_cutouts(context["items"])
+    context["result"] = outline.board_proper(outer, cuts, (30 * MM, 20 * MM), mm=MM)
+
+
+@then(parsers.parse("the board is about {w:d} mm by {h:d} mm and holds {n:d} slots"))
+def _t_proper(context, w, h, n):
+    ring, rest, _ = context["result"]
+    xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+    assert (max(xs) - min(xs)) / MM == pytest.approx(w, abs=0.01)
+    assert (max(ys) - min(ys)) / MM == pytest.approx(h, abs=0.01)
+    assert len(rest) == n
+
+
+@then("the notes mention the panel frame")
+def _t_panel_note(context):
+    assert any("panel frame excluded" in n for n in context["result"][2])
+
+
+@then("no panel is found")
+def _t_nopanel(context):
+    assert context["result"] is None

@@ -482,7 +482,7 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     // Where the column ends meets copper of another net, the via short-circuits it.
     if (!v.net.empty())
       for (std::size_t li2 = 0; li2 < s.stackup.size(); ++li2) {
-        if (!s.stackup[li2].copper || (copperNode[li2] != vLow && copperNode[li2] != vHigh) ||
+        if (!s.stackup[li2].copper || (copperNode[li2] < vLow || copperNode[li2] > vHigh) ||
             !claims.count(li2))
           continue;
         const auto& claim = claims[li2];
