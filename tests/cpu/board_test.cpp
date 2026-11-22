@@ -292,6 +292,69 @@ SCENARIO("A component body can be left out, made a dielectric block, or made met
   }
 }
 
+SCENARIO("A fine layer of air next to the board resolves a body thinner than the coarse air cells") {
+  GIVEN("a metal body 0.4 mm tall on a board whose air cells are 1 mm") {
+    const auto snap = board::parseSnapshot(fixture(1, "", withBody("F.Cu", 0.0004)));
+    board::Selection sel;
+    sel.bodies["U1"] = {board::BodyKind::Metal, 1.0};
+    WHEN("the air has no fine layer") {
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("no cell centre lies inside the body, and the run notes say it was left out") {
+        bool found = false;
+        for (const auto& n : model.notes)
+          found =
+              found || (n.find("U1") != std::string::npos && n.find("covers no cell") != std::string::npos);
+        REQUIRE(found);
+      }
+    }
+    WHEN("the first 1 mm of air uses 0.25 mm cells") {
+      board::GridPlan plan = kPlan;
+      plan.airNearCell = 0.25e-3;
+      plan.airNearHeight = 1e-3;
+      const auto model = board::voxelize(snap, sel, plan, kF0);
+      THEN("the body fills 2 z cells under each of its 2 x 2 lateral cells: 8 cells") {
+        REQUIRE(cellsWith(model, static_cast<std::uint8_t>(model.materials.size() - 1)) == 8);
+      }
+      AND_THEN("the air still spans the same margin and no cell is larger than the coarse air cell") {
+        const auto& g = model.grid;
+        const std::size_t nz = g.cells(fdtd::Z);
+        REQUIRE(g.edge(fdtd::Z, nz) - g.edge(fdtd::Z, 0) ==
+                Approx(0.0008 + 2 * kPlan.airMargin).margin(1e-9)); // 0.8 mm board plus both margins
+        for (std::size_t k = 0; k < nz; ++k)
+          REQUIRE(g.cellSize(fdtd::Z, k) <= kPlan.airCell + 1e-12);
+      }
+    }
+  }
+}
+
+SCENARIO("A body can float off the board, like a metal strip on top of a part") {
+  GIVEN("a metal body 0.25 mm tall whose near face is 0.5 mm above the board, in 0.25 mm air cells") {
+    std::string comp = withBody("F.Cu", 0.00025);
+    comp.insert(comp.find("\"height\""), "\"offset\":0.0005,");
+    const auto snap = board::parseSnapshot(fixture(1, "", comp));
+    board::Selection sel;
+    sel.bodies["U1"] = {board::BodyKind::Metal, 1.0};
+    board::GridPlan plan = kPlan;
+    plan.airNearCell = 0.25e-3;
+    plan.airNearHeight = 1e-3;
+    const auto model = board::voxelize(snap, sel, plan, kF0);
+    THEN("it fills one z cell, 0.5 to 0.75 mm above the board, and the air below it stays empty") {
+      const std::uint8_t metal = static_cast<std::uint8_t>(model.materials.size() - 1);
+      REQUIRE(model.materials.back().pec);
+      REQUIRE(cellsWith(model, metal) == 4); // 2 x 2 lateral cells, one z cell
+      const auto& g = model.grid;
+      std::size_t k = 0; // the metal cell above the lateral cell (6, 6)
+      while (k < g.cells(fdtd::Z) && model.cellMaterial[g.cellIndex(6, 6, k)] != metal)
+        ++k;
+      REQUIRE(k < g.cells(fdtd::Z));
+      REQUIRE(model.cellMaterial[g.cellIndex(6, 6, k - 1)] == 0); // 0.25 to 0.5 mm above: air
+      REQUIRE(model.cellMaterial[g.cellIndex(6, 6, k - 2)] == 0); // 0 to 0.25 mm above: air
+      REQUIRE(model.cellMaterial[g.cellIndex(6, 6, k - 3)] != 0); // the board itself
+      REQUIRE(g.cellSize(fdtd::Z, k) == Approx(0.25e-3).margin(1e-9));
+    }
+  }
+}
+
 SCENARIO("A component's pads and do-not-populate flag are read from the snapshot") {
   GIVEN("a part R5 with two pads on two nets, marked DNP and surface-mounted") {
     const auto snap =
@@ -550,6 +613,307 @@ SCENARIO("A port as wide as the copper it feeds is flagged in the run notes") {
       REQUIRE(noteContains(wide, "port 'P1'", "apparent loss"));
       REQUIRE(noteContains(wide, "2.8", "wide"));
       REQUIRE(!noteContains(narrow, "port 'P1'", "apparent loss"));
+    }
+  }
+}
+
+SCENARIO("A via narrower than the grid cell still joins the layers") {
+  GIVEN("a 0.65 mm via placed midway between grid nodes on a 1 mm lateral grid") {
+    std::string text = fixture();
+    text.replace(
+        text.find("\"vias\":[]"), 9,
+        R"("vias":[{"x":0.0055,"y":0.0055,"diameter":0.00065,"drill":0.0003,"net":"GND","owner":""}])");
+    const auto snap = board::parseSnapshot(text);
+    const auto model = board::voxelize(snap, board::Selection{}, kPlan, kF0);
+    THEN("a column of conducting edges runs through the whole dielectric") {
+      std::size_t columns = 0;
+      for (const auto& e : model.pecEdges)
+        columns += e.axis == fdtd::Z;
+      REQUIRE(columns > 0);
+    }
+  }
+}
+
+SCENARIO("Grid lines snap to the corners of a modelled body, so a 0.04 mm strip is resolved") {
+  GIVEN("a metal body 0.04 mm wide, placed off a 0.05 mm grid inside a fine refinement box") {
+    const std::string strip =
+        R"(,{"ref":"U1","value":"strip","x":0.005,"y":0.005,"layer":"F.Cu","body":{"polygon":[[0.005013,0.0036],[0.005053,0.0036],[0.005053,0.0064],[0.005013,0.0064]],"height":0.0018}})";
+    const auto snap = board::parseSnapshot(fixture(1, "", strip));
+    board::Selection sel;
+    sel.bodies["U1"] = {board::BodyKind::Metal, 1.0};
+    board::GridPlan plan = kPlan;
+    plan.refine = {{0.004, 0.003, 0.006, 0.007, 0.05e-3}};
+    auto strong = [&](bool snapped) {
+      plan.snapToGeometry = snapped;
+      const auto model = board::voxelize(snap, sel, plan, kF0);
+      return cellsWith(model, static_cast<std::uint8_t>(model.materials.size() - 1));
+    };
+    THEN("with snapping the strip is exactly one cell wide, so it is modelled") {
+      const std::size_t withSnap = strong(true);
+      REQUIRE(withSnap > 0);
+      AND_THEN("it holds more cells than without snapping, where a cell centre may miss it") {
+        REQUIRE(withSnap >= strong(false));
+      }
+    }
+  }
+}
+
+SCENARIO("A via can span only some of the copper layers, as a blind or micro via does") {
+  GIVEN("a three-layer board with a via drilled from the top layer to the first inner layer only") {
+    auto text = [](const std::string& via) {
+      return R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"hdi","kicad_version":"10"},
+        "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+        "stackup":[{"name":"F.Cu","kind":"copper"},
+                   {"name":"d1","kind":"dielectric","thickness":0.0004,"epsilon_r":4.4,"loss_tangent":0.02},
+                   {"name":"In1.Cu","kind":"copper"},
+                   {"name":"d2","kind":"dielectric","thickness":0.0004,"epsilon_r":4.4,"loss_tangent":0.02},
+                   {"name":"B.Cu","kind":"copper"}],
+        "copper":[],"vias":[)" +
+             via + R"(],"components":[]})";
+    };
+    auto columnEdges = [&](const std::string& via) {
+      const auto model = board::voxelize(board::parseSnapshot(text(via)), board::Selection{}, kPlan, kF0);
+      std::size_t n = 0;
+      for (const auto& e : model.pecEdges)
+        n += e.axis == fdtd::Z;
+      return n;
+    };
+    const std::string base = R"("x":0.005,"y":0.005,"diameter":0.0006,"drill":0.0003,"net":"GND","owner":"")";
+    const std::size_t full = columnEdges("{" + base + "}");
+    const std::size_t blind = columnEdges("{" + base + R"(,"from":"F.Cu","to":"In1.Cu"})");
+    THEN("it has fewer conducting edges than a through via, and about half as many here") {
+      REQUIRE(full > 0);
+      REQUIRE(blind > 0);
+      REQUIRE(blind < full);
+      REQUIRE(columnEdges("{" + base + R"(,"from":"In1.Cu","to":"F.Cu"})") == blind); // order does not matter
+    }
+    AND_THEN("naming a layer that is not copper is an error") {
+      REQUIRE_THROWS(columnEdges("{" + base + R"(,"from":"F.Cu","to":"nowhere"})"));
+    }
+  }
+}
+
+SCENARIO("A cutout in the board is air, not dielectric") {
+  GIVEN("the fixture board with a 2 mm square hole through its middle") {
+    std::string text = fixture();
+    const auto solid = board::parseSnapshot(text);
+    text.replace(text.find("\"stackup\""), 9,
+                 R"("cutouts":[[[0.004,0.004],[0.006,0.004],[0.006,0.006],[0.004,0.006]]],"stackup")");
+    const auto holed = board::parseSnapshot(text);
+    REQUIRE(holed.cutouts.size() == 1);
+    const auto a = board::voxelize(solid, board::Selection{}, kPlan, kF0);
+    const auto b = board::voxelize(holed, board::Selection{}, kPlan, kF0);
+    auto boardCells = [](const board::Model& m) {
+      return static_cast<std::size_t>(std::count_if(m.cellMaterial.begin(), m.cellMaterial.end(),
+                                                    [&](std::uint8_t id) { return id == 1; }));
+    };
+    THEN("the four 1 mm columns inside the hole, two cells deep, are air") {
+      REQUIRE(boardCells(a) - boardCells(b) == 8);
+    }
+  }
+}
+
+SCENARIO("A dielectric body can carry a loss tangent") {
+  GIVEN("a body of permittivity 6 and loss tangent 0.01") {
+    const auto snap = board::parseSnapshot(fixture(1, "", withBody()));
+    board::Selection sel;
+    sel.bodies["U1"] = {board::BodyKind::Dielectric, 6.0, 0.01};
+    const auto model = board::voxelize(snap, sel, kPlan, kF0);
+    THEN("its material has the equivalent conductivity at the centre frequency") {
+      const auto& m = model.materials.back();
+      REQUIRE(m.epsR == Approx(6.0));
+      REQUIRE(m.sigma == Approx(2 * 3.14159265358979 * kF0 * 8.8541878128e-12 * 6.0 * 0.01).epsilon(1e-6));
+    }
+  }
+  GIVEN("two bodies with the same permittivity but different loss") {
+    THEN("they are different materials") {
+      const auto snap = board::parseSnapshot(fixture(1, "", withBody()));
+      board::Selection a;
+      a.bodies["U1"] = {board::BodyKind::Dielectric, 6.0, 0.0};
+      board::Selection b;
+      b.bodies["U1"] = {board::BodyKind::Dielectric, 6.0, 0.02};
+      const auto ma = board::voxelize(snap, a, kPlan, kF0), mb = board::voxelize(snap, b, kPlan, kF0);
+      REQUIRE(ma.materials.back().sigma == Approx(0.0));
+      REQUIRE(mb.materials.back().sigma > 0.0);
+    }
+  }
+}
+
+namespace {
+bool anyNote(const board::Model& m, const std::string& a, const std::string& b = "") {
+  return std::any_of(m.notes.begin(), m.notes.end(), [&](const std::string& n) {
+    return n.find(a) != std::string::npos && (b.empty() || n.find(b) != std::string::npos);
+  });
+}
+std::string twoShapes(const std::string& netA, const std::string& netB, double bx0) {
+  return R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+    "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+    "stackup":[{"name":"F.Cu","kind":"copper"},
+               {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+               {"name":"B.Cu","kind":"copper"}],
+    "copper":[{"layer":"F.Cu","owner":"","net":")" +
+         netA + R"(","polygon":[[0.002,0.002],[0.005,0.002],[0.005,0.008],[0.002,0.008]]},
+              {"layer":"F.Cu","owner":"","net":")" +
+         netB + R"(","polygon":[[)" + std::to_string(bx0) + R"(,0.002],[0.008,0.002],[0.008,0.008],[)" +
+         std::to_string(bx0) + R"(,0.008]]}],
+    "vias":[],"components":[]})";
+}
+} // namespace
+
+SCENARIO("Copper of two nets that touch is reported, copper of one net is not") {
+  GIVEN("a feed track and a ground pour whose edges overlap by 0.5 mm") {
+    const auto m =
+        board::voxelize(board::parseSnapshot(twoShapes("RF", "GND", 0.0045)), board::Selection{}, kPlan, kF0);
+    THEN("the notes name both nets and the layer") {
+      REQUIRE(anyNote(m, "RF", "GND"));
+      REQUIRE(anyNote(m, "F.Cu"));
+    }
+  }
+  GIVEN("the same two shapes 1 mm apart") {
+    const auto m =
+        board::voxelize(board::parseSnapshot(twoShapes("RF", "GND", 0.006)), board::Selection{}, kPlan, kF0);
+    THEN("nothing is reported") {
+      REQUIRE_FALSE(anyNote(m, "touch"));
+    }
+  }
+  GIVEN("overlapping shapes of the same net") {
+    const auto m = board::voxelize(board::parseSnapshot(twoShapes("GND", "GND", 0.0045)), board::Selection{},
+                                   kPlan, kF0);
+    THEN("nothing is reported") {
+      REQUIRE_FALSE(anyNote(m, "touch"));
+    }
+  }
+}
+
+SCENARIO("A port whose terminals are joined by copper, or that floats, is reported") {
+  auto withPort = [](const std::string& copper, const std::string& vias) {
+    return R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"B.Cu","owner":"","net":"GND","polygon":[[0.0002,0.0002],[0.0098,0.0002],[0.0098,0.0098],[0.0002,0.0098]]},)" +
+           copper + R"(],
+      "vias":[)" +
+           vias + R"(],"components":[],
+      "ports":[{"name":"J1","layer":"F.Cu","layer_b":"B.Cu","a":[0.003,0.005],"width":0.0005,"impedance":50}]})";
+  };
+  const std::string strip =
+      R"({"layer":"F.Cu","owner":"","net":"RF","polygon":[[0.002,0.0045],[0.008,0.0045],[0.008,0.0055],[0.002,0.0055]]})";
+  GIVEN("a strip over a ground plane, with no via") {
+    const auto m = board::voxelize(board::parseSnapshot(withPort(strip, "")), board::Selection{}, kPlan, kF0);
+    THEN("the port is not reported as shorted") {
+      REQUIRE_FALSE(anyNote(m, "joined by copper"));
+    }
+  }
+  GIVEN("the same strip with a via from its far end to the ground plane") {
+    const auto m = board::voxelize(
+        board::parseSnapshot(withPort(
+            strip, R"({"x":0.0075,"y":0.005,"diameter":0.0004,"drill":0.0002,"net":"GND","owner":""})")),
+        board::Selection{}, kPlan, kF0);
+    THEN("the notes say the port's terminals are joined by copper") {
+      REQUIRE(anyNote(m, "port 'J1'", "joined by copper"));
+    }
+  }
+  GIVEN("a port placed where there is no copper on its driven layer") {
+    const auto m = board::voxelize(
+        board::parseSnapshot(withPort(
+            R"({"layer":"F.Cu","owner":"","net":"RF","polygon":[[0.007,0.0045],[0.008,0.0045],[0.008,0.0055],[0.007,0.0055]]})",
+            "")),
+        board::Selection{}, kPlan, kF0);
+    THEN("the notes say a terminal floats") {
+      REQUIRE(anyNote(m, "port 'J1'", "floats"));
+    }
+  }
+}
+
+SCENARIO("Thin dielectric bodies, touching metal bodies and model labels are reported in the notes") {
+  const std::string two =
+      R"(,{"ref":"M1","value":"a","x":0.005,"y":0.005,"layer":"F.Cu","body":{"polygon":[[0.0036,0.0036],[0.0050,0.0036],[0.0050,0.0064],[0.0036,0.0064]],"height":0.0018}},
+          {"ref":"M2","value":"b","x":0.005,"y":0.005,"layer":"F.Cu","body":{"polygon":[[0.0050,0.0036],[0.0064,0.0036],[0.0064,0.0064],[0.0050,0.0064]],"height":0.0018}})";
+  const auto snap = board::parseSnapshot(fixture(1, "", two));
+  GIVEN("two metal bodies that share an edge") {
+    board::Selection sel;
+    sel.bodies["M1"] = {board::BodyKind::Metal, 1.0};
+    sel.bodies["M2"] = {board::BodyKind::Metal, 1.0};
+    const auto m = board::voxelize(snap, sel, kPlan, kF0);
+    THEN("the notes say they touch in the grid") {
+      REQUIRE(anyNote(m, "M1", "touch in the grid"));
+    }
+  }
+  GIVEN("a dielectric body 0.9 mm tall on 1 mm air cells, so one cell thick") {
+    const auto thin = board::parseSnapshot(fixture(1, "", withBody("F.Cu", 0.0009)));
+    board::Selection sel;
+    sel.bodies["U1"] = {board::BodyKind::Dielectric, 6.0};
+    const auto m = board::voxelize(thin, sel, kPlan, kF0);
+    THEN("the notes say it is poorly resolved") {
+      REQUIRE(anyNote(m, "U1", "poorly resolved"));
+    }
+  }
+  GIVEN("a dielectric body with and without a label") {
+    board::Selection sel;
+    sel.bodies["M1"] = {board::BodyKind::Dielectric, 6.0};
+    THEN("an unlabelled body is called assumed, a labelled one prints its label") {
+      REQUIRE(anyNote(board::voxelize(snap, sel, kPlan, kF0), "M1", "assumed, not fitted"));
+      sel.bodies["M1"].label = "not fitted: poor datasheet match";
+      REQUIRE(anyNote(board::voxelize(snap, sel, kPlan, kF0), "M1", "not fitted: poor datasheet match"));
+    }
+  }
+}
+
+SCENARIO("A metal component body joins the copper it sits on in the port-path check") {
+  GIVEN("a feed strip, a separate ground patch, a via from the patch to the plane, and a metal body bridging "
+        "the strip and the patch") {
+    const std::string text =
+        R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"B.Cu","owner":"","net":"GND","polygon":[[0.0002,0.0002],[0.0098,0.0002],[0.0098,0.0098],[0.0002,0.0098]]},
+                {"layer":"F.Cu","owner":"","net":"RF","polygon":[[0.002,0.0045],[0.005,0.0045],[0.005,0.0055],[0.002,0.0055]]},
+                {"layer":"F.Cu","owner":"","net":"GND","polygon":[[0.0065,0.0035],[0.0085,0.0035],[0.0085,0.0065],[0.0065,0.0065]]}],
+      "vias":[{"x":0.0075,"y":0.005,"diameter":0.0006,"drill":0.0003,"net":"GND","owner":""}],
+      "components":[{"ref":"X1","value":"clip","x":0.0055,"y":0.005,"layer":"F.Cu",
+                     "body":{"polygon":[[0.0035,0.004],[0.0075,0.004],[0.0075,0.006],[0.0035,0.006]],"height":0.0009}}],
+      "ports":[{"name":"J1","layer":"F.Cu","layer_b":"B.Cu","a":[0.003,0.005],"width":0.0005,"impedance":50}]})";
+    board::Selection sel;
+    sel.bodies["X1"] = {board::BodyKind::Metal, 1.0};
+    const auto withBody = board::voxelize(board::parseSnapshot(text), sel, kPlan, kF0);
+    const auto without = board::voxelize(board::parseSnapshot(text), board::Selection{}, kPlan, kF0);
+    THEN("with the body the port's terminals are joined by copper, without it they are not") {
+      REQUIRE(anyNote(withBody, "port 'J1'", "joined by copper"));
+      REQUIRE_FALSE(anyNote(without, "joined by copper"));
+    }
+  }
+}
+
+SCENARIO("A via that lands on copper of another net is reported") {
+  auto board = [](const std::string& viaNet, double viaX) {
+    return R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"F.Cu","owner":"","net":"RF","polygon":[[0.002,0.0045],[0.006,0.0045],[0.006,0.0055],[0.002,0.0055]]}],
+      "vias":[{"x":)" +
+           std::to_string(viaX) + R"(,"y":0.005,"diameter":0.0006,"drill":0.0003,"net":")" + viaNet +
+           R"(","owner":""}],"components":[]})";
+  };
+  GIVEN("a ground via in the middle of an RF strip") {
+    const auto m = board::voxelize(board::parseSnapshot(board("GND", 0.004)), board::Selection{}, kPlan, kF0);
+    THEN("the notes say it short-circuits the RF net") {
+      REQUIRE(anyNote(m, "via of net 'GND'", "RF"));
+    }
+  }
+  GIVEN("a ground via 3 mm from the strip, and an RF via on the strip") {
+    THEN("neither is reported") {
+      REQUIRE_FALSE(
+          anyNote(board::voxelize(board::parseSnapshot(board("GND", 0.008)), board::Selection{}, kPlan, kF0),
+                  "via of net"));
+      REQUIRE_FALSE(
+          anyNote(board::voxelize(board::parseSnapshot(board("RF", 0.004)), board::Selection{}, kPlan, kF0),
+                  "via of net"));
     }
   }
 }

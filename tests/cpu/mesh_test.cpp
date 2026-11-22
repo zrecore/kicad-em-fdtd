@@ -62,3 +62,18 @@ SCENARIO("Grid lines can be snapped onto geometry edges") {
     }
   }
 }
+
+SCENARIO("Two snap positions closer than a cell both become grid lines") {
+  GIVEN("0.05 cells and snap targets 0.04 apart, as the two sides of a 0.04 mm gap") {
+    const auto edges = board::gradedEdges(0.0, 1.0, 0.05, {}, 1.3, {0.523, 0.563});
+    THEN("both positions are grid lines, one cell of 0.04 apart") {
+      bool a = false, b = false;
+      for (double e : edges) {
+        a = a || std::abs(e - 0.523) < 1e-12;
+        b = b || std::abs(e - 0.563) < 1e-12;
+      }
+      REQUIRE(a);
+      REQUIRE(b);
+    }
+  }
+}

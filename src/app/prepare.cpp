@@ -109,7 +109,9 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
                                  plan.airMargin + static_cast<double>(plan.pmlCells) * plan.coarseCell,
                              .airCell = plan.coarseCell,
                              .refine = refine,
-                             .snapToGeometry = true};
+                             .snapToGeometry = true,
+                             .airNearCell = plan.airNearCell,
+                             .airNearHeight = plan.airNearHeight};
   board::Selection withBodies = selection;
   if (withBodies.defaultBody.kind == board::BodyKind::Ignore) { // the settings give the default treatment
     const std::string mode = settings.text("component_bodies");

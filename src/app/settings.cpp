@@ -276,6 +276,14 @@ void Settings::build() {
   num("fine_cell_mm", "Fine cell near ports",
       "Cell size near ports and small features. 0 picks it automatically.", "Mesh", "mm", Tier::Advanced, 0,
       10, {"refine", "gap", "feature", "local"});
+  num("air_near_cell_mm", "Fine air cell next to the board",
+      "Vertical cell size in the air layer next to the board, so a part body thinner than the coarse cells "
+      "is modelled (a body smaller than the grid is left out and reported). 0 keeps the coarse cell.",
+      "Mesh", "mm", Tier::Advanced, 0, 10, {"body", "height", "vertical", "z", "air"});
+  num("air_near_height_mm", "Fine air layer height",
+      "Thickness of the layer that uses the fine air cell; the cells then grow to the coarse size. Set it to "
+      "the tallest body.",
+      "Mesh", "mm", Tier::Advanced, 0, 50, {"body", "height", "vertical", "z", "air"});
   num("dielectric_cells_min", "Cells across each dielectric layer",
       "Minimum vertical cells through each board layer.", "Mesh", "", Tier::Advanced, 1, 20,
       {"layer", "thickness", "vertical", "z"});
@@ -441,7 +449,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return m.portImpedanceOhm;
   if (key == "boundary_distance_wavelengths")
     return m.boundaryDistanceWavelengths;
-  if (key == "cells_per_wavelength" || key == "fine_cell_mm")
+  if (key == "cells_per_wavelength" || key == "fine_cell_mm" || key == "air_near_cell_mm" ||
+      key == "air_near_height_mm")
     return 0.0;
   if (key == "dielectric_cells_min")
     return 3.0;
@@ -769,6 +778,8 @@ RunPlan makePlan(const Settings& s, double maxEpsilonR, double minDielectricThic
                          : p.coarseCell;
   const double centre = 0.5 * (p.bandHz[0] + p.bandHz[1]);
   p.airMargin = s.number("boundary_distance_wavelengths") * fdtd::units::kSpeedOfLight / centre;
+  p.airNearCell = s.number("air_near_cell_mm") * 1e-3;
+  p.airNearHeight = s.number("air_near_height_mm") * 1e-3;
   p.pmlCells = static_cast<std::size_t>(s.number("pml_cells"));
   p.maxSteps = static_cast<std::size_t>(s.number("max_steps"));
   p.sampleEvery = static_cast<std::size_t>(s.number("sample_every"));

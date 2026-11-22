@@ -8,7 +8,9 @@ class SnapshotError(ValueError):
     pass
 
 
-def build_snapshot(board_name, kicad_version, outline, stackup, copper, vias, components, ports=(), notes=()):
+def build_snapshot(
+    board_name, kicad_version, outline, stackup, copper, vias, components, ports=(), notes=(), cutouts=()
+):
     """Lengths in metres, layers top to bottom; `copper` items: dict(layer, owner, net, polygon, holes)."""
     snap = {
         "format": FORMAT,
@@ -22,6 +24,8 @@ def build_snapshot(board_name, kicad_version, outline, stackup, copper, vias, co
         "ports": list(ports),
         "notes": list(notes),
     }
+    if cutouts:
+        snap["cutouts"] = [list(c) for c in cutouts]
     validate_snapshot(snap)
     return snap
 

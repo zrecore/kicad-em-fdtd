@@ -61,7 +61,10 @@ void saveSelection(const std::filesystem::path& file, const StoredSelection& s) 
   }
   j["bodies"] = Json::object();
   for (const auto& [ref, b] : s.bodies)
-    j["bodies"][ref] = {{"kind", bodyName(b.kind)}, {"epsilon_r", b.epsilonR}};
+    j["bodies"][ref] = {{"kind", bodyName(b.kind)},
+                        {"epsilon_r", b.epsilonR},
+                        {"loss_tangent", b.lossTangent},
+                        {"label", b.label}};
   j["default_body"] = {{"kind", bodyName(s.defaultBody.kind)}, {"epsilon_r", s.defaultBody.epsilonR}};
   std::filesystem::create_directories(file.parent_path());
   const auto tmp = std::filesystem::path(file).concat(".tmp"); // write whole or not at all
@@ -103,7 +106,8 @@ StoredSelection loadSelection(const std::filesystem::path& file) {
     }
     const Json bodies = j.value("bodies", Json::object());
     for (const auto& [ref, b] : bodies.items())
-      s.bodies[ref] = {bodyFrom(b.value("kind", "ignore")), b.value("epsilon_r", 4.0)};
+      s.bodies[ref] = {bodyFrom(b.value("kind", "ignore")), b.value("epsilon_r", 4.0),
+                       b.value("loss_tangent", 0.0), b.value("label", std::string())};
     if (j.contains("default_body"))
       s.defaultBody = {bodyFrom(j["default_body"].value("kind", "ignore")),
                        j["default_body"].value("epsilon_r", 4.0)};

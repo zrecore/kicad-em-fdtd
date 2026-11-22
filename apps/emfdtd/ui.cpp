@@ -38,6 +38,38 @@ float px(float v) {
   return v * ImGui::GetFontSize() / 16.0f;
 }
 
+// A fixed-width control never wider than the room left in its pane, so a narrow window shrinks it instead of
+// clipping it.
+float fitW(float w) {
+  return std::min(w, std::max(px(60), ImGui::GetContentRegionAvail().x));
+}
+
+// Is there room left on the current line, after the last item, for something `need` pixels wide?
+bool fitsOnLine(float need) {
+  const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+  return right - ImGui::GetItemRectMax().x - ImGui::GetStyle().ItemSpacing.x >= need;
+}
+
+// Width a checkbox with this label needs.
+float checkboxWidth(const char* label) {
+  return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+         ImGui::CalcTextSize(label, nullptr, true).x;
+}
+
+// Continue on this line if `need` pixels are left, otherwise start a new row: rows of controls flow like
+// text.
+void flowSameLine(float need) {
+  if (fitsOnLine(need))
+    ImGui::SameLine();
+}
+
+// Keep the next button on this line only if it fits, otherwise let it start a new row (nothing runs off the
+// pane).
+void sameLineIfFits(const char* label) {
+  if (fitsOnLine(ImGui::CalcTextSize(label, nullptr, true).x + 2 * ImGui::GetStyle().FramePadding.x))
+    ImGui::SameLine();
+}
+
 // ---- accessibility tree
 // ------------------------------------------------------------------------------------ Each widget records
 // what it is for a screen reader straight after it is drawn. The tree is only built while an assistive
@@ -104,7 +136,9 @@ void wrapped(const std::string& text) {
 }
 
 void coloured(ImVec4 colour, const std::string& text) {
+  ImGui::PushTextWrapPos(0.0f); // wrap at the pane's edge: long status lines never run off it
   ImGui::TextColored(colour, "%s", text.c_str());
+  ImGui::PopTextWrapPos();
   noteText(text);
 }
 
@@ -121,8 +155,17 @@ bool smallButton(const char* label, const char* name = nullptr) {
 }
 
 bool checkbox(const char* label, bool* value) {
-  const bool hit = ImGui::Checkbox(label, value);
+  // A label wider than the pane wraps beside the box instead of running off the pane.
+  const float room =
+      ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x;
+  const bool wrap = ImGui::CalcTextSize(label, nullptr, true).x > room;
+  const bool hit =
+      wrap ? ImGui::Checkbox((std::string("##") + label).c_str(), value) : ImGui::Checkbox(label, value);
   note(viz::access::Role::CheckBox, visibleName(label));
+  if (wrap) {
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::TextWrapped("%s", visibleName(label).c_str());
+  }
   if (gTree) {
     gTree->mutableBack().checkable = true;
     gTree->mutableBack().checked = *value;
@@ -788,7 +831,7 @@ void Ui::drawSetting(const std::string& key) {
     }
   }
   try {
-    ImGui::SetNextItemWidth(px(170));
+    ImGui::SetNextItemWidth(fitW(px(170)));
     if (d.kind == app::Kind::Number) {
       std::string& buf = buffers[key];
       char text[48];
@@ -850,7 +893,7 @@ void Ui::drawSetting(const std::string& key) {
               return p.second.label;
         return id;
       };
-      ImGui::SetNextItemWidth(px(330));
+      ImGui::SetNextItemWidth(fitW(px(330)));
       const bool open = ImGui::BeginCombo("##c", label(current).c_str());
       note(viz::access::Role::ComboBox, d.label, label(current), d.help, key);
       if (open) {
@@ -977,7 +1020,7 @@ void Ui::drawSettings() {
   ImGui::Separator();
   if (button("Save for this board"))
     applyToProject();
-  ImGui::SameLine();
+  sameLineIfFits("Reset all to defaults");
   if (button("Reset all to defaults")) {
     env_.settings.resetAll();
     dirty_ = true;
@@ -985,10 +1028,10 @@ void Ui::drawSettings() {
     message_ = "All settings are back to the profile defaults.";
   }
   static char name[64] = "my-profile";
-  ImGui::SetNextItemWidth(px(170));
+  ImGui::SetNextItemWidth(fitW(px(170)));
   ImGui::InputText("##pname", name, sizeof name);
   note(viz::access::Role::TextInput, "Profile name", name);
-  ImGui::SameLine();
+  sameLineIfFits("Save as my profile");
   if (button("Save as my profile")) {
     try {
       const fs::path dir = app::userConfigDir() / "profiles";
@@ -1001,7 +1044,7 @@ void Ui::drawSettings() {
   }
   const fs::path dir = app::userConfigDir() / "profiles";
   if (fs::is_directory(dir)) {
-    ImGui::SetNextItemWidth(px(250));
+    ImGui::SetNextItemWidth(fitW(px(250)));
     const bool loadOpen = ImGui::BeginCombo("##load", "Load one of my profiles...");
     note(viz::access::Role::ComboBox, "Load one of my profiles");
     if (loadOpen) {
@@ -1156,7 +1199,7 @@ void Ui::drawModelSelection() {
     ImGui::SameLine(px(190));
     static const char* names[] = {"Auto", "Open", "Short", "Values"};
     int cur = static_cast<int>(t.state);
-    ImGui::SetNextItemWidth(px(110));
+    ImGui::SetNextItemWidth(fitW(px(110)));
     const bool open = ImGui::BeginCombo("##treat", names[cur]);
     note(viz::access::Role::ComboBox, strf("Treatment of %s", comp.ref.c_str()), names[cur],
          "Auto reads the value field; Open leaves the gap empty; Short is a 0 ohm link; Values sets R, L and "
@@ -1190,7 +1233,7 @@ void Ui::drawModelSelection() {
       for (int k = 0; k < 3; ++k) {
         char buf[32];
         std::snprintf(buf, sizeof buf, "%s", txt[static_cast<std::size_t>(k)].c_str());
-        ImGui::SetNextItemWidth(px(150));
+        ImGui::SetNextItemWidth(fitW(px(150)));
         const bool edited = ImGui::InputTextWithHint(strf("##v%d", k).c_str(), hint[k], buf, sizeof buf);
         note(viz::access::Role::TextInput,
              strf("%s of %s",
@@ -1246,7 +1289,7 @@ void Ui::drawModelSelection() {
     static const char* bodyNames[] = {"Default", "Ignore", "Dielectric", "Metal"};
     ImGui::Text("%s  %s", comp.ref.c_str(), comp.value.c_str());
     ImGui::SameLine(px(190));
-    ImGui::SetNextItemWidth(px(110));
+    ImGui::SetNextItemWidth(fitW(px(110)));
     const bool open = ImGui::BeginCombo("##body", bodyNames[cur]);
     note(viz::access::Role::ComboBox, strf("Body of %s", comp.ref.c_str()), bodyNames[cur],
          "Default follows the Component bodies setting; Ignore leaves the body out; Dielectric and Metal "
@@ -1272,8 +1315,8 @@ void Ui::drawModelSelection() {
     const auto now = env_.selection.bodies.find(comp.ref); // re-found: the combo may just have changed it
     if (now != env_.selection.bodies.end() && now->second.kind == board::BodyKind::Dielectric) {
       float eps = static_cast<float>(now->second.epsilonR);
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(px(140));
+      flowSameLine(px(110));
+      ImGui::SetNextItemWidth(fitW(px(140)));
       if (sliderFloat(strf("Permittivity of %s", comp.ref.c_str()).c_str(), "##beps", &eps, 1.0f, 30.0f,
                       "epsilon_r %.1f")) {
         env_.selection.bodies[comp.ref].epsilonR = static_cast<double>(eps);
@@ -1845,13 +1888,13 @@ void Ui::drawFarFieldTab(float w, float h) {
   }
   farFreq_ = std::clamp(farFreq_, 0, static_cast<int>(results.size()) - 1);
   int k = farFreq_;
-  ImGui::SetNextItemWidth(px(220));
+  ImGui::SetNextItemWidth(fitW(px(220)));
   if (sliderInt("Frequency", "##farf", &k, 0, static_cast<int>(results.size()) - 1, "frequency %d"))
     farFreq_ = k;
   const FarResult& r = results[static_cast<std::size_t>(farFreq_)];
-  ImGui::SameLine();
+  flowSameLine(px(80));
   coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text), strf("%.4g GHz", r.frequencyHz * 1e-9));
-  ImGui::SameLine();
+  flowSameLine(checkboxWidth("realised gain (off: directivity)"));
   checkbox("realised gain (off: directivity)", &farRealised_);
   const auto& f = r.field;
   const auto& a = r.figures;
@@ -1863,7 +1906,23 @@ void Ui::drawFarFieldTab(float w, float h) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
   dl->AddRectFilled(o, {o.x + w, o.y + h - ImGui::GetFrameHeightWithSpacing()}, pal.plotBg);
-  const float colW = std::min((w - 40) / 3, (h - 190) * 1.0f);
+  // the two summary lines wrap under the plots, so the plots leave the room those lines need
+  const std::string farLine1 =
+      strf("Peak %s %.2f dBi at theta %.0f deg, phi %.0f deg   |   directivity %.2f dBi   |   radiation "
+           "efficiency %.0f %%   |   S11 %.1f dB",
+           farRealised_ ? "realised gain" : "directivity", 10 * std::log10(std::max(scaleLin, 1e-6)),
+           a.peakThetaDeg, a.peakPhiDeg, 10 * std::log10(std::max(a.directivity, 1e-6)), 100 * a.efficiency,
+           r.s11Db);
+  const std::string farLine2 =
+      strf("Gain %.2f dBi (referenced to the accepted power); realised gain %.2f dBi includes the "
+           "mismatch. Pattern rings every 10 dB below the top (%.0f dBi). Only losses inside the "
+           "model count towards efficiency (not copper roughness, connectors, or a missing "
+           "enclosure).",
+           10 * std::log10(std::max(a.gain, 1e-6)), 10 * std::log10(std::max(a.realisedGain, 1e-6)), top);
+  const float textWrap = std::max(px(100), w - 40);
+  const float textH = ImGui::CalcTextSize(farLine1.c_str(), nullptr, false, textWrap).y +
+                      ImGui::CalcTextSize(farLine2.c_str(), nullptr, false, textWrap).y + px(8);
+  const float colW = std::min((w - 40) / 3, h - ImGui::GetFrameHeightWithSpacing() - 32 - textH);
   const float radius = std::max(40.0f, 0.5f * colW - 20);
   struct Cut {
     const char* title;
@@ -1892,7 +1951,8 @@ void Ui::drawFarFieldTab(float w, float h) {
                         [&](double ang) { return dbi(thetaIndex(std::numbers::pi / 2), phiIndex(ang)); }}};
   for (int c = 0; c < 3; ++c) {
     const ImVec2 centre{o.x + 20 + colW * (static_cast<float>(c) + 0.5f), o.y + 40 + radius};
-    dl->AddText({centre.x - radius, o.y + 4}, pal.text, cuts[c].title);
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {centre.x - colW * 0.5f + 4, o.y + 4}, pal.text,
+                cuts[c].title, nullptr, colW - 8);
     for (double ring = 0; ring <= range; ring += 10) {
       const float rr = static_cast<float>((range - ring) / range) * radius;
       dl->AddCircle(centre, std::max(rr, 1.0f), pal.gridLine, 64);
@@ -1923,22 +1983,11 @@ void Ui::drawFarFieldTab(float w, float h) {
     dl->AddText({centre.x - 8, centre.y - radius - 14}, pal.dim, c == 2 ? "+y" : "+z");
   }
   const float ty = o.y + 40 + 2 * radius + 24;
-  dl->AddText(
-      {o.x + 20, ty}, pal.text,
-      strf("Peak %s %.2f dBi at theta %.0f deg, phi %.0f deg   |   directivity %.2f dBi   |   radiation "
-           "efficiency %.0f %%   |   S11 %.1f dB",
-           farRealised_ ? "realised gain" : "directivity", 10 * std::log10(std::max(scaleLin, 1e-6)),
-           a.peakThetaDeg, a.peakPhiDeg, 10 * std::log10(std::max(a.directivity, 1e-6)), 100 * a.efficiency,
-           r.s11Db)
-          .c_str());
-  dl->AddText({o.x + 20, ty + 20}, pal.dim,
-              strf("Gain %.2f dBi (referenced to the accepted power); realised gain %.2f dBi includes the "
-                   "mismatch. Pattern rings every 10 dB below the top (%.0f dBi). Only losses inside the "
-                   "model count towards efficiency (not copper roughness, connectors, or a missing "
-                   "enclosure).",
-                   10 * std::log10(std::max(a.gain, 1e-6)), 10 * std::log10(std::max(a.realisedGain, 1e-6)),
-                   top)
-                  .c_str());
+  const ImVec2 t1{o.x + 20, ty};
+  dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), t1, pal.text, farLine1.c_str(), nullptr, textWrap);
+  const float h1 = ImGui::CalcTextSize(farLine1.c_str(), nullptr, false, textWrap).y;
+  dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {t1.x, t1.y + h1 + px(4)}, pal.dim, farLine2.c_str(),
+              nullptr, textWrap);
   noteText(
       strf("Far-field gain pattern at %.4g GHz in three cuts. Peak %s %.2f dBi at theta %.0f degrees, phi "
            "%.0f degrees. Directivity %.2f dBi. Radiation efficiency %.0f percent. S11 %.1f dB.",
@@ -2017,12 +2066,12 @@ void Ui::drawSweepPanel() {
   char key[64], values[96];
   std::snprintf(key, sizeof key, "%s", sweepKey_.c_str());
   std::snprintf(values, sizeof values, "%s", sweepValues_.c_str());
-  ImGui::SetNextItemWidth(px(220));
+  ImGui::SetNextItemWidth(fitW(px(220)));
   if (ImGui::InputTextWithHint("##swkey", "setting (mesh_preset)", key, sizeof key))
     sweepKey_ = key;
   note(viz::access::Role::TextInput, "Setting to sweep", sweepKey_, "A setting name, or geom.NET.x");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(px(260));
+  flowSameLine(px(110));
+  ImGui::SetNextItemWidth(fitW(px(260)));
   if (ImGui::InputTextWithHint("##swvals", "values (a,b,c or start:stop:count)", values, sizeof values))
     sweepValues_ = values;
   note(viz::access::Role::TextInput, "Values to sweep", sweepValues_,
@@ -2136,7 +2185,7 @@ void Ui::drawProbePanel() {
       "most 16). The spectra appear in a Probes tab and are saved as probes.csv in the results folder.");
   char buf[200];
   std::snprintf(buf, sizeof buf, "%s", probeText_.c_str());
-  ImGui::SetNextItemWidth(px(420));
+  ImGui::SetNextItemWidth(fitW(px(420)));
   if (ImGui::InputTextWithHint("##probes", "x,y,z; x,y,z  (mm)", buf, sizeof buf)) {
     probeText_ = buf;
     dirty_ = true;
@@ -2335,7 +2384,7 @@ void Ui::drawCurrent(ImDrawList* dl, const std::function<bool(double, double, do
 // Phase of the animation, shared by the field slice, the 3D volume and the surface current: while it plays,
 // its speed; while it is paused, a slider to scrub through one cycle.
 void Ui::animationControl() {
-  ImGui::SetNextItemWidth(px(150));
+  ImGui::SetNextItemWidth(fitW(px(150)));
   if (paused_) {
     float deg = static_cast<float>(
         std::fmod(std::fmod(phase_, 2 * std::numbers::pi) + 2 * std::numbers::pi, 2 * std::numbers::pi) *
@@ -2387,7 +2436,7 @@ void Ui::refreshPoynting() {
   poyntingFreq_ = freq_;
 }
 
-void Ui::drawSliceTab(float w, float h) {
+void Ui::drawSliceTab(float w, float /*h*/) {
   const PanelColours panelColours(lightSlice_, dark_);
   if (!phasors_) {
     ImGui::TextColored(ImColor(pal.dim), "The field animation appears here once the run starts.");
@@ -2401,38 +2450,46 @@ void Ui::drawSliceTab(float w, float h) {
   if (sliceControlsOpen_) {
     const int n = static_cast<int>(phasors_->frequencies());
     int k = static_cast<int>(freq_);
-    ImGui::SetNextItemWidth(px(260));
+    ImGui::SetNextItemWidth(fitW(px(260)));
     if (sliderInt("Frequency index", "##freq", &k, 0, n - 1, "frequency index %d"))
       freq_ = static_cast<std::size_t>(k);
-    ImGui::SameLine();
+    flowSameLine(px(80));
     coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text), strf("%.4g GHz", phasors_->frequencyHz(freq_) * 1e-9));
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("pause"));
     checkbox("pause", &paused_);
-    ImGui::SameLine();
+    flowSameLine(px(120));
     animationControl();
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("board outline"));
     checkbox("board outline", &showOutline_);
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("field"));
     checkbox("field", &showFieldSlice_);
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("power flow"));
     checkbox("power flow", &showPowerSlice_);
     if (currentH_) {
-      ImGui::SameLine();
+      flowSameLine(checkboxWidth("surface current"));
       checkbox("surface current", &showCurrentSlice_);
       if (showCurrentSlice_) {
-        ImGui::SameLine();
+        flowSameLine(checkboxWidth("bottom layer"));
         checkbox("bottom layer", &currentBottom_);
       }
     }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(px(160));
+    flowSameLine(px(110));
+    ImGui::SetNextItemWidth(fitW(px(160)));
     sliderFloat("Brightness", "##b", &brightness, -2.0f, 2.0f, "brightness %.1f");
   } else {
     coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text), strf("%.4g GHz", phasors_->frequencyHz(freq_) * 1e-9));
   }
   scaleFactor_ = std::pow(10.0, -brightness);
   const ImVec2 p = ImGui::GetCursorScreenPos();
-  sliceRect_ = {p.x, p.y, w, h - ImGui::GetFrameHeightWithSpacing() - 44};
+  const std::string sliceCaption = strf(
+      "%s field between the copper layers, animated. Drag to pan, wheel to zoom, double-click to reset. "
+      "Colours: see the bar (change them in Settings, View); grey = copper, line = board outline (toggle "
+      "\"board outline\").",
+      env_.settings.text("field_component").c_str());
+  // the caption wraps under the picture, so the picture leaves exactly the room it needs
+  const float sliceCaptionH =
+      ImGui::CalcTextSize(sliceCaption.c_str(), nullptr, false, w).y + ImGui::GetStyle().ItemSpacing.y;
+  sliceRect_ = {p.x, p.y, w, std::max(px(120), ImGui::GetContentRegionAvail().y - sliceCaptionH)};
   if (gTree) {
     gTree->add(
         {.role = viz::access::Role::Image,
@@ -2572,14 +2629,10 @@ void Ui::drawSliceTab(float w, float h) {
         lightSlice_, layerK);
     dl->PopClipRect();
   }
-  ImGui::TextColored(ImColor(pal.dim),
-                     "%s field between the copper layers, animated. Drag to pan, wheel to zoom, double-click "
-                     "to reset. Colours: see the bar (change them in Settings, "
-                     "View); grey = copper, line = board outline (toggle \"board outline\").",
-                     env_.settings.text("field_component").c_str());
+  coloured(ImColor(pal.dim), sliceCaption);
 }
 
-void Ui::drawVolumeTab(float w, float h) {
+void Ui::drawVolumeTab(float w, float /*h*/) {
   const PanelColours panelColours(lightVolume_, dark_);
   if (!volPhasors_) {
     ImGui::TextColored(ImColor(pal.dim), "The 3D volume appears here once the run starts.");
@@ -2591,43 +2644,43 @@ void Ui::drawVolumeTab(float w, float h) {
   if (volControlsOpen_) {
     const int n = static_cast<int>(volPhasors_->frequencies());
     int k = static_cast<int>(freq_);
-    ImGui::SetNextItemWidth(px(220));
+    ImGui::SetNextItemWidth(fitW(px(220)));
     if (sliderInt("Frequency index", "##vfreq", &k, 0, n - 1, "frequency index %d"))
       freq_ = static_cast<std::size_t>(k);
     ImGui::SameLine();
     coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text),
              strf("%.4g GHz", volPhasors_->frequencyHz(freq_) * 1e-9));
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("pause"));
     checkbox("pause", &paused_);
-    ImGui::SameLine();
+    flowSameLine(px(120));
     animationControl();
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("auto-fit"));
     checkbox("auto-fit", &autoFit_);
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("copper"));
     checkbox("copper", &showGeometry_);
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("field"));
     checkbox("field", &showField3d_);
     if (currentH_) {
-      ImGui::SameLine();
+      flowSameLine(checkboxWidth("surface current"));
       checkbox("surface current", &showCurrent3d_);
     }
-    ImGui::SameLine();
+    flowSameLine(checkboxWidth("isosurface"));
     checkbox("isosurface", &showIso_);
     if (showIso_) {
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(px(120));
+      flowSameLine(px(110));
+      ImGui::SetNextItemWidth(fitW(px(120)));
       sliderFloat("Isosurface level", "##iso", &isoLevel_, 0.05f, 2.0f, "level %.2f");
     }
-    ImGui::SameLine();
+    sameLineIfFits("Export for ParaView");
     if (smallButton("Export for ParaView"))
       exportVolume();
     float b = static_cast<float>(volBrightness_), d = static_cast<float>(density_);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(px(140));
+    flowSameLine(px(110));
+    ImGui::SetNextItemWidth(fitW(px(140)));
     if (sliderFloat("Brightness", "##vb", &b, -2.0f, 2.0f, "brightness %.1f"))
       volBrightness_ = b;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(px(140));
+    flowSameLine(px(110));
+    ImGui::SetNextItemWidth(fitW(px(140)));
     if (sliderFloat("Opacity", "##vd", &d, 0.5f, 40.0f, "opacity %.1f"))
       density_ = d;
   } else {
@@ -2635,7 +2688,12 @@ void Ui::drawVolumeTab(float w, float h) {
              strf("%.4g GHz", volPhasors_->frequencyHz(freq_) * 1e-9));
   }
   const ImVec2 p = ImGui::GetCursorScreenPos();
-  volRect_ = {p.x, p.y, w, h - ImGui::GetFrameHeightWithSpacing() - 24, false};
+  const char* volCaption =
+      "Drag to rotate, right-drag (or Shift-drag) to pan, mouse wheel to zoom, double-click to refit. "
+      "Brighter and more opaque = stronger field; the faintest level shown is 28 dB below full scale.";
+  const float volCaptionH =
+      ImGui::CalcTextSize(volCaption, nullptr, false, w).y + ImGui::GetStyle().ItemSpacing.y;
+  volRect_ = {p.x, p.y, w, std::max(px(120), ImGui::GetContentRegionAvail().y - volCaptionH), false};
   if (gTree) {
     gTree->add(
         {.role = viz::access::Role::Image,
@@ -2946,9 +3004,7 @@ void Ui::drawVolumeTab(float w, float h) {
     }
   }
   ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
-  wrapped("Drag to rotate, right-drag (or Shift-drag) to pan, mouse wheel to zoom, double-click to refit. "
-          "Brighter and more opaque = stronger field; the faintest level "
-          "shown is 28 dB below full scale.");
+  wrapped(volCaption);
   ImGui::PopStyleColor();
 }
 
@@ -2962,9 +3018,12 @@ void Ui::drawStatusBar() {
     if (button("Run simulation", ImVec2(px(180), 0)))
       start();
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextColored(ImColor(reason.empty() ? pal.good : pal.warn), "%s",
-                       reason.empty() ? "Ready." : reason.c_str());
+    const char* status = reason.empty() ? "Ready." : reason.c_str();
+    if (fitsOnLine(ImGui::CalcTextSize("Ready.").x))
+      ImGui::SameLine();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(ImColor(reason.empty() ? pal.good : pal.warn), "%s", status);
+    ImGui::PopTextWrapPos();
     noteText(reason.empty() ? "Ready." : reason, viz::access::Role::Status);
   } else if (screen_ == Screen::Running) {
     const double elapsed =
@@ -2992,17 +3051,14 @@ void Ui::drawStatusBar() {
       ImGui::TextColored(ImColor(pal.good), "Finished in %s.", fmtTime(runSeconds_).c_str());
       noteText("Finished in " + fmtTime(runSeconds_) + ". Results are in " + runDir_.string(),
                viz::access::Role::Status);
-      ImGui::SameLine();
-      ImGui::TextUnformatted("Results:");
-      ImGui::SameLine();
-      ImGui::TextColored(ImColor(pal.accent), "%s", runDir_.string().c_str());
+      coloured(ImColor(pal.accent), "Results: " + runDir_.string());
     }
     if (button("Open results folder"))
       app::openFolder(runDir_);
-    ImGui::SameLine();
+    sameLineIfFits("Copy path");
     if (button("Copy path"))
       ImGui::SetClipboardText(runDir_.string().c_str());
-    ImGui::SameLine();
+    sameLineIfFits("Adjust settings and run again");
     if (button("Adjust settings and run again")) {
       if (worker_.joinable())
         worker_.join();
@@ -3167,7 +3223,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
   ImGui::BeginChild("##right", ImVec2(0, 0));
   drawStatusBar();
   ImGui::Separator();
-  if (ImGui::BeginTabBar("##tabs")) {
+  if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
     if (tabItem("Preview", nullptr, pendingTab_ == "Preview" ? ImGuiTabItemFlags_SetSelected : 0)) {
       drawPreviewTab(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
       ImGui::EndTabItem();

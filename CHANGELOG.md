@@ -5,6 +5,14 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (board geometry and run checks; docs/PLAN.md, "Plugin lessons from the antenna study")
+- The snapshot takes optional `cutouts` (holes in the board) and optional `from`/`to` layers on a via (blind and micro vias); the plugin exporter reads the true Edge.Cuts outline (arcs, circles, beziers, holes) instead of a bounding rectangle and writes via spans. A via narrower than the local grid cell is no longer dropped.
+- Run notes now report: copper of different nets that touches on the grid, a via that lands on another net, a port whose terminals are joined by copper or that floats, metal bodies that touch in the grid, and dielectric bodies under two cells across. Component bodies can carry a loss tangent (`--body REF=dielectric:EPS:TAND`) and a label (`--body-label REF=TEXT`, shown in the notes; unlabelled bodies read "assumed, not fitted").
+- Grid lines snap to the corners of modelled component bodies (shapes of 8 vertices or fewer); two snap targets closer than a cell both become grid lines.
+- Saved phasor files (fp16, one scale per frequency; `src/app/run_archive.*`) as the first step of reloading a saved run.
+- The window's controls and text wrap and flow instead of running off their pane, the tab strip scrolls, and the window has a 720 x 520 minimum size.
+- Project skills for known-load control checks, reference-board antenna comparison and sourcing an antenna part's files.
+
 ### Changed (GPU rendering; docs/PLAN.md, "GPU rendering")
 - The 3D volume ray march, the field slice and the window's UI are drawn by the GPU through Vulkan (compute shaders for the two field views, Dear ImGui's Vulkan backend for the UI). With the GPU backend the window frame drops from about 45 ms to under 10 ms; the CPU renderers stay as the reference, the fallback and the path for screenshots (`--cpu-ui` forces the CPU UI). New options `--ui-frames N` and `--cpu-ui`; `EMFDTD_VALIDATE=1` turns on the Vulkan validation layer in the window.
 - MoltenVK is deprecated upstream; KosmicKrisp (in the LunarG Vulkan SDK) is the target Vulkan driver on Apple Silicon and runs the GPU tests and the benchmark as fast as MoltenVK. `vkcore::Timing` reports when a driver gives no device timestamps (KosmicKrisp), and the benchmark falls back to wall time.

@@ -105,6 +105,13 @@ A board with 735 copper shapes put more than 65 535 vertices in one ImGui draw l
 - **Settings starts collapsed**; the button reads "Settings >>" when closed and "<< Hide settings" when open (`--ui-show-settings` opens it for screenshots and checks).
 - **3D volume:** drag rotates, right-drag, middle-drag or Shift+drag pans (the picture follows the pointer), the wheel zooms, double-click refits to the field's activity. Pan, rotate and zoom from the keyboard are still missing.
 
+## Layout rules: nothing runs off its pane (2026-11-21, after the user found controls and text overflowing with no way to reach them)
+- **The window has a minimum size (720 x 520 points).** Below it the layout cannot be guaranteed, so the window refuses to shrink further; the picture is never panned to reach controls (panning broke the 2D and 3D renders).
+- **Text wraps at the pane edge:** status and estimate lines, notes and assumptions (`coloured` and `wrapped`). A checkbox label wider than the pane wraps beside its box. The "Ready." or blocked-reason text drops to its own row when it does not fit beside the Run button.
+- **Fixed-width inputs shrink to the room left (`fitW`)**; a footer button that does not fit beside the previous one starts a new row (`sameLineIfFits`).
+- **The tab strip scrolls with arrows instead of truncating labels** (`FittingPolicyScroll`).
+- Check with `emfdtd BOARD --cpu-ui --ui-size 720x520 [--ui-show-settings] [--ui-tab TAB] --ui-screenshot out.png`, and for tabs that fill with a run, add `--cpu --ui-run`. Still to check by eye: every control row of the Preview tab's collapsed sections (model selection, probes, sweeps) and the S11, slice, far-field and 3D tabs once a run exists, at 720 x 520 and 1024 x 640.
+
 ## Layers, parts, sweeps and figures (2026-11-20; items marked "user" were decided by the user, the rest are my proposals, open to change)
 - **Layers (user):** the 3D tab has independent checkboxes for field, surface current, copper and isosurface; the slice tab for field, surface current (top or bottom copper), power flow and the board outline. Layers show alone or overlaid. The state is not saved between sessions.
 - **Camera views (user chose the axis triad over a cube):** six labelled axis ends in the corner of the 3D view snap to the +X, -X, +Y, -Y, +Z, -Z views, an Iso button, keys 1 to 6 and 0; the move glides unless Reduce Motion is on. No clickable cube (an Autodesk patent covers that widget; see docs/PLAN.md, "3D view controls").

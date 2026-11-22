@@ -18,6 +18,7 @@ Window::Window(const std::string& title, int width, int height) {
   window_ = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
   if (!window_)
     throw std::runtime_error("cannot create a window");
+  glfwSetWindowSizeLimits(window_, 720, 520, GLFW_DONT_CARE, GLFW_DONT_CARE); // the layout needs this much
   std::uint32_t n = 0;
   const char** exts = glfwGetRequiredInstanceExtensions(&n);
   if (!exts)

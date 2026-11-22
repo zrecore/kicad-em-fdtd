@@ -57,12 +57,20 @@ std::vector<double> gradedEdges(double lo, double hi, double hMax, const std::ve
   for (double target : targets) {
     if (!(target > lo && target < hi) || edges.size() < 5)
       continue;
-    std::size_t i = 1;
+    // the nearest edge that no earlier target has claimed (two targets a cell apart need two edges)
+    std::size_t i = 0;
     for (std::size_t e = 1; e + 1 < edges.size(); ++e)
-      if (std::abs(edges[e] - target) < std::abs(edges[i] - target))
+      if (!fixed[e] && (i == 0 || std::abs(edges[e] - target) < std::abs(edges[i] - target)))
         i = e;
-    if (fixed[i] || std::abs(edges[i] - target) < 1e-15)
+    if (i == 0 || std::abs(edges[i] - target) < 1e-15)
       continue;
+    {
+      bool taken = false; // an already fixed edge sits on this target: nothing to do
+      for (std::size_t e = 1; e + 1 < edges.size(); ++e)
+        taken = taken || (fixed[e] && std::abs(edges[e] - target) < 1e-12);
+      if (taken)
+        continue;
+    }
     const double shift = target - edges[i];
     constexpr std::size_t kTaper = 3;
     std::vector<double> trial = edges;

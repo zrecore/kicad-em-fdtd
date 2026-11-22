@@ -5,13 +5,14 @@ a board rather than by unit tests. What can be tested without KiCAD lives in geo
 """
 
 import json
+import math
 import re
 from pathlib import Path
 
 from kipy.proto.board import board_pb2
 from kipy.proto.board.board_types_pb2 import BoardLayer
 
-from emfdtd_plugin import geometry, snapshot
+from emfdtd_plugin import geometry, outline, snapshot
 from emfdtd_plugin.units import nm_to_m
 
 # Installed copy: <plugin>/data/ (written by tools/install.sh); repository checkout: <repo>/data/.
@@ -72,21 +73,50 @@ def read_stackup(board, defaults, notes):
     return out
 
 
-def read_outline(board, notes):
-    """Bounding rectangle of everything on Edge.Cuts (non-rectangular outlines are simplified, and noted)."""
-    boxes = []
+def _edge_items(board):
+    """Edge.Cuts shapes of the open board as outline.py items (nm)."""
+    items = []
     for shape in board.get_shapes():
-        if shape.layer == BoardLayer.BL_Edge_Cuts:
-            boxes.append(board.get_item_bounding_box(shape))
-    if not boxes:
+        if shape.layer != BoardLayer.BL_Edge_Cuts:
+            continue
+        kind = type(shape).__name__
+        pt = lambda v: (float(v.x), float(v.y))  # noqa: E731
+        if kind == "BoardSegment":
+            items.append(("line", pt(shape.start), pt(shape.end)))
+        elif kind == "BoardArc":
+            items.append(("arc", pt(shape.start), pt(shape.mid), pt(shape.end)))
+        elif kind == "BoardCircle":
+            c, r = pt(shape.center), pt(shape.radius_point)
+            items.append(("circle", c, math.hypot(r[0] - c[0], r[1] - c[1])))
+        elif kind == "BoardRectangle":
+            items.append(("rect", pt(shape.top_left), pt(shape.bottom_right)))
+        elif kind == "BoardBezier":
+            items.append(("bezier", pt(shape.start), pt(shape.control1), pt(shape.control2), pt(shape.end)))
+        elif kind == "BoardPolygon":
+            for poly in shape.polygons:
+                items.append(("poly", [pt(n.point) for n in poly.outline.nodes if n.has_point]))
+    return items
+
+
+def read_outline(board, notes):
+    """(outline ring, cutout rings) in metres from Edge.Cuts: arcs, circles, slots and openings are kept."""
+    items = _edge_items(board)
+    if not items:
         raise snapshot.SnapshotError("the board has no outline on Edge.Cuts")
-    x0 = min(b.pos.x for b in boxes)
-    y0 = min(b.pos.y for b in boxes)
-    x1 = max(b.pos.x + b.size.x for b in boxes)
-    y1 = max(b.pos.y + b.size.y for b in boxes)
-    notes.append("board outline simplified to its bounding rectangle")
-    pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-    return [[nm_to_m(x), nm_to_m(y)] for x, y in pts]
+    try:
+        outer, cuts, more = outline.board_and_cutouts(items)
+    except ValueError:  # no closed loop: fall back to the bounding box of the pieces, and say so
+        boxes = [
+            board.get_item_bounding_box(s) for s in board.get_shapes() if s.layer == BoardLayer.BL_Edge_Cuts
+        ]
+        x0, y0 = min(b.pos.x for b in boxes), min(b.pos.y for b in boxes)
+        x1, y1 = max(b.pos.x + b.size.x for b in boxes), max(b.pos.y + b.size.y for b in boxes)
+        notes.append("Edge.Cuts does not close into a loop: board outline replaced by its bounding rectangle")
+        outer, cuts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], []
+        more = []
+    notes.extend(more)
+    ring = lambda r: [[nm_to_m(x), nm_to_m(y)] for x, y in r]  # noqa: E731
+    return ring(outer), [ring(c) for c in cuts]
 
 
 def read_copper(board, copper_layers, notes):
@@ -142,6 +172,18 @@ def read_copper(board, copper_layers, notes):
     return copper
 
 
+def _via_span(v):
+    """The layers a blind or micro via joins as {"from", "to"}; {} for a through via or no span."""
+    try:
+        drill = v.padstack.drill
+        first, last = layer_name(drill.start_layer), layer_name(drill.end_layer)
+    except Exception:  # noqa: BLE001 - an API without drill layers must not stop the export
+        return {}
+    if {first, last} == {"F.Cu", "B.Cu"}:
+        return {}
+    return {"from": first, "to": last}
+
+
 def read_vias(board):
     return [
         {
@@ -151,6 +193,7 @@ def read_vias(board):
             "drill": nm_to_m(v.drill_diameter),
             "net": v.net.name,
             "owner": "",
+            **_via_span(v),
         }
         for v in board.get_vias()
     ]
@@ -248,14 +291,16 @@ def read_board(kicad, ports=(), defaults=None, refill_zones=False):
     notes = ["silkscreen, solder mask and paste layers are not modelled"]
     stackup = read_stackup(board, defaults, notes)
     copper_layers = [e["name"] for e in stackup if e["kind"] == "copper"]
+    board_outline, cutouts = read_outline(board, notes)
     return snapshot.build_snapshot(
         board.name,
         str(kicad.get_version()),
-        read_outline(board, notes),
+        board_outline,
         stackup,
         read_copper(board, copper_layers, notes),
         read_vias(board),
         read_components(board, notes),
         ports,
         notes,
+        cutouts,
     )

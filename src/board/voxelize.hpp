@@ -22,7 +22,9 @@ namespace board {
 enum class BodyKind { Ignore, Dielectric, Metal };
 struct BodyTreatment {
   BodyKind kind = BodyKind::Ignore;
-  double epsilonR = 4.0; // Dielectric only; a labelled default, the user's to set
+  double epsilonR = 4.0;    // Dielectric only; a labelled default, the user's to set
+  double lossTangent = 0.0; // Dielectric only: 0 is lossless
+  std::string label; // how well the model matches a datasheet, printed in the run notes; empty: assumed
 };
 
 struct Selection {
@@ -55,6 +57,8 @@ struct GridPlan {                     // metres
   double airCell;                     // target cell size in that margin (z direction)
   std::vector<RefineBox> refine = {}; // empty: uniform lateral cells; else graded with ratio 1.3
   bool snapToGeometry = false;        // put grid lines on copper, outline and port edges (accuracy)
+  double airNearCell = 0;             // z cell size in the air next to the board (0: airCell throughout)
+  double airNearHeight = 0;           // that fine layer's thickness, then cells grow by 1.3 up to airCell
 };
 
 // A refinement box around every port, `pad` larger on each side, with cells of size `cell`.

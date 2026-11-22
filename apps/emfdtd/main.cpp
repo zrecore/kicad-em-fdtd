@@ -64,6 +64,8 @@ void usage() {
       "  --version                print the version (semver) and exit\n"
       "  --list-settings          print every setting with its default, tier and help, then exit\n"
       "  --include REF[,REF...]   model only these footprints (default: the whole board)\n"
+      "  --body-label REF=TEXT    note printed with that body (for example how well it matches a datasheet)\n"
+      "  --body REF=ignore|metal|dielectric:EPS[:TAND]  a part's body treatment (repeatable)\n"
       "  --refine X0 Y0 X1 Y1 MM  extra fine-cell box in board coordinates (mm); repeatable\n"
       "  --cpu | --gpu            force a backend (default: setting 'backend', auto = GPU if present)\n"
       "  --view                   open a window and animate the field while the solve runs\n"
@@ -300,6 +302,37 @@ int main(int argc, char** argv) {
             throw std::runtime_error("--part: unknown '" + tok + "'");
         }
         selection.parts[kv.substr(0, eq)] = t;
+      } else if (a == "--body") { // REF=ignore | metal | dielectric:EPS (a part's body treatment)
+        const std::string kv = next();
+        const auto eq = kv.find('=');
+        if (eq == std::string::npos)
+          throw std::runtime_error("--body needs REF=ignore|metal|dielectric:EPS[:TAND], got '" + kv + "'");
+        const std::string what = kv.substr(eq + 1);
+        board::BodyTreatment t;
+        if (what == "ignore")
+          t.kind = board::BodyKind::Ignore;
+        else if (what == "metal")
+          t.kind = board::BodyKind::Metal;
+        else if (what.rfind("dielectric:", 0) == 0) {
+          t.kind = board::BodyKind::Dielectric;
+          t.epsilonR = std::atof(what.c_str() + 11);
+          if (const auto colon = what.find(':', 11); colon != std::string::npos) {
+            t.lossTangent = std::atof(what.c_str() + colon + 1);
+            if (!(t.lossTangent >= 0.0))
+              throw std::runtime_error("--body: loss tangent must not be negative, got '" + what + "'");
+          }
+          if (!(t.epsilonR >= 1.0))
+            throw std::runtime_error("--body: permittivity must be at least 1, got '" + what + "'");
+        } else
+          throw std::runtime_error("--body needs REF=ignore|metal|dielectric:EPS[:TAND], got '" + kv + "'");
+        t.label = selection.bodies[kv.substr(0, eq)].label; // keep a label given earlier
+        selection.bodies[kv.substr(0, eq)] = t;
+      } else if (a == "--body-label") { // REF=TEXT: how well that body model matches a datasheet (run notes)
+        const std::string kv = next();
+        const auto eq = kv.find('=');
+        if (eq == std::string::npos)
+          throw std::runtime_error("--body-label needs REF=TEXT, got '" + kv + "'");
+        selection.bodies[kv.substr(0, eq)].label = kv.substr(eq + 1);
       } else if (a == "--refine") {
         double v[5];
         for (double& x : v)

@@ -28,6 +28,7 @@ struct CopperShape {             // one filled polygon of copper (a pad, a track
 struct Via {
   double x, y, diameter, drill;
   std::string net, owner;
+  std::string from, to; // copper layers it joins (blind or micro via); both empty: through all layers
 };
 
 struct ComponentPad { // a footprint's pad: what a two-terminal part's two ends are
@@ -44,6 +45,8 @@ struct Component {
   std::string mounting;           // "smd", "through_hole" or empty
   double bodyHeight = 0; // metres above (top side) or below (bottom side) the board surface; 0: not given,
                          // the run's default height applies
+  double bodyOffset =
+      0; // metres from the board surface to the body's near face: a metal strip on top of a part
 };
 
 // A lumped port across a gap in one copper layer: from point a (positive) to point b (negative), along x or
@@ -58,6 +61,7 @@ struct PortDef {
 struct Snapshot {
   std::string boardName, kicadVersion;
   Ring outline;
+  std::vector<Ring> cutouts; // holes in the board (routed slots, openings): no dielectric inside
   std::vector<Layer> stackup;
   std::vector<CopperShape> copper;
   std::vector<Via> vias;

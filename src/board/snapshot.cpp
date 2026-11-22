@@ -49,6 +49,9 @@ Snapshot parseSnapshot(std::string_view textIn) {
     s.boardName = text(board, "name");
     s.kicadVersion = text(board, "kicad_version");
     s.outline = ring(require(j, "outline"), "outline");
+    if (j.contains("cutouts"))
+      for (const Json& c : j.at("cutouts"))
+        s.cutouts.push_back(ring(c, "cutout"));
     for (const Json& l : require(j, "stackup")) {
       Layer layer;
       layer.name = require(l, "name").get<std::string>();
@@ -76,13 +79,16 @@ Snapshot parseSnapshot(std::string_view textIn) {
     for (const Json& v : require(j, "vias"))
       s.vias.push_back({require(v, "x").get<double>(), require(v, "y").get<double>(),
                         require(v, "diameter").get<double>(), v.value("drill", 0.0), text(v, "net"),
-                        text(v, "owner")});
+                        text(v, "owner"), text(v, "from"), text(v, "to")});
     for (const Json& c : require(j, "components")) {
       Component comp{require(c, "ref").get<std::string>(), text(c, "value"), text(c, "layer"),
                      c.value("x", 0.0), c.value("y", 0.0)};
       if (c.contains("body")) {
         comp.body = ring(require(c.at("body"), "polygon"), "component body");
         comp.bodyHeight = c.at("body").value("height", 0.0); // 0: the run's default height applies
+        comp.bodyOffset = c.at("body").value("offset", 0.0);
+        if (comp.bodyOffset < 0)
+          throw SnapshotError("component '" + comp.ref + "': body offset must not be negative");
         if (comp.bodyHeight < 0)
           throw SnapshotError("component '" + comp.ref + "': body height must not be negative");
       }

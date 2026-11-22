@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <stdexcept>
 
@@ -41,6 +42,27 @@ void appendUniform(std::vector<double>& edges, double lo, double hi, double cell
     edges.push_back(lo + (hi - lo) * static_cast<double>(i) / static_cast<double>(n));
 }
 
+// Air above or below the board: offsets (distance from the board, first 0) out to `length`. With a near cell
+// the first `nearHeight` uses it and the cells then grow by 1.3 up to `cell`, so a thin body next to the
+// board is resolved without refining the whole margin; without one this is appendUniform's even split.
+std::vector<double> airOffsets(double length, double cell, double nearCell, double nearHeight) {
+  std::vector<double> o{0.0};
+  if (!(nearCell > 0 && nearCell < cell)) {
+    appendUniform(o, 0.0, length, cell);
+    return o;
+  }
+  double h = nearCell;
+  while (o.back() < length - 1e-12) {
+    h = o.back() < nearHeight ? nearCell : std::min(cell, h * 1.3);
+    o.push_back(std::min(o.back() + h, length));
+  }
+  if (o.size() >= 3 && o.back() - o[o.size() - 2] < 0.5 * (o[o.size() - 2] - o[o.size() - 3])) {
+    o.pop_back(); // drop a sliver: stretch the last real cell to the end
+    o.back() = length;
+  }
+  return o;
+}
+
 std::size_t nearestEdge(const std::vector<double>& edges, double z) {
   return static_cast<std::size_t>(
       std::min_element(edges.begin(), edges.end(),
@@ -63,7 +85,11 @@ ZStack buildZ(const Snapshot& s, const GridPlan& plan) {
       z.dielectric.push_back(i);
   if (z.dielectric.empty())
     throw std::invalid_argument("stackup has no dielectric layer");
-  appendUniform(z.edges, -plan.airMargin, 0.0, plan.airCell);
+  {
+    const auto below = airOffsets(plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight);
+    for (std::size_t i = below.size(); i-- > 0;)
+      z.edges.push_back(-below[i]);
+  }
   double top = 0;
   z.interfaceZ.push_back(0.0);
   for (std::size_t d : z.dielectric) {
@@ -75,7 +101,11 @@ ZStack buildZ(const Snapshot& s, const GridPlan& plan) {
     top += t;
     z.interfaceZ.push_back(top);
   }
-  appendUniform(z.edges, top, top + plan.airMargin, plan.airCell);
+  {
+    const auto above = airOffsets(plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight);
+    for (std::size_t i = 1; i < above.size(); ++i)
+      z.edges.push_back(top + above[i]);
+  }
   return z;
 }
 
@@ -111,7 +141,8 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       ry.push_back({b.y0, b.y1, b.cell});
     }
     // Positions that should be grid lines: the outline, simple (pad-like) copper shapes, and port ends.
-    // Shapes with many vertices (arcs, zone fills) would add hundreds of lines and are skipped.
+    // Shapes with many vertices (round pads, arcs, zone fills) have no corners worth a line and would crowd
+    // the gaps between the corners that matter: skipped.
     std::vector<double> sx, sy;
     if (plan.snapToGeometry) {
       auto add = [&](double x, double y) {
@@ -121,8 +152,12 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       for (const Point& p : s.outline)
         add(p.x, p.y);
       for (const CopperShape& c : s.copper)
-        if (sel.includes(c.owner) && c.outer.size() <= 12)
+        if (sel.includes(c.owner) && c.outer.size() <= 8)
           for (const Point& p : c.outer)
+            add(p.x, p.y);
+      for (const Component& c : s.components) // a modelled body's corners too: a 0.04 mm gap between two
+        if (sel.includes(c.ref) && sel.bodyOf(c.ref).kind != BodyKind::Ignore && c.body.size() <= 12)
+          for (const Point& p : c.body)
             add(p.x, p.y);
       for (const PortDef& p : s.ports) {
         add(p.a.x, p.a.y);
@@ -164,7 +199,9 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
         for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) {
           const double cx = toBoardX(g.edge(fdtd::X, i) + 0.5 * g.cellSize(fdtd::X, i));
           const double cy = toBoardY(g.edge(fdtd::Y, j) + 0.5 * g.cellSize(fdtd::Y, j));
-          if (insideRing(s.outline, cx, cy))
+          if (insideRing(s.outline, cx, cy) &&
+              std::none_of(s.cutouts.begin(), s.cutouts.end(),
+                           [&](const Ring& hole) { return insideRing(hole, cx, cy); }))
             m.cellMaterial[g.cellIndex(i, j, kk)] = static_cast<std::uint8_t>(k + 1);
         }
 
@@ -193,6 +230,9 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
         bottomCopper = i;
       }
     std::vector<std::pair<BodyTreatment, std::uint8_t>> bodyMaterial; // one material per distinct treatment
+    std::vector<std::uint16_t> bodyOwner;                             // which body (1-based) fills each cell
+    std::vector<BodyKind> bodyKinds;
+    std::vector<std::string> bodyRefs;
     for (const Component& c : s.components) {
       const BodyTreatment t = sel.bodyOf(c.ref);
       if (!sel.includes(c.ref) || t.kind == BodyKind::Ignore)
@@ -212,17 +252,30 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       }
       std::uint8_t id = 0;
       for (const auto& [bt, bid] : bodyMaterial)
-        if (bt.kind == t.kind && (t.kind == BodyKind::Metal || bt.epsilonR == t.epsilonR))
+        if (bt.kind == t.kind &&
+            (t.kind == BodyKind::Metal || (bt.epsilonR == t.epsilonR && bt.lossTangent == t.lossTangent)))
           id = bid;
       if (id == 0) {
         id = static_cast<std::uint8_t>(m.materials.size());
-        m.materials.push_back(t.kind == BodyKind::Metal ? fdtd::Material{1.0, 0.0, true}
-                                                        : fdtd::Material{t.epsilonR, 0.0, false});
+        m.materials.push_back(
+            t.kind == BodyKind::Metal
+                ? fdtd::Material{1.0, 0.0, true}
+                : fdtd::Material{t.epsilonR,
+                                 2 * std::numbers::pi * f0 * fdtd::units::kEps0 * t.epsilonR * t.lossTangent,
+                                 false});
         bodyMaterial.push_back({t, id});
       }
       const double surface = top ? z.interfaceZ.back() + zShift : z.interfaceZ.front() + zShift;
-      const double zLo = top ? surface : surface - height, zHi = top ? surface + height : surface;
+      const double off = c.bodyOffset; // the body's near face floats this far off the board
+      const double zLo = top ? surface + off : surface - off - height,
+                   zHi = top ? surface + off + height : surface - off;
       std::size_t cells = 0;
+      std::set<std::size_t> usedI, usedJ, usedK; // distinct cell indices the body covers, per axis
+      bodyKinds.push_back(t.kind);
+      bodyRefs.push_back(c.ref);
+      const auto ownerId = static_cast<std::uint16_t>(bodyRefs.size()); // 0 means no body
+      if (bodyOwner.empty())
+        bodyOwner.assign(g.cellCount(), 0);
       for (std::size_t kk = 0; kk < g.cells(fdtd::Z); ++kk) {
         const double cz = g.edge(fdtd::Z, kk) + 0.5 * g.cellSize(fdtd::Z, kk);
         if (cz <= zLo || cz >= zHi)
@@ -234,22 +287,66 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
             std::uint8_t& cell = m.cellMaterial[g.cellIndex(i, j, kk)];
             if (cell == 0 && insideRing(c.body, cx, cy)) {
               cell = id;
+              bodyOwner[g.cellIndex(i, j, kk)] = ownerId;
+              usedI.insert(i);
+              usedJ.insert(j);
+              usedK.insert(kk);
               ++cells;
             }
           }
       }
       const double reach = top ? g.edge(fdtd::Z, g.cells(fdtd::Z)) - surface : surface - g.edge(fdtd::Z, 0);
-      std::string how = t.kind == BodyKind::Metal
-                            ? "metal body"
-                            : "dielectric body, epsilon_r " + std::to_string(t.epsilonR);
+      std::string how =
+          t.kind == BodyKind::Metal
+              ? "metal body"
+              : "dielectric body, epsilon_r " + std::to_string(t.epsilonR) +
+                    (t.lossTangent > 0 ? ", loss tangent " + std::to_string(t.lossTangent) : "") + " (" +
+                    (t.label.empty() ? "assumed, not fitted" : t.label) + ")";
       if (cells == 0)
         m.notes.push_back("component " + c.ref + ": " + how +
                           " covers no cell (too thin or too small for the grid), left out");
-      else if (height > reach)
+      else if (off + height > reach)
         m.notes.push_back("component " + c.ref + ": " + how +
                           " is taller than the air margin, cut off at the grid edge");
       else
         m.notes.push_back("component " + c.ref + ": " + how + ", " + std::to_string(cells) + " cells");
+      if (cells > 0 && t.kind == BodyKind::Dielectric &&
+          std::min({usedI.size(), usedJ.size(), usedK.size()}) < 2)
+        m.notes.push_back("component " + c.ref + ": its body is only " + std::to_string(usedI.size()) +
+                          " x " + std::to_string(usedJ.size()) + " x " + std::to_string(usedK.size()) +
+                          " cells across, under two cells in one direction, so its shape and permittivity "
+                          "are poorly resolved: refine the grid around it");
+    }
+    // Metal bodies whose cells touch are one conductor: a gap between two parts under about a cell closes.
+    std::map<std::pair<std::string, std::string>, std::size_t> closed;
+    for (std::size_t k = 0; k < g.cells(fdtd::Z) && !bodyOwner.empty(); ++k)
+      for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
+        for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) {
+          const auto a = bodyOwner[g.cellIndex(i, j, k)];
+          if (a == 0 || bodyKinds[a - 1U] != BodyKind::Metal)
+            continue;
+          const std::size_t nb[3] = {i + 1 < g.cells(fdtd::X) ? g.cellIndex(i + 1, j, k) : ~std::size_t{0},
+                                     j + 1 < g.cells(fdtd::Y) ? g.cellIndex(i, j + 1, k) : ~std::size_t{0},
+                                     k + 1 < g.cells(fdtd::Z) ? g.cellIndex(i, j, k + 1) : ~std::size_t{0}};
+          for (std::size_t n : nb) {
+            if (n == ~std::size_t{0})
+              continue;
+            const auto b = bodyOwner[n];
+            if (b != 0 && b != a && bodyKinds[b - 1U] == BodyKind::Metal)
+              ++closed[std::minmax(bodyRefs[a - 1U], bodyRefs[b - 1U])];
+          }
+        }
+    std::size_t shown = 0;
+    for (const auto& [pair, faces] : closed) {
+      if (++shown > 8) {
+        m.notes.push_back(std::to_string(closed.size() - 3) +
+                          " more pairs of metal bodies touch in the grid");
+        break;
+      }
+      m.notes.push_back("metal bodies " + pair.first + " and " + pair.second + " touch in the grid (" +
+                        std::to_string(faces) +
+                        " cell faces): any gap between them is under one cell, so the "
+                        "model treats them as one conductor");
     }
   }
   auto layerIndex = [&](const std::string& name) -> std::size_t {
@@ -260,6 +357,17 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
   };
 
   std::set<std::string> leftOut, netLeftOut;
+  // Which net owns each planar copper edge of each layer: two nets claiming one edge are one conductor in the
+  // model, however the board's designer drew them (a track overlapping a pour edge by a micrometre does it).
+  std::map<std::size_t, std::vector<std::uint16_t>> claims;
+  std::map<std::string, std::uint16_t> netIds;
+  std::vector<std::string> netNames{""};
+  struct Touch {
+    std::size_t edges = 0;
+    std::string layer;
+    double xMm = 0, yMm = 0;
+  };
+  std::map<std::pair<std::string, std::string>, Touch> touches;
   for (const CopperShape& shape : s.copper) {
     if (!sel.includes(shape.owner)) {
       leftOut.insert(shape.owner);
@@ -269,19 +377,65 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       netLeftOut.insert(shape.net.empty() ? "(no net)" : shape.net);
       continue;
     }
-    const std::size_t k = copperNode[layerIndex(shape.layer)];
+    const std::size_t li = layerIndex(shape.layer);
+    const std::size_t k = copperNode[li];
+    std::uint16_t id = 0;
+    std::vector<std::uint16_t>* claim = nullptr;
+    if (!shape.net.empty() && netNames.size() < 65535) {
+      const auto it = netIds.try_emplace(shape.net, static_cast<std::uint16_t>(netNames.size()));
+      if (it.second)
+        netNames.push_back(shape.net);
+      id = it.first->second;
+      claim = &claims[li];
+      if (claim->empty())
+        claim->assign(2 * g.nodes(fdtd::X) * g.nodes(fdtd::Y), 0);
+    }
+    auto note = [&](std::size_t slot, double xm, double ym) {
+      std::uint16_t& owner = (*claim)[slot];
+      if (owner == 0)
+        owner = id;
+      else if (owner != id) {
+        auto key = std::minmax(netNames[owner], netNames[id]);
+        Touch& t = touches[{key.first, key.second}];
+        if (t.edges++ == 0)
+          t = {1, shape.layer, xm * 1e3, ym * 1e3};
+      }
+    };
     for (std::size_t j = 0; j <= g.cells(fdtd::Y); ++j)
       for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) { // Ex edges: centre of cell i, node j
         const double x = toBoardX(g.edge(fdtd::X, i) + 0.5 * g.cellSize(fdtd::X, i));
-        if (insideShape(shape, x, toBoardY(g.edge(fdtd::Y, j))))
+        const double y = toBoardY(g.edge(fdtd::Y, j));
+        if (insideShape(shape, x, y)) {
           m.pecEdges.push_back({fdtd::X, g.nodeIndex(i, j, k)});
+          if (claim)
+            note(i + g.nodes(fdtd::X) * j, x, y);
+        }
       }
     for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
       for (std::size_t i = 0; i <= g.cells(fdtd::X); ++i) { // Ey edges: node i, centre of cell j
+        const double x = toBoardX(g.edge(fdtd::X, i));
         const double y = toBoardY(g.edge(fdtd::Y, j) + 0.5 * g.cellSize(fdtd::Y, j));
-        if (insideShape(shape, toBoardX(g.edge(fdtd::X, i)), y))
+        if (insideShape(shape, x, y)) {
           m.pecEdges.push_back({fdtd::Y, g.nodeIndex(i, j, k)});
+          if (claim)
+            note(g.nodes(fdtd::X) * g.nodes(fdtd::Y) + i + g.nodes(fdtd::X) * j, x, y);
+        }
       }
+  }
+  {
+    std::vector<std::pair<std::size_t, std::pair<std::string, std::string>>> order;
+    for (const auto& [nets, t] : touches)
+      order.push_back({t.edges, nets});
+    std::sort(order.rbegin(), order.rend());
+    for (std::size_t n = 0; n < order.size() && n < 5; ++n) {
+      const Touch& t = touches[order[n].second];
+      m.notes.push_back("copper of nets '" + order[n].second.first + "' and '" + order[n].second.second +
+                        "' touch on " + t.layer + " near (" + std::to_string(t.xMm).substr(0, 6) + ", " +
+                        std::to_string(t.yMm).substr(0, 6) + ") mm, " + std::to_string(t.edges) +
+                        " grid edges: the model treats them as one conductor");
+    }
+    if (order.size() > 5)
+      m.notes.push_back(std::to_string(order.size() - 5) + " more pairs of nets touch");
   }
 
   // Vias: PEC columns (Ez edges) between the lowest and highest copper sheet.
@@ -300,14 +454,56 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       netLeftOut.insert(v.net.empty() ? "(no net)" : v.net);
       continue;
     }
+    std::size_t vLow = kLow, vHigh = kHigh; // a blind or micro via joins only the layers it names
+    if (!v.from.empty() || !v.to.empty()) {
+      const std::size_t a = copperNode[layerIndex(v.from.empty() ? v.to : v.from)],
+                        b = copperNode[layerIndex(v.to.empty() ? v.from : v.to)];
+      vLow = std::min(a, b);
+      vHigh = std::max(a, b);
+    }
     const double r = 0.5 * v.diameter;
+    std::vector<std::pair<std::size_t, std::size_t>> columns;
+    double bestD2 = 1e300;
+    std::pair<std::size_t, std::size_t> nearest{0, 0};
     for (std::size_t j = 0; j < g.nodes(fdtd::Y); ++j)
       for (std::size_t i = 0; i < g.nodes(fdtd::X); ++i) {
         const double dx = toBoardX(g.edge(fdtd::X, i)) - v.x, dy = toBoardY(g.edge(fdtd::Y, j)) - v.y;
-        if (dx * dx + dy * dy <= r * r)
-          for (std::size_t k = kLow; k < kHigh; ++k)
-            m.pecEdges.push_back({fdtd::Z, g.nodeIndex(i, j, k)});
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < bestD2)
+          bestD2 = d2, nearest = {i, j};
+        if (d2 <= r * r)
+          columns.push_back({i, j});
       }
+    if (columns.empty()) // narrower than the grid here: the nearest node stands in, a via is never dropped
+      columns.push_back(nearest);
+    for (const auto& [i, j] : columns)
+      for (std::size_t k = vLow; k < vHigh; ++k)
+        m.pecEdges.push_back({fdtd::Z, g.nodeIndex(i, j, k)});
+    // Where the column ends meets copper of another net, the via short-circuits it.
+    if (!v.net.empty())
+      for (std::size_t li2 = 0; li2 < s.stackup.size(); ++li2) {
+        if (!s.stackup[li2].copper || (copperNode[li2] != vLow && copperNode[li2] != vHigh) ||
+            !claims.count(li2))
+          continue;
+        const auto& claim = claims[li2];
+        const std::size_t nxn = g.nodes(fdtd::X), plane = nxn * g.nodes(fdtd::Y);
+        for (const auto& [i, j] : columns) {
+          const std::size_t slots[4] = {i + nxn * j, i > 0 ? i - 1 + nxn * j : i + nxn * j,
+                                        plane + i + nxn * j,
+                                        j > 0 ? plane + i + nxn * (j - 1) : plane + i + nxn * j};
+          for (std::size_t slot : slots) {
+            const auto owner = claim[slot];
+            if (owner != 0 && netNames[owner] != v.net) {
+              m.notes.push_back("via of net '" + v.net + "' at (" + std::to_string(v.x * 1e3).substr(0, 6) +
+                                ", " + std::to_string(v.y * 1e3).substr(0, 6) +
+                                ") mm lands on copper of net '" + netNames[owner] + "' on " +
+                                s.stackup[li2].name + ": it short-circuits them");
+              goto nextVia;
+            }
+          }
+        }
+      }
+  nextVia:;
   }
 
   // Ports: in-plane (between two metal areas of one layer) or vertical (between two copper layers).
@@ -560,6 +756,81 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       m.notes.push_back("do not populate, left open between the pads: " + unfitted);
   }
   m.notes.push_back("copper is modelled as zero-thickness PEC sheets; dielectric thickness is used as given");
+  // Port paths: follow the conductor from each port's two terminals (docs/PLAN.md, plugin lessons 2).
+  if (!m.ports.empty()) {
+    const std::size_t nx = g.nodes(fdtd::X), ny = g.nodes(fdtd::Y), nodes = nx * ny * g.nodes(fdtd::Z);
+    std::vector<std::uint32_t> parent(nodes);
+    for (std::size_t i = 0; i < nodes; ++i)
+      parent[i] = static_cast<std::uint32_t>(i);
+    auto find = [&](std::uint32_t a) {
+      while (parent[a] != a)
+        a = parent[a] = parent[parent[a]];
+      return a;
+    };
+    auto stride = [&](fdtd::Axis a) { return a == fdtd::X ? std::size_t{1} : a == fdtd::Y ? nx : nx * ny; };
+    for (const auto& e : m.pecEdges) {
+      const auto a = find(static_cast<std::uint32_t>(e.node)),
+                 b = find(static_cast<std::uint32_t>(e.node + stride(e.axis)));
+      if (a != b)
+        parent[a] = b;
+    }
+    // A metal body is a block of conducting cells: all eight corners of each of its cells are one conductor.
+    for (std::size_t k = 0; k < g.cells(fdtd::Z); ++k)
+      for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
+        for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) {
+          if (!m.materials[m.cellMaterial[g.cellIndex(i, j, k)]].pec)
+            continue;
+          const auto base = find(static_cast<std::uint32_t>(g.nodeIndex(i, j, k)));
+          for (std::size_t dk = 0; dk < 2; ++dk)
+            for (std::size_t dj = 0; dj < 2; ++dj)
+              for (std::size_t di = 0; di < 2; ++di) {
+                const auto other = find(static_cast<std::uint32_t>(g.nodeIndex(i + di, j + dj, k + dk)));
+                if (other != find(base))
+                  parent[other] = find(base);
+              }
+        }
+    std::vector<std::uint32_t> size(nodes, 0); // conductor edges per component
+    for (const auto& e : m.pecEdges)
+      ++size[find(static_cast<std::uint32_t>(e.node))];
+    for (const PortPlan& pp : m.ports) {
+      if (pp.lumped || pp.edges.empty())
+        continue;
+      std::set<std::uint32_t> low, high;
+      std::size_t lowEdges = 0, highEdges = 0;
+      auto along = [&](const PortEdge& pe) { // index of the edge's lower node along the gap
+        const auto& l = pe.edge;
+        return l.component == fdtd::X ? l.i : l.component == fdtd::Y ? l.j : l.k;
+      };
+      std::size_t minC = ~std::size_t{0}, maxC = 0;
+      for (const PortEdge& pe : pp.edges) {
+        minC = std::min(minC, along(pe));
+        maxC = std::max(maxC, along(pe));
+      }
+      for (const PortEdge& pe :
+           pp.edges) { // only the two ends of the gap are terminals, not the cells between
+        const auto& l = pe.edge;
+        const std::size_t a = g.nodeIndex(l.i, l.j, l.k), b = a + stride(l.component);
+        if (along(pe) == minC)
+          low.insert(find(static_cast<std::uint32_t>(a)));
+        if (along(pe) == maxC)
+          high.insert(find(static_cast<std::uint32_t>(b)));
+      }
+      for (auto r : low)
+        lowEdges += size[r];
+      for (auto r : high)
+        highEdges += size[r];
+      const bool joined =
+          std::any_of(low.begin(), low.end(), [&](std::uint32_t r) { return high.count(r) > 0; });
+      if (joined)
+        m.notes.push_back("port '" + pp.name +
+                          "': its two terminals are joined by copper (a DC short between them): fine for a "
+                          "shunt-fed antenna, otherwise the feed is grounded somewhere");
+      else if (std::min(lowEdges, highEdges) < 4)
+        m.notes.push_back("port '" + pp.name + "': one terminal touches almost no copper (" +
+                          std::to_string(std::min(lowEdges, highEdges)) +
+                          " conductor edges), so it floats: move the port onto a track or plane");
+    }
+  }
   return m;
 }
 

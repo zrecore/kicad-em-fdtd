@@ -162,6 +162,7 @@ struct RunPlan {
   std::size_t sweepPoints;
   double portImpedanceOhm;
   double coarseCell, fineCell, dielectricCell, airMargin; // metres
+  double airNearCell, airNearHeight;                      // metres, 0: off
   std::size_t pmlCells, maxSteps, sampleEvery;
   double courant, decay;
   std::string backend;        // auto, gpu or cpu
