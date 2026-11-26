@@ -13,6 +13,13 @@ namespace sim {
 
 struct RunResult;
 
+// The state of a run at a quiet point between advances, opaque outside this module: what the driver itself
+// holds (step count, decay window, port histories) and what the engine holds. See docs/checkpoint.md.
+struct Checkpoint {
+  std::size_t steps = 0;
+  std::vector<std::uint8_t> host, engine;
+};
+
 struct RunOptions {
   double fMinHz = 2.0e9, fMaxHz = 3.0e9;           // the reported S11 sweep
   double excitationMinHz = 0, excitationMaxHz = 0; // source spectrum; 0 = same as the sweep
@@ -31,6 +38,14 @@ struct RunOptions {
   std::function<bool()> shouldStop; // polled after every advance; true ends the run early (a closed window)
   double decay =
       1e-3; // stop once the port voltage over the last 200 steps is below this fraction of its peak
+  // Checkpoints. `resume` continues a run from a saved state (the model and options must be the ones it was
+  // saved with: the caller checks that). After every advance, once the run's bookkeeping is done and it has
+  // not ended, `checkpointDue(steps)` is asked, and `pauseRequested()`; if either says yes the state is
+  // handed to `onCheckpoint`; a pause then ends the run at once with RunResult::paused (no onFinish, no S11).
+  const Checkpoint* resume = nullptr;
+  std::function<bool(std::size_t)> checkpointDue;
+  std::function<bool()> pauseRequested;
+  std::function<void(const Checkpoint&)> onCheckpoint;
 };
 
 // The solver configured from a model: materials, PEC edges, CPML and the port-0 edges driven by `waveform`.
@@ -57,6 +72,8 @@ struct RunResult {
   // (docs/PLAN.md, the wide-port finding).
   std::vector<std::vector<double>> stripVoltage;
   double stripResistance = 0;
+  bool paused = false;             // ended at a pause request after a checkpoint: s is empty
+  std::size_t resumedFromStep = 0; // 0: not a resumed run
 };
 
 // Modulated-Gaussian pulse covering the band; its parameters are returned through the options' band.

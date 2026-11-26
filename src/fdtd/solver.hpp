@@ -9,6 +9,7 @@
 #include <span>
 #include <vector>
 
+#include "core/bytes.hpp"
 #include "fdtd/grid.hpp"
 
 namespace fdtd {
@@ -90,6 +91,11 @@ public:
   std::span<const T> cpmlBE(Axis a) const { return bE_[a]; }
   std::span<const T> cpmlAE(Axis a) const { return aE_[a]; }
   const std::vector<LumpedPort>& ports() const { return ports_; }
+  // The run state a checkpoint needs: time, the six field arrays, the CPML psi arrays and the lumped-port
+  // states. Everything else is rebuilt from the same model and options. restoreState throws if the bytes were
+  // written by a solver of another size or shape (it checks node count, port count and CPML presence).
+  void saveState(core::ByteWriter& w) const;
+  void restoreState(core::ByteReader& r);
   // Transverse dual area dA and edge length dl of a port, for the GPU port kernel.
   double portArea(const LumpedPort& p) const;
   T e(Axis component, std::size_t i, std::size_t j, std::size_t k) const {

@@ -23,6 +23,7 @@ struct PhasorChannel {
 
 class PhasorBank {
 public:
+  bool empty() const { return lists_.empty(); }
   std::size_t add(std::vector<PhasorChannel> channels, std::vector<double> frequenciesHz) {
     if (channels.empty() || frequenciesHz.empty())
       throw std::invalid_argument("a phasor list needs channels and frequencies");

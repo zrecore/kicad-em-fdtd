@@ -57,9 +57,13 @@ struct RunOutcome {
   double timeStepS = 0, wallSeconds = 0, mcellsPerSecond = 0;
   std::optional<double> bestHz, bestDb; // the deepest S11 point; empty if the run produced none
   int exitStatus = 0;
+  std::size_t resumedFromStep = 0; // 0: not a resumed run (the document then has "resumed_from_step": null)
 };
 // `emfdtd SNAPSHOT --json` after a headless run.
 std::string run(const std::string& version, const RunFacts& facts, const RunOutcome& outcome);
+// A run that wrote a checkpoint on request and stopped (exit status 75): docs/checkpoint.md.
+std::string paused(const std::string& version, const std::string& runDir, std::size_t checkpointStep,
+                   const std::string& checkpointDir);
 
 // `emfdtd --run-info RUNDIR --json`: a saved run folder, no solve. `withTable` adds every S11 point. Throws
 // std::runtime_error (the message goes into {"error": ...}) if the folder has neither a summary nor S11.

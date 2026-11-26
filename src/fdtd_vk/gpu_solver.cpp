@@ -226,4 +226,71 @@ std::span<const float> GpuSolver::field(fdtd::Kind kind, fdtd::Axis component) c
   return buffers_[index]->as<float>().first(nodeCount_);
 }
 
+namespace {
+constexpr std::uint32_t kGpuTag = 0x53'55'50'47; // "GPUS"
+constexpr std::uint32_t kGpuVersion = 1;
+} // namespace
+
+void GpuSolver::saveState(core::ByteWriter& w) const {
+  if (!lists_.empty())
+    throw std::runtime_error("checkpoints do not cover phasor lists (animation views)");
+  w.put(kGpuTag);
+  w.put(kGpuVersion);
+  w.put<std::uint64_t>(nodeCount_);
+  w.put<std::uint64_t>(ports_.size());
+  w.put<std::uint64_t>(buffers_[9]->as<float>().size());
+  w.put<std::uint64_t>(stepsDone_);
+  for (int i = 0; i < 6; ++i) {
+    buffers_[i]->download();
+    w.putArray<float>(buffers_[i]->as<float>().first(nodeCount_));
+  }
+  buffers_[9]->download();
+  w.putArray<float>(buffers_[9]->as<float>());
+  buffers_[10]->download();
+  const auto words = buffers_[10]->as<float>();
+  for (std::size_t p = 0; p < ports_.size(); ++p) {
+    w.put(words[4 + 8 * p + 6]); // inductor current
+    w.put(words[4 + 8 * p + 7]); // E at the end of the previous step
+  }
+  for (const auto& v : portV_)
+    w.putArray(v);
+  for (const auto& v : portVs_)
+    w.putArray(v);
+}
+
+void GpuSolver::restoreState(core::ByteReader& r) {
+  if (!lists_.empty())
+    throw std::runtime_error("checkpoints do not cover phasor lists (animation views)");
+  if (r.get<std::uint32_t>() != kGpuTag || r.get<std::uint32_t>() != kGpuVersion)
+    throw std::runtime_error("the checkpoint's GPU state has another format");
+  if (r.get<std::uint64_t>() != nodeCount_)
+    throw std::runtime_error("the checkpoint was written for a grid of another size");
+  if (r.get<std::uint64_t>() != ports_.size())
+    throw std::runtime_error("the checkpoint was written for another number of ports");
+  if (r.get<std::uint64_t>() != buffers_[9]->as<float>().size())
+    throw std::runtime_error("the checkpoint was written with another number of CPML layers");
+  const std::uint64_t steps = r.get<std::uint64_t>();
+  std::vector<float> tmp;
+  for (int i = 0; i < 6; ++i) {
+    r.getArray(tmp, nodeCount_);
+    std::copy(tmp.begin(), tmp.end(), buffers_[i]->as<float>().begin());
+    buffers_[i]->upload();
+  }
+  r.getArray(tmp, buffers_[9]->as<float>().size());
+  std::copy(tmp.begin(), tmp.end(), buffers_[9]->as<float>().begin());
+  buffers_[9]->upload();
+  auto words = buffers_[10]->as<float>();
+  for (std::size_t p = 0; p < ports_.size(); ++p) {
+    words[4 + 8 * p + 6] = r.get<float>();
+    words[4 + 8 * p + 7] = r.get<float>();
+  }
+  buffers_[10]->upload();
+  for (auto& v : portV_)
+    r.getArray(v, steps);
+  for (auto& v : portVs_)
+    r.getArray(v, steps);
+  stepsDone_ = steps;
+  fieldSynced_.fill(~0ull); // the host views of the fields are stale now
+}
+
 } // namespace fdtd_vk

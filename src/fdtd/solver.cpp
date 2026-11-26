@@ -411,6 +411,57 @@ template <class T> std::span<const T> Solver<T>::field(Kind kind, Axis component
   return kind == Kind::E ? std::span<const T>(e_[component]) : std::span<const T>(h_[component]);
 }
 
+namespace {
+constexpr std::uint32_t kStateTag = 0x56'4C'4F'53; // "SOLV"
+constexpr std::uint32_t kStateVersion = 1;
+} // namespace
+
+template <class T> void Solver<T>::saveState(core::ByteWriter& w) const {
+  w.put(kStateTag);
+  w.put(kStateVersion);
+  w.put<std::uint32_t>(sizeof(T));
+  w.put<std::uint64_t>(grid_.nodeCount());
+  w.put<std::uint64_t>(ports_.size());
+  w.put<std::uint64_t>(cpml_ ? cpmlCells_ : 0);
+  w.put(time_);
+  for (const auto& a : e_)
+    w.putArray(a);
+  for (const auto& a : h_)
+    w.putArray(a);
+  for (const auto& a : psi_)
+    w.putArray(a);
+  for (const PortState& p : portState_) {
+    w.put(p.vs);
+    w.put(p.current);
+    w.put(p.inductorCurrent);
+  }
+}
+
+template <class T> void Solver<T>::restoreState(core::ByteReader& r) {
+  if (r.get<std::uint32_t>() != kStateTag || r.get<std::uint32_t>() != kStateVersion)
+    throw std::runtime_error("the checkpoint's solver state has another format");
+  if (r.get<std::uint32_t>() != sizeof(T))
+    throw std::runtime_error("the checkpoint was written with another field precision");
+  if (r.get<std::uint64_t>() != grid_.nodeCount())
+    throw std::runtime_error("the checkpoint was written for a grid of another size");
+  if (r.get<std::uint64_t>() != ports_.size())
+    throw std::runtime_error("the checkpoint was written for another number of ports");
+  if (r.get<std::uint64_t>() != (cpml_ ? cpmlCells_ : 0))
+    throw std::runtime_error("the checkpoint was written with another number of CPML layers");
+  time_ = r.get<double>();
+  for (auto& a : e_)
+    r.getArray(a, a.size());
+  for (auto& a : h_)
+    r.getArray(a, a.size());
+  for (auto& a : psi_)
+    r.getArray(a, a.size());
+  for (PortState& p : portState_) {
+    p.vs = r.get<double>();
+    p.current = r.get<double>();
+    p.inductorCurrent = r.get<double>();
+  }
+}
+
 template class Solver<double>;
 template class Solver<float>;
 

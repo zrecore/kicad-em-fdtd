@@ -44,6 +44,12 @@ public:
   void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const;
   std::size_t channelCount(std::size_t list) const { return lists_[list]->channels; }
 
+  // Checkpoint: the six fields, the CPML psi buffer, the ports' inductor state and previous E, the step count
+  // and the port histories, only between step() calls. Refused while a phasor list exists (the lists are not
+  // part of the state). The bytes are only valid for the same device, driver and binary (the caller checks).
+  void saveState(core::ByteWriter& w) const;
+  void restoreState(core::ByteReader& r);
+
 private:
   struct PhasorList {
     std::size_t channels = 0;

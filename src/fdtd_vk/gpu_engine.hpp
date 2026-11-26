@@ -23,6 +23,8 @@ public:
   void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const override {
     gpu_.copyPhasors(list, re, im);
   }
+  void saveState(core::ByteWriter& w) const override { gpu_.saveState(w); }
+  void restoreState(core::ByteReader& r) override { gpu_.restoreState(r); }
   const GpuSolver& solver() const { return gpu_; }
 
 private:

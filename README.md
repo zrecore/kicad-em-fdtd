@@ -15,6 +15,7 @@ cmake --preset release && cmake --build --preset release
 build/release/apps/emfdtd/emfdtd SNAPSHOT.json --ui     # the window: setup, settings, run, results
 build/release/apps/emfdtd/emfdtd --list-settings        # every setting, with help
 build/release/apps/emfdtd/emfdtd --list-settings --json  # the same as JSON (also --list-devices, --dry-run, --run-info RUNDIR; docs/cli-json.md)
+build/release/apps/emfdtd/emfdtd BOARD.json --checkpoint-dir DIR [--resume]   # checkpoint and resume a headless run (docs/checkpoint.md)
 ```
 
 PCB properties are editable in Settings, PCB: use the board's own stackup or start from a fab profile (OSH Park 2, 4, 6 layers; PCBWay 2, 4 layers) and change any layer's thickness, permittivity or loss tangent. Values a fab does not publish are marked as assumed.

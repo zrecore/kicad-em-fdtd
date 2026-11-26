@@ -44,6 +44,23 @@ public:
   void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const override {
     bank_.copy(list, re, im);
   }
+  void saveState(core::ByteWriter& w) const override {
+    if (!bank_.empty())
+      throw std::runtime_error("checkpoints do not cover phasor lists (animation views)");
+    s_.saveState(w);
+    w.put<std::uint64_t>(series_.size());
+    for (const auto& v : series_)
+      w.putArray(v);
+  }
+  void restoreState(core::ByteReader& r) override {
+    if (!bank_.empty())
+      throw std::runtime_error("checkpoints do not cover phasor lists (animation views)");
+    s_.restoreState(r);
+    if (r.get<std::uint64_t>() != series_.size())
+      throw std::runtime_error("the checkpoint was written for another number of port edges");
+    for (auto& v : series_)
+      r.getArray(v);
+  }
 
 private:
   fdtd::PhasorBank bank_;
@@ -58,6 +75,48 @@ std::vector<double> stripVoltagesAt(const board::PortPlan& port, const Engine& e
   for (std::size_t i = 0; i < port.edges.size(); ++i)
     strip[port.edges[i].strip] += port.edges[i].sign * e.edgeVoltage(i)[n];
   return strip;
+}
+
+constexpr std::uint32_t kHostTag = 0x54'53'4F'48; // "HOST"
+constexpr std::uint32_t kHostVersion = 1;
+
+// What runOnePort itself holds between advances (the decay window and the port histories S11 comes from).
+struct HostState {
+  RunResult* r;
+  double* peak;
+  std::vector<double>* chunkMax;
+};
+
+void saveHost(core::ByteWriter& w, const HostState& h) {
+  w.put(kHostTag);
+  w.put(kHostVersion);
+  w.put<std::uint64_t>(h.r->steps);
+  w.put(h.r->progress);
+  w.put(*h.peak);
+  w.putArray(*h.chunkMax);
+  w.putArray(h.r->portVoltage);
+  w.putArray(h.r->portSource);
+  w.put<std::uint64_t>(h.r->stripVoltage.size());
+  for (const auto& v : h.r->stripVoltage)
+    w.putArray(v);
+}
+
+void restoreHost(core::ByteReader& rd, const HostState& h, std::size_t chunk) {
+  if (rd.get<std::uint32_t>() != kHostTag || rd.get<std::uint32_t>() != kHostVersion)
+    throw std::runtime_error("the checkpoint's run state has another format");
+  const std::size_t steps = static_cast<std::size_t>(rd.get<std::uint64_t>());
+  h.r->progress = rd.get<double>();
+  *h.peak = rd.get<double>();
+  rd.getArray(*h.chunkMax);
+  rd.getArray(h.r->portVoltage, steps);
+  rd.getArray(h.r->portSource, steps);
+  if (rd.get<std::uint64_t>() != h.r->stripVoltage.size())
+    throw std::runtime_error("the checkpoint was written for another number of port strips");
+  for (auto& v : h.r->stripVoltage)
+    rd.getArray(v, steps);
+  if (steps % chunk != 0 || h.chunkMax->size() != steps / chunk)
+    throw std::runtime_error("the checkpoint was written with another sample interval");
+  h.r->steps = steps;
 }
 
 } // namespace
@@ -112,6 +171,18 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
   const std::uint32_t kChunk = static_cast<std::uint32_t>(opt.sampleEvery);
   double peak = 0;
   std::vector<double> chunkMax;
+  const HostState host{&r, &peak, &chunkMax};
+  if (opt.resume) { // continue where a checkpoint left off: the same model and options, by the caller's check
+    core::ByteReader hr(opt.resume->host), er(opt.resume->engine);
+    restoreHost(hr, host, kChunk);
+    engine->restoreState(er);
+    if (!hr.atEnd() || !er.atEnd() || r.steps != opt.resume->steps)
+      throw std::runtime_error("the checkpoint is inconsistent");
+    for (std::size_t i = 0; i < port.edges.size(); ++i)
+      if (engine->edgeVoltage(i).size() != r.steps)
+        throw std::runtime_error("the checkpoint's port histories do not match its step count");
+    r.resumedFromStep = r.steps;
+  }
   while (r.steps < opt.maxSteps) {
     engine->advance(kChunk);
     if (opt.onSample)
@@ -149,6 +220,23 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
     if (r.steps > pulseSteps && recent < opt.decay * peak) {
       r.progress = 1.0;
       break;
+    }
+    if (opt.onCheckpoint) { // the run goes on: a quiet point, the GPU idle between advances
+      const bool pause = opt.pauseRequested && opt.pauseRequested();
+      if (pause || (opt.checkpointDue && opt.checkpointDue(r.steps))) {
+        Checkpoint cp;
+        cp.steps = r.steps;
+        core::ByteWriter hw, ew;
+        saveHost(hw, host);
+        engine->saveState(ew);
+        cp.host = std::move(hw.bytes());
+        cp.engine = std::move(ew.bytes());
+        opt.onCheckpoint(cp);
+        if (pause) {
+          r.paused = true;
+          return r; // no onFinish, no S11: the run is not over
+        }
+      }
     }
   }
   if (opt.onFinish)

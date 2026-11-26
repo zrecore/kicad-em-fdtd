@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (checkpoint and resume)
+- `emfdtd BOARD.json ... --checkpoint-dir DIR [--checkpoint-every SEC]` writes the run's state now and then (two generations, CRC-checked, atomic); `--resume` continues from the newest intact one and gives bit-identical results to an uninterrupted run (CPU and GPU, tested). `DIR/stop` or SIGTERM writes a checkpoint and ends the run with exit status 75. Same machine, device, driver, binary and inputs only: anything else is refused with the reason. Not with the window, `--view`, `--frames`, `--sweep` or `--dry-run`. `--json` documents carry `paused` / `resumed_from_step`. See `docs/checkpoint.md`. The farm side (a paused job state, `resume`) is the next step.
+
 ### Added (jobs that would not fit)
 - A job that would outrun a worker's time ceiling is no longer sent there (`fd_dk42_bd10` ran 45 minutes on the Mac and was killed at its 45-minute ceiling). `submit` asks the local solver for a CPU dry run (`--cpu --dry-run --json`), scales its step bound to what runs really take and sends `estimate: {cells, steps}` with the job; workers now tell the coordinator their ceiling in `hello` (`limits.max_minutes`; an older worker that does not is judged by the policy and gate ceilings, and by the first time-limit failure it has). The scheduler skips devices the job would not fit (expected seconds with a 25 % margin), keeps the job queued with a reason when none fits, and the reason updates as workers come and go. `submit --device WORKER[:GPU]` pins a job to one worker; `--no-estimate` skips the dry run. A time-limit failure now says whose ceiling it was and what to do.
 

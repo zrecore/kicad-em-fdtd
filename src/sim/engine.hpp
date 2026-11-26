@@ -6,6 +6,7 @@
 #include <span>
 #include <vector>
 
+#include "core/bytes.hpp"
 #include "fdtd/phasor_bank.hpp"
 #include "fdtd/solver.hpp"
 
@@ -28,6 +29,12 @@ public:
   virtual std::complex<double> phasor(std::size_t list, std::size_t frequency, std::size_t channel) const = 0;
   // Every phasor of a list as floats, index frequency * channels + channel; re and im each N * channels long.
   virtual void copyPhasors(std::size_t list, std::span<float> re, std::span<float> im) const = 0;
+  // Checkpoint: the backend's whole run state as bytes, and back (docs/checkpoint.md). Only between advance()
+  // calls, on the same machine, device and binary. A backend that holds phasor lists refuses (the lists are
+  // not part of the checkpoint and a silent loss would corrupt the animation); restoreState throws if the
+  // bytes do not fit this engine.
+  virtual void saveState(core::ByteWriter& w) const = 0;
+  virtual void restoreState(core::ByteReader& r) = 0;
 };
 
 } // namespace sim

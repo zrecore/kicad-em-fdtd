@@ -228,6 +228,22 @@ std::string run(const std::string& version, const RunFacts& f, const RunOutcome&
   else
     j["best_match"] = nullptr;
   j["exit_status"] = o.exitStatus;
+  if (o.resumedFromStep)
+    j["resumed_from_step"] = o.resumedFromStep;
+  else
+    j["resumed_from_step"] = nullptr;
+  return j.dump(2);
+}
+
+std::string paused(const std::string& version, const std::string& runDir, std::size_t checkpointStep,
+                   const std::string& checkpointDir) {
+  Json j = header(version);
+  j["mode"] = "run";
+  j["paused"] = true;
+  j["checkpoint_step"] = checkpointStep;
+  j["checkpoint_dir"] = checkpointDir;
+  j["results_dir"] = runDir;
+  j["exit_status"] = 75;
   return j.dump(2);
 }
 

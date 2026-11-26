@@ -25,6 +25,7 @@
 #include <unistd.h>
 #endif
 
+#include "app/checkpoint.hpp"
 #include "app/cli_json.hpp"
 #include "app/paths.hpp"
 #include "app/phasor_feed.hpp"
@@ -51,6 +52,7 @@
 #include "viz/window.hpp"
 
 #include <GLFW/glfw3.h>
+#include <csignal>
 
 namespace fs = std::filesystem;
 
@@ -63,6 +65,12 @@ std::string slurp(const fs::path& path) {
   std::ostringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+
+// Set by SIGTERM when --checkpoint-dir is given: the run writes a checkpoint and ends (exit status 75).
+std::atomic<bool> gPauseSignal{false};
+extern "C" void onPauseSignal(int) {
+  gPauseSignal.store(true);
 }
 
 void usage() {
@@ -94,6 +102,15 @@ void usage() {
       "  --view                   open a window and animate the field while the solve runs\n"
       "  --frames N               write N animation frames into the run folder\n"
       "  --dry-run                prepare and print the plan and estimate, do not solve\n"
+      "  --checkpoint-dir DIR     write checkpoints of the run into DIR (docs/checkpoint.md); a file "
+      "DIR/stop or\n"
+      "                           SIGTERM writes one and ends the run with exit status 75 (not with --ui, "
+      "--view,\n"
+      "                           --frames or --sweep)\n"
+      "  --checkpoint-every SEC   seconds between checkpoints (default 300)\n"
+      "  --resume                 continue the run saved in --checkpoint-dir (same machine, device, driver, "
+      "binary\n"
+      "                           and inputs, or it is refused)\n"
       "  --ui-frames N            with --ui: report the frame cost over N window frames, then exit\n"
       "  --cpu-ui                 with --ui: draw the UI on the CPU instead of the GPU\n"
       "  --ui                     open the solver window on its first screen (preview and settings)\n"
@@ -334,6 +351,9 @@ int main(int argc, char** argv) {
     float clickX = 0, clickY = 0;
     std::vector<board::GeometryOverride> geomOverrides;
     int frameCount = 0;
+    std::string checkpointDir;
+    double checkpointEvery = 300;
+    bool resumeRun = false;
     bool view = false, dryRun = false, uiMode = false, autorun = false;
     std::string shotFile, shotQuery, shotExpand, shotTab;
     bool shotRun = false, showSettings = false, hideControls = false;
@@ -477,6 +497,12 @@ int main(int argc, char** argv) {
         frameCount = std::atoi(next());
       else if (a == "--dry-run")
         dryRun = true;
+      else if (a == "--checkpoint-dir")
+        checkpointDir = next();
+      else if (a == "--checkpoint-every")
+        checkpointEvery = std::atof(next());
+      else if (a == "--resume")
+        resumeRun = true;
       else if (a == "--ui")
         uiMode = true;
       else if (a == "--autorun")
@@ -529,6 +555,16 @@ int main(int argc, char** argv) {
       return fail(2,
                   "--json covers --list-settings, --list-devices, --run-info, --dry-run and a headless run, "
                   "not the window, --view, --sweep or --prune-runs");
+
+    if (resumeRun && checkpointDir.empty())
+      return fail(2, "--resume needs --checkpoint-dir DIR (the folder the checkpoints are in)");
+    if (!checkpointDir.empty() && (uiMode || !shotFile.empty() || view || frameCount > 0 ||
+                                   !sweepSpec.key.empty() || pruneKeep >= 0 || dryRun))
+      return fail(2, "--checkpoint-dir is for a headless run without animation views: the window, --view, "
+                     "--frames, --sweep and --dry-run keep phasor lists or do not solve, which a checkpoint "
+                     "does not cover");
+    if (!checkpointDir.empty() && !(checkpointEvery > 0))
+      return fail(2, "--checkpoint-every needs a number of seconds above 0");
 
     const app::ProjectPaths paths(projectDir);
     if (pruneKeep >= 0) {
@@ -897,10 +933,43 @@ int main(int argc, char** argv) {
       app::runSweep(senv, settings, sweepSpec);
       return 0;
     }
-    const fs::path runDir = paths.newRunDir(app::timestamp());
-    std::printf("results: %s\n", runDir.string().c_str());
     sim::RunOptions& opt = prepared.options;
     const auto& model = prepared.model;
+
+    // Checkpoints (docs/checkpoint.md): the identity a checkpoint must match, the store, and the one to
+    // resume.
+    std::optional<app::checkpoint::Store> store;
+    std::optional<app::checkpoint::Loaded> loaded;
+    app::checkpoint::Identity ckptId;
+    fs::path runDir;
+    if (!checkpointDir.empty()) {
+      store.emplace(checkpointDir);
+      ckptId.runHash = app::checkpoint::hashRun(model, opt);
+      ckptId.backend = gpu ? "gpu" : "cpu";
+      if (ctx) {
+        ckptId.deviceUuid = ctx->deviceInfo().uuid;
+        ckptId.deviceName = ctx->deviceInfo().name;
+        ckptId.driver = ctx->deviceInfo().driver;
+      }
+      ckptId.binaryVersion = FDTD_VERSION;
+      ckptId.nodes = {g.nodes(fdtd::X), g.nodes(fdtd::Y), g.nodes(fdtd::Z)};
+      ckptId.dt = opt.courant * fdtd::maxStableDt(g);
+      if (resumeRun) {
+        loaded = store->load(ckptId); // throws with the reason if nothing can be resumed
+        runDir = loaded->identity.runDir;
+        fs::create_directories(runDir);
+        std::error_code ec;
+        fs::remove(store->dir() / "stop", ec); // the request that paused the run is answered
+        std::printf("resuming from the checkpoint at step %zu (%s)\n", loaded->state.steps,
+                    store->path(loaded->generation).string().c_str());
+      } else {
+        store->clear(); // the files of an earlier run must not be mistaken for this one's
+      }
+      std::signal(SIGTERM, onPauseSignal); // SIGTERM: write a checkpoint, then end with status 75
+    }
+    if (runDir.empty())
+      runDir = paths.newRunDir(app::timestamp());
+    std::printf("results: %s\n", runDir.string().c_str());
 
     // Animation: accumulate Ez on a plane mid-way between the outer copper layers at 25 frequencies in the
     // band.
@@ -951,6 +1020,29 @@ int main(int argc, char** argv) {
     }
     std::atomic<bool> done{false}, stop{false};
     opt.shouldStop = [&] { return stop.load(); };
+    auto lastCheckpoint = std::chrono::steady_clock::now();
+    if (store) {
+      opt.checkpointDue = [&](std::size_t) {
+        return std::chrono::steady_clock::now() - lastCheckpoint >=
+               std::chrono::duration<double>(checkpointEvery);
+      };
+      opt.pauseRequested = [&] {
+        std::error_code ec;
+        return gPauseSignal.load() || fs::exists(store->dir() / "stop", ec);
+      };
+      opt.onCheckpoint = [&](const sim::Checkpoint& cp) {
+        const auto w0 = std::chrono::steady_clock::now();
+        app::checkpoint::Identity id = ckptId;
+        id.runDir = runDir.string();
+        store->save(id, cp);
+        lastCheckpoint = std::chrono::steady_clock::now();
+        std::printf("checkpoint: step %zu written (%.0f MB, %.1f s)\n", cp.steps,
+                    static_cast<double>(cp.host.size() + cp.engine.size()) * 1e-6,
+                    std::chrono::duration<double>(lastCheckpoint - w0).count());
+      };
+      if (loaded)
+        opt.resume = &loaded->state;
+    }
     sim::RunResult r;
     std::exception_ptr failure;
     const auto t0 = std::chrono::steady_clock::now();
@@ -990,9 +1082,17 @@ int main(int argc, char** argv) {
     }
     if (failure)
       std::rethrow_exception(failure);
+    if (r.paused) {
+      std::printf("paused: checkpoint at step %zu\n", r.steps);
+      if (jsonMode)
+        emitJson(app::clijson::paused(FDTD_VERSION, runDir.string(), r.steps, checkpointDir));
+      return 75; // EX_TEMPFAIL: not an error, resume with --resume
+    }
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    const double mcells = static_cast<double>(g.cellCount()) * static_cast<double>(r.steps) / secs * 1e-6;
-    std::printf("%zu steps of %.3g ps in %.1f s (%.0f Mcells/s)\n", r.steps, r.dt * 1e12, secs, mcells);
+    const std::size_t stepsHere = r.steps - r.resumedFromStep; // a resumed run times only its own part
+    const double mcells = static_cast<double>(g.cellCount()) * static_cast<double>(stepsHere) / secs * 1e-6;
+    std::printf("%zu steps of %.3g ps in %.1f s (%.0f Mcells/s)%s\n", r.steps, r.dt * 1e12, secs, mcells,
+                r.resumedFromStep ? "; the first part is from the checkpoint" : "");
 
     std::ofstream out(runDir / "s11.s1p");
     fdtd::writeTouchstone(
@@ -1007,6 +1107,10 @@ int main(int argc, char** argv) {
           << g.cells(fdtd::Y) << " x " << g.cells(fdtd::Z) << " cells, smallest cell "
           << est.smallestCell * 1e3 << " mm\nsteps: " << r.steps << ", dt " << r.dt * 1e12 << " ps, backend "
           << (gpu ? "GPU" : "CPU") << "\n";
+      if (r.resumedFromStep)
+        sum << "resumed at step " << r.resumedFromStep
+            << " from a checkpoint (the earlier part ran on the same "
+            << "device)\n";
       for (const auto& key : settings.modifiedKeys())
         sum << "changed from default: " << key << "\n";
       for (const auto& n : prepared.model.notes)
@@ -1047,6 +1151,7 @@ int main(int argc, char** argv) {
       outcome.timeStepS = r.dt;
       outcome.wallSeconds = secs;
       outcome.mcellsPerSecond = mcells;
+      outcome.resumedFromStep = r.resumedFromStep;
       if (!r.s.s11.empty()) {
         outcome.bestHz = r.s.frequenciesHz[best];
         outcome.bestDb = 20 * std::log10(std::abs(r.s.s11[best]));
