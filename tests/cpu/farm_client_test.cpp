@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -96,6 +97,25 @@ SCENARIO("The window runs the farm tool without a shell and never waits for ever
     const auto o = farm::runCapture({"/bin/sleep", "30"}, 0.4);
     REQUIRE(o.timedOut);
     REQUIRE(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 15.0);
+  }
+  THEN("a command is ended within half a second when the window is closing") {
+    std::atomic<bool> closing{false};
+    std::thread closer([&closing] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      closing = true;
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto o = farm::runCapture({"/bin/sleep", "30"}, 60, &closing);
+    const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    closer.join();
+    REQUIRE(o.cancelled);
+    REQUIRE_FALSE(o.timedOut);
+    REQUIRE(took < 0.5 + 0.2);
+  }
+  THEN("a command is not even started when the window is already closing") {
+    const std::atomic<bool> closing{true};
+    const auto o = farm::runCapture({"/bin/sleep", "30"}, 60, &closing);
+    REQUIRE(o.cancelled);
   }
 }
 

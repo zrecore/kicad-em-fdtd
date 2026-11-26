@@ -590,8 +590,13 @@ private:
   bool reaped_ = false;
 };
 
-Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds) {
+Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds,
+                  const std::atomic<bool>* cancel) {
   Output out;
+  if (cancel && cancel->load()) {
+    out.cancelled = true;
+    return out;
+  }
   std::string error;
   auto child = Child::spawn(argv, error);
   if (!child) {
@@ -600,6 +605,11 @@ Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds) {
   }
   const double deadline = nowSeconds() + timeoutSeconds;
   while (child->read(out.text, 100)) {
+    if (cancel && cancel->load()) {
+      out.cancelled = true;
+      child->terminate();
+      return out;
+    }
     if (nowSeconds() > deadline) {
       out.timedOut = true;
       child->terminate();
@@ -612,7 +622,7 @@ Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds) {
 }
 #else
 class Child {};
-Output runCapture(const std::vector<std::string>&, double) {
+Output runCapture(const std::vector<std::string>&, double, const std::atomic<bool>*) {
   Output out;
   out.text = "the farm panel is not wired up on Windows yet: use the emfdtd_farm.py command line";
   return out;
@@ -629,7 +639,10 @@ Client::Client() {
 }
 
 Client::~Client() {
-  quit_ = true;
+  { // under the mutex: a flag set between the loop's check and its wait would miss the notify (1.5 s lost)
+    std::lock_guard<std::mutex> lock(mu_);
+    quit_ = true;
+  }
   cv_.notify_all();
   if (thread_.joinable())
     thread_.join();
@@ -665,7 +678,7 @@ void Client::loop() {
       pollOnce();
     pumpInvite();
     std::unique_lock<std::mutex> lock(mu_);
-    cv_.wait_for(lock, std::chrono::milliseconds(1500));
+    cv_.wait_for(lock, std::chrono::milliseconds(1500), [this] { return quit_.load(); });
   }
 }
 
@@ -674,7 +687,7 @@ void Client::pollOnce() {
   auto call = [&](std::vector<std::string> args, double timeout) {
     auto argv = command;
     argv.insert(argv.end(), args.begin(), args.end());
-    return runCapture(argv, timeout);
+    return runCapture(argv, timeout, &quit_);
   };
   Snapshot next = latest();
   const Output st = call({"status", "--json"}, 10);
@@ -764,7 +777,7 @@ void Client::run(std::vector<std::string> args, std::string label, double timeou
   actions_.emplace_back([this, args = std::move(args), label = std::move(label), timeoutSeconds] {
     auto argv = toolCommand();
     argv.insert(argv.end(), args.begin(), args.end());
-    const Output o = runCapture(argv, timeoutSeconds);
+    const Output o = runCapture(argv, timeoutSeconds, &quit_);
     {
       std::lock_guard<std::mutex> lock(mu_);
       action_.running = false;

@@ -127,9 +127,12 @@ struct Output {
   int code = -1;
   std::string text;
   bool timedOut = false;
+  bool cancelled = false; // `cancel` became true: the child was ended at once (the window is closing)
 };
-// Runs argv (no shell), captures stdout and stderr, kills it after timeoutSeconds.
-Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds);
+// Runs argv (no shell), captures stdout and stderr, kills it after timeoutSeconds, or as soon as *cancel is
+// true (checked every 100 ms, and before starting), so closing the window never waits for a farm call.
+Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds,
+                  const std::atomic<bool>* cancel = nullptr);
 
 // The command that runs the farm tool: env EMFDTD_FARM_COMMAND (split on spaces; for tests and unusual
 // installs), else the Python recorded when the farm was enabled (farm.json), else the plugin's venv, else
