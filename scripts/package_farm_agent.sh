@@ -96,6 +96,22 @@ if outside:
     sys.exit(1)
 print('imports ok: only the standard library and the bundle')
 " || fail "the farm package imports something from outside the bundle"
+# Every module of the package imports on its own, and the one that looks for the plugin's launcher (not in the
+# bundle) fails cleanly, as a bundle-only machine would see it.
+env -u PYTHONPATH -u EMFDTD_BIN EMFDTD_FARM_HOME="$HOME_DIR" "$PY" -I -c "
+import importlib, pkgutil, sys
+sys.path.insert(0, r'$B/src')
+import emfdtd_plugin.farm as pkg
+for m in pkgutil.walk_packages(pkg.__path__, 'emfdtd_plugin.farm.'):
+    if not m.name.endswith('.view'):  # the tkinter window needs a display, not a bundle check
+        importlib.import_module(m.name)
+from emfdtd_plugin.farm import estimate, local_worker
+try:
+    estimate.default_solver()
+except RuntimeError:
+    pass  # no solver known and no launcher: a clean, catchable failure
+print('every farm module imports; the bundle has no launcher and says so cleanly')
+" || fail "a farm module does not import from the bundle, or default_solver crashes without the launcher"
 OUT=$(env -u PYTHONPATH EMFDTD_FARM_HOME="$HOME_DIR" "$B/emfdtd-farm" status) || fail "emfdtd-farm status failed"
 echo "$OUT" | grep -q "farm state folder: $HOME_DIR" || fail "status did not use the scratch farm folder: $OUT"
 echo "$OUT" | grep -q "worker .* off" || fail "status does not show the worker role off: $OUT"

@@ -92,7 +92,22 @@ def estimate_job(solver, snapshot, spec, timeout=DRY_RUN_TIMEOUT_S):
 
 
 def default_solver():
-    """The solver this machine would run a dry run with: EMFDTD_BIN, else the plugin's usual places."""
-    from .. import launcher
+    """The solver this machine would run a dry run with: EMFDTD_BIN, else the plugin's usual places, else the
+    solver the worker agent is configured with. RuntimeError if there is none (the farm bundle has no
+    launcher.py: a client that only has the bundle submits without an estimate, or gives EMFDTD_BIN)."""
+    import os
 
-    return launcher.find_solver(Path(__file__).resolve().parents[3])
+    if os.environ.get("EMFDTD_BIN"):
+        return os.environ["EMFDTD_BIN"]
+    try:
+        from .. import launcher
+    except ImportError:
+        launcher = None
+    if launcher is not None:
+        return launcher.find_solver(Path(__file__).resolve().parents[3])
+    from . import agent
+
+    cfg = agent.load()
+    if cfg and cfg.get("solver"):
+        return cfg["solver"]
+    raise RuntimeError("no solver to run a dry run with (set EMFDTD_BIN to the emfdtd program)")

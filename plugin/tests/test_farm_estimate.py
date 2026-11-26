@@ -74,3 +74,20 @@ def _argv(ctx):
     assert {"--cpu", "--dry-run", "--json"} <= set(argv)
     folder = argv[argv.index("--project-dir") + 1]
     assert Path(folder).parent.name == "estimate" and Path(folder) != ctx["tmp"] and "--gpu" not in argv
+
+
+def test_default_solver_without_the_launcher_module_does_not_crash(monkeypatch, tmp_path):
+    """The farm bundle has no launcher.py: a bundle-only client must fall back, not die with ImportError."""
+    import sys
+
+    from emfdtd_plugin.farm import estimate
+
+    monkeypatch.setitem(sys.modules, "emfdtd_plugin.launcher", None)  # an import of it raises ImportError
+    monkeypatch.delenv("EMFDTD_BIN", raising=False)
+    monkeypatch.setenv("EMFDTD_FARM_HOME", str(tmp_path / "home"))
+    try:
+        estimate.default_solver()
+    except RuntimeError as e:  # no solver known: the clean, catchable failure
+        assert "EMFDTD_BIN" in str(e)
+    monkeypatch.setenv("EMFDTD_BIN", "/x/emfdtd")
+    assert estimate.default_solver() == "/x/emfdtd"

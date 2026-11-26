@@ -73,11 +73,11 @@ def status():
 def _find_solver(given):
     if given:
         return str(given)
-    from .. import launcher
-
     try:
+        from .. import launcher
+
         return launcher.find_solver(Path(__file__).resolve().parents[3])
-    except RuntimeError as e:
+    except (ImportError, RuntimeError) as e:
         raise agent.AgentError(f"{e}; or pass --solver PATH") from None
 
 
