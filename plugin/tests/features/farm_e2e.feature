@@ -67,3 +67,15 @@ Feature: Jobs travel from a client through the coordinator to a worker's GPU and
   Scenario: An input over the client's size limit is refused
     Given the client "tiny" is limited to 5 bytes of input
     Then "tiny" cannot submit a normal snapshot
+
+  Scenario: A job with an estimate and a pin runs on the pinned worker
+    When "alice" submits a job pinned to "gpu-box" with an estimate
+    Then the job finishes
+
+  Scenario: A pin to a worker that was never enrolled is refused
+    When "alice" submits a job pinned to "nobody"
+    Then the submission is refused saying "no enrolled worker named 'nobody'"
+
+  Scenario: A worker tells the coordinator its own ceiling
+    Given the worker "short-box" has its own ceiling of 7 minutes
+    Then the coordinator knows the ceiling of "short-box" is 7 minutes

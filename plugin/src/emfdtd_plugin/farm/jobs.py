@@ -13,6 +13,11 @@ GEOM_KEY = re.compile(r"^[A-Za-z0-9_.+/-]{1,64}\.[xy]$")
 PART_TREATMENT = re.compile(r"^[a-z0-9.,]{1,40}$")
 BODY_TREATMENT = re.compile(r"^(ignore|metal|dielectric:[0-9.]+(:[0-9.]+)?)$")
 DEVICE = re.compile(r"^[0-9a-fA-F]{4,32}$|^[0-9]{1,3}$")
+PIN = re.compile(r"^[A-Za-z0-9_.-]{1,40}(:[A-Za-z0-9 _.+-]{1,60})?$")
+# Fields the scheduler uses and the worker never sees (an older worker would refuse an unknown field)
+SCHEDULING_HINTS = ("estimate", "pin")
+MAX_CELLS = 5e9
+MAX_ESTIMATE_STEPS = 1e8
 
 
 class JobError(Exception):
@@ -58,6 +63,7 @@ def validate(spec, tiers, limits):
     if not isinstance(spec, dict):
         raise JobError("a job must be an object")
     known = {"profile", "sets", "geoms", "refine", "parts", "bodies", "nets", "ground_nets"}
+    known |= set(SCHEDULING_HINTS)
     extra = set(spec) - known
     if extra:
         raise JobError("unknown job field(s): {}".format(", ".join(sorted(extra))))
@@ -102,7 +108,37 @@ def validate(spec, tiers, limits):
     }
     out["nets"] = [_net(n) for n in spec.get("nets") or []]
     out["ground_nets"] = [_net(n) for n in spec.get("ground_nets") or []]
+    if "estimate" in spec:
+        out["estimate"] = _estimate(spec["estimate"])
+    if "pin" in spec:
+        out["pin"] = _word(spec["pin"], "pin", PIN)
     return out
+
+
+def _estimate(value):
+    """{"cells", "steps"}: how big the job is expected to be, for placement only (the worker enforces its own
+    ceilings whatever this says)."""
+    if not isinstance(value, dict) or set(value) - {"cells", "steps", "bound_steps"}:
+        raise JobError("an estimate is {cells, steps}")
+    out = {}
+    for key, cap in (
+        ("cells", MAX_CELLS),
+        ("steps", MAX_ESTIMATE_STEPS),
+        ("bound_steps", MAX_ESTIMATE_STEPS),
+    ):
+        if key in value:
+            n = _number(value[key], "estimate " + key)
+            if not 0 < n <= cap:
+                raise JobError(f"estimate {key} is outside the allowed range")
+            out[key] = n
+    if "cells" not in out or "steps" not in out:
+        raise JobError("an estimate is {cells, steps}")
+    return out
+
+
+def worker_spec(spec):
+    """The job as the worker gets it: without the hints only the scheduler reads."""
+    return {k: v for k, v in spec.items() if k not in SCHEDULING_HINTS}
 
 
 def build_argv(solver, snapshot, job, project_dir, device):

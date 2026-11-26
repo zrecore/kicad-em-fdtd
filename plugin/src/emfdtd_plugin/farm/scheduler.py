@@ -22,6 +22,8 @@ JOB_FIELDS = (
 )  # fmt: skip
 # the solver's own progress line: "progress: 41200 steps, about 37%, 312 s"
 SOLVER_PROGRESS = re.compile(r"^progress: (\d+) steps, about (\d{1,3})%")
+TIME_LIMIT = re.compile(r"^over the time limit of ([0-9.]+) minutes")
+TIME_MARGIN = 1.25  # a run is slower than the speed measured at connect (a bigger grid, a shared GPU)
 
 
 class SchedulerError(Exception):
@@ -51,6 +53,7 @@ class Job:
         self.reason = ""
         self.files = {}
         self.cancel_requested = False
+        self._waiting = ""  # the wait reason this scheduler wrote (so it can clear exactly that)
 
     def public(self):
         return {
@@ -69,6 +72,8 @@ class Job:
 
 
 class Scheduler:
+    TIME_MARGIN = TIME_MARGIN
+
     def __init__(self, max_attempts=MAX_ATTEMPTS, heartbeat_timeout=HEARTBEAT_TIMEOUT):
         self.max_attempts = max_attempts
         self.heartbeat_timeout = heartbeat_timeout
@@ -121,14 +126,25 @@ class Scheduler:
 
     # --- workers ------------------------------------------------------------------------------
 
-    def worker_hello(self, name, devices, now):
-        """Register (or re-register) a worker. Jobs it held before are lost: a reconnect starts clean."""
+    def worker_hello(self, name, devices, now, max_minutes=None):
+        """Register (or re-register) a worker. Jobs it held before are lost: a reconnect starts clean.
+        `max_minutes` is the longest job the worker will run (None: it did not say, and nothing is skipped
+        on its account until a time-limit failure teaches us)."""
         self._lose_worker_jobs(name, now, "worker reconnected")
+        learned = None if max_minutes is not None else (self.workers.get(name) or {}).get("learned")
         self.workers[name] = {
             "devices": {d["uuid"]: dict(d, busy=None) for d in devices},
             "last": now,
             "online": True,
+            "ceiling": max_minutes,
+            "learned": learned,
         }
+
+    def set_ceiling(self, name, max_minutes):
+        """The coordinator's word on the longest job `name` will run (its own, the policy's, a gate's)."""
+        w = self.workers.get(name)
+        if w:
+            w["ceiling"] = max_minutes
 
     def heartbeat(self, name, devices, now):
         w = self.workers.get(name)
@@ -226,23 +242,115 @@ class Scheduler:
             job.worker, job.device = worker, uuid_
             job.started = now
             job.deadline = now + self.heartbeat_timeout
+            if job._waiting and job.reason == job._waiting:
+                job.reason = ""
+            job._waiting = ""
             dev["busy"] = job.id
             self._served[job.owner] = self._served.get(job.owner, 0) + 1
             if job.group and job.group not in self._groups:
                 self._groups[job.group] = self.device_class(dev)
             offers.append((job, worker, uuid_))
+        for job in self.jobs.values():
+            if job.state == "queued" and (job.spec.get("estimate") or job.spec.get("pin")):
+                why = self._wait_reason(job)
+                if why:
+                    job.reason = job._waiting = why
         return offers
+
+    def _wait_reason(self, job):
+        """Why a queued job with an estimate or a pin is not running, in words for the person who sent it."""
+        pin_worker, pin_device = self._pin_parts(job)
+        if pin_worker:
+            w = self.workers.get(pin_worker)
+            if not w or not w["online"]:
+                return f"waiting for {pin_worker} (not connected)"
+            devs = [d for d in w["devices"].values() if self._device_matches(d, pin_device)]
+            if not devs:
+                return f"{pin_worker} has no device matching '{pin_device}'"
+            ok = [d for d in devs if self._fits(job, w, d)]
+            if not ok:
+                need = min((n for n in (self._need_seconds(job, d) for d in devs) if n), default=None)
+                ceiling = self._ceiling(w)
+                if need and ceiling:
+                    return f"needs about {round(need / 60)} min but {pin_worker} allows {ceiling:g}"
+                return f"waiting for {pin_worker} (busy)"
+            return f"waiting for {pin_worker} (busy)"
+        online = {n: w for n, w in self.workers.items() if w["online"]}
+        if not online:
+            return "no worker is online"
+        fitting = [n for n, w in online.items() if any(self._fits(job, w, d) for d in w["devices"].values())]
+        if fitting:
+            return "waiting for " + " or ".join(fitting) + " (busy)"
+        need = min(
+            (n for w in online.values() for d in w["devices"].values() if (n := self._need_seconds(job, d))),
+            default=None,
+        )
+        allow = [f"{self._ceiling(w):g} ({n})" for n, w in online.items() if self._ceiling(w)]
+        if need and allow:
+            return f"needs about {round(need / 60)} min; the online workers allow " + " and ".join(allow)
+        return ""
+
+    @staticmethod
+    def _ceiling(w):
+        """The longest job (minutes) a worker will take, or None when nobody has said."""
+        known = [c for c in (w.get("ceiling"), w.get("learned")) if c]
+        return min(known) if known else None
+
+    def _slowest_speed(self):
+        speeds = [
+            d["mcells_per_s"]
+            for w in self.workers.values()
+            if w["online"]
+            for d in w["devices"].values()
+            if d.get("mcells_per_s", 0) > 0
+        ]
+        return min(speeds) if speeds else None
+
+    def _need_seconds(self, job, dev):
+        """Expected seconds for the job on `dev`, or None when it has no estimate or the device's speed
+        is unknown and no other is measured either."""
+        est = job.spec.get("estimate")
+        if not est:
+            return None
+        speed = dev.get("mcells_per_s", 0.0) or self._slowest_speed()
+        if not speed:
+            return None
+        return est["cells"] * est["steps"] / (speed * 1e6) * self.TIME_MARGIN
+
+    def _fits(self, job, w, dev):
+        ceiling = self._ceiling(w)
+        need = self._need_seconds(job, dev)
+        return ceiling is None or need is None or need <= ceiling * 60
+
+    @staticmethod
+    def _pin_parts(job):
+        pin = job.spec.get("pin")
+        if not pin:
+            return None, None
+        worker, _, device = pin.partition(":")
+        return worker, device or None
+
+    @staticmethod
+    def _device_matches(dev, part):
+        if not part:
+            return True
+        part = part.lower()
+        return part in dev.get("name", "").lower() or dev.get("uuid", "").startswith(part)
 
     def _idle_slots(self, job):
         slots = []
         pinned = self._groups.get(job.group) if job.group else None
+        pin_worker, pin_device = self._pin_parts(job)
         for name, w in self.workers.items():
-            if not w["online"]:
+            if not w["online"] or (pin_worker and name != pin_worker):
                 continue
             for uuid_, d in w["devices"].items():
                 free = d.get("busy") is None and d.get("ok", True)
-                if free and (pinned is None or self.device_class(d) == pinned):
-                    slots.append((d.get("mcells_per_s", 0.0), name, uuid_))
+                if not free or (pinned is not None and self.device_class(d) != pinned):
+                    continue
+                if not self._device_matches(d, pin_device) or not self._fits(job, w, d):
+                    continue
+                slots.append((d.get("mcells_per_s", 0.0), name, uuid_))
         slots.sort(key=lambda s: (-s[0], s[1], s[2]))  # fastest first, then by name for a stable order
         return [(n, u) for _, n, u in slots]
 
@@ -283,6 +391,17 @@ class Scheduler:
         job = self._live(job_id, lease)
         if not job:
             return False
+        m = TIME_LIMIT.match(reason)
+        if m:
+            w = self.workers.get(job.worker)
+            if w:
+                limit = float(m.group(1))
+                w["learned"] = min(limit, w["learned"]) if w.get("learned") else limit
+            reason = (
+                f"{reason} on {job.worker} (its ceiling). Raise the ceiling on that machine "
+                "(emfdtd-farm agent configure --max-minutes N) or send the job to a faster/longer-allowed "
+                "worker with --device."
+            )
         if retry:
             self._requeue(job, now, reason)
         else:

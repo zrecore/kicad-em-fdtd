@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (jobs that would not fit)
+- A job that would outrun a worker's time ceiling is no longer sent there (`fd_dk42_bd10` ran 45 minutes on the Mac and was killed at its 45-minute ceiling). `submit` asks the local solver for a CPU dry run (`--cpu --dry-run --json`), scales its step bound to what runs really take and sends `estimate: {cells, steps}` with the job; workers now tell the coordinator their ceiling in `hello` (`limits.max_minutes`; an older worker that does not is judged by the policy and gate ceilings, and by the first time-limit failure it has). The scheduler skips devices the job would not fit (expected seconds with a 25 % margin), keeps the job queued with a reason when none fits, and the reason updates as workers come and go. `submit --device WORKER[:GPU]` pins a job to one worker; `--no-estimate` skips the dry run. A time-limit failure now says whose ceiling it was and what to do.
+
 ### Added (Agent section)
 - Farm tab: an **Agent** section, shown while the worker role is on: the agent's state (stopped, running, connected, its job and last error), Start, Stop and Restart (Stop and Restart ask first when a job is running), Start held back with the failing doctor check and its fix, and "Show checks" and "Show log". The window runs `agent status|doctor|start|stop|restart --json` and `agent logs`; "This computer's GPU" keeps the one-time setup.
 

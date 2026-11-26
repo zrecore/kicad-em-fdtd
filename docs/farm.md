@@ -281,6 +281,19 @@ after a cancel; a cancel stops the job wherever it is: fetching input, checking 
 ended on the coordinator's side. If the hold command itself ends while the job runs, the coordinator cancels the
 job and requeues it.
 
+## Jobs that would not fit
+
+Every worker has a longest-job ceiling (its agent's `--max-minutes`, lowered further by the coordinator's policy and gates). A job that outruns it is killed and fails, and the time already spent is lost: there is no checkpoint to resume from. To avoid that, `submit` sizes the job first and the scheduler places it only where it fits.
+
+- **The estimate.** `submit` runs the local solver's dry run on the CPU (`emfdtd --cpu --dry-run --json`, in a scratch folder of its own, no GPU turn) for the cell count and the solver's upper bound on steps, scales the bound to what runs really take (0.5 of it at the default stop threshold, 0.7 at 3e-4, all of it below that; measured on the antenna model, see `farm/estimate.py`) and sends `estimate: {cells, steps}` with the job. A sweep uses its first point. `--no-estimate` skips the dry run; if the dry run cannot run, the job goes without an estimate (a note on stderr) and is placed as before.
+- **The ceilings.** A worker tells the coordinator its own ceiling when it connects; the coordinator takes the smallest of that, the policy's `max_minutes` for the worker and a gate's cap. An older worker that does not say is judged by the last two and, after its first time-limit failure, by the limit it hit.
+- **Placement.** Expected seconds on a device are cells x steps / measured speed x 1.25. A device is skipped when that exceeds its worker's ceiling; a device with no measured speed is judged at the slowest speed measured anywhere (if none is measured, nothing is skipped). Among devices that fit, the fastest idle one is chosen as before.
+- **Waiting.** A job that fits nowhere right now stays queued and says why in `queue`: `waiting for mac-m1 (busy)`, or `needs about 49 min; the online workers allow 45 (win-egpu) and 45 (mac-m1)` when every online ceiling is too low (raise one with `emfdtd-farm agent configure --max-minutes N` on that machine, or connect a worker that allows more; the reason updates by itself).
+- **Pinning.** `submit --device mac-m1` (or `mac-m1:Apple`, a GPU whose name contains the text) sends the job only there; it waits for that worker if it is busy or away (`waiting for mac-m1 (not connected)`) and the submission is refused if no enrolled worker has that name.
+- **When a job still hits a ceiling** its reason reads `over the time limit of 45.0 minutes on win-egpu (its ceiling). Raise the ceiling on that machine (emfdtd-farm agent configure --max-minutes N) or send the job to a faster/longer-allowed worker with --device.`
+
+The estimate and the pin are hints for the scheduler: the coordinator removes them from the job it hands to the worker, and the worker enforces its own ceilings whatever a submitter says.
+
 ## Restarting the coordinator
 
 Stop it with Ctrl-C or SIGTERM (`kill PID`): it gives back any GPU turn it is holding and closes its ports before it

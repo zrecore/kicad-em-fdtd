@@ -11,7 +11,7 @@ import ssl
 import sys
 from pathlib import Path
 
-from . import agent, client, config, enroll, jobs, local_worker, pki, policy
+from . import agent, client, config, enroll, estimate, jobs, local_worker, pki, policy
 
 CONSEQUENCE = {
     "client": (
@@ -194,6 +194,17 @@ def _parser():
     s.add_argument("--nets")
     s.add_argument("--ground-nets")
     s.add_argument("--label", default="")
+    s.add_argument(
+        "--device",
+        metavar="WORKER[:GPU]",
+        help="send the job only to this worker (and a GPU whose name contains GPU), for example mac-m1",
+    )
+    s.add_argument(
+        "--no-estimate",
+        action="store_true",
+        help="do not ask the local solver for a dry run (the estimate keeps a long job off a worker "
+        "whose time ceiling it would outrun)",
+    )
     s.add_argument("--json", action="store_true", help='print {"jobs": [ids]} instead of one id per line')
     s.add_argument("--wait", metavar="DEST", help="wait for the jobs and save their results in DEST")
     sub.add_parser("queue", help="client: my jobs and the farm's devices").add_argument(
@@ -233,6 +244,8 @@ def _spec(args):
         spec["nets"] = args.nets.split(",")
     if args.ground_nets:
         spec["ground_nets"] = args.ground_nets.split(",")
+    if getattr(args, "device", None):
+        spec["pin"] = args.device
     return spec
 
 
@@ -558,6 +571,16 @@ def _farm_command(args, say):
         key, _, values = args.sweep.partition("=")
         specs = jobs.expand_sweep(spec, key, [_num(v) for v in values.split(",")])
         group = "sweep-" + Path(args.snapshot).stem[:20]
+    if not args.no_estimate:
+        try:
+            est, why = estimate.estimate_job(estimate.default_solver(), args.snapshot, specs[0])
+        except RuntimeError as e:
+            est, why = None, str(e)
+        if est:  # the first point stands for a sweep: its points differ little in size
+            for sp in specs:
+                sp["estimate"] = est
+        else:
+            print(f"no time estimate for the job ({why}); it is placed without one", file=sys.stderr)
     ids = []
     for sp in specs:
         ids.append(_run(client.submit(bundle, host, port, sp, args.snapshot, args.label, group)))

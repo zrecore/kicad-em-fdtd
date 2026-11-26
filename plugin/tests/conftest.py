@@ -455,3 +455,37 @@ def _stays_queued(farm, who):
 def _too_big(farm, who):
     with pytest.raises(client.ClientError):
         farm.submit(who, spec())
+
+
+@when(parsers.parse('"{who}" submits a job pinned to "{pin}" with an estimate'))
+def _pinned_estimate(farm, who, pin):
+    farm.who = who
+    farm.submit(who, {**spec(), "pin": pin, "estimate": {"cells": 1e5, "steps": 1e3}})
+
+
+@when(parsers.parse('"{who}" submits a job pinned to "{pin}"'))
+def _pinned(farm, who, pin):
+    try:
+        farm.submit(who, {**spec(), "pin": pin})
+    except client.ClientError as e:
+        farm.result["error"] = str(e)
+
+
+@then(parsers.parse('the submission is refused saying "{text}"'))
+def _refused_saying(farm, text):
+    assert text in farm.result.get("error", ""), farm.result
+
+
+@given(parsers.parse('the worker "{name}" has its own ceiling of {m:d} minutes'))
+def _own_ceiling(farm, name, m):
+    farm.add_worker(name, "stub gpu a", caps={"max_minutes": m})
+
+
+@then(parsers.parse('the coordinator knows the ceiling of "{name}" is {m:d} minutes'))
+def _knows(farm, name, m):
+    end = time.time() + 5
+    while time.time() < end:
+        if farm.coord.sched.workers.get(name, {}).get("ceiling") == m:
+            return
+        time.sleep(0.1)
+    raise AssertionError(farm.coord.sched.workers.get(name))

@@ -372,6 +372,8 @@ class Worker:
                 "solver_version": solver_version,
                 "data_hash": data_hash,
                 "watchdog_s": self.watchdog_s,
+                # the longest job this worker will run: lets the coordinator keep a longer job away from it
+                "limits": {"max_minutes": self.caps["max_minutes"]},
             }
             await self._send(writer, hello)
             self._heard = asyncio.get_running_loop().time()

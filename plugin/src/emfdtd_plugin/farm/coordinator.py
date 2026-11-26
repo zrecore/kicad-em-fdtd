@@ -28,6 +28,7 @@ class _Session:
         self.task = None
         self.pinger = None
         self.watchdog_s = watchdog_s  # how long the worker waits in silence before killing its solver
+        self.advertised_minutes = None  # the longest job the worker says it will run (None: it did not say)
 
     def close(self):
         if self.task:
@@ -201,6 +202,12 @@ class Coordinator:
                 if not 0 < msg["input_bytes"] <= limits["max_input_bytes"]:
                     return {"type": "refused", "reason": "input size is outside the allowed range"}
                 spec = jobs.validate(msg["spec"], None, limits)
+                pin = spec.get("pin")
+                if pin and f"worker:{pin.partition(':')[0]}" not in policy.load()["devices"]:
+                    return {
+                        "type": "refused",
+                        "reason": f"no enrolled worker named '{pin.partition(':')[0]}'",
+                    }
                 group = msg.get("group")
                 if group is not None and not (isinstance(group, str) and GROUP.match(group)):
                     return {"type": "refused", "reason": "bad group name"}
@@ -253,8 +260,12 @@ class Coordinator:
             float(wd) if isinstance(wd, (int, float)) and not isinstance(wd, bool) and 0 < wd <= 600 else 20.0
         )
         sess = _Session(writer, wd)
+        limits = hello.get("limits")
+        minutes = limits.get("max_minutes") if isinstance(limits, dict) else None
+        if isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and minutes > 0:
+            sess.advertised_minutes = float(minutes)
         self.sessions[name] = sess
-        self.sched.worker_hello(name, devices, self.clock())
+        self.sched.worker_hello(name, devices, self.clock(), max_minutes=sess.advertised_minutes)
         sess.task = asyncio.ensure_future(self._pump_outbox(sess))
         sess.pinger = asyncio.ensure_future(self._ping_loop(sess))
         self._dispatch()
@@ -481,8 +492,20 @@ class Coordinator:
             with contextlib.suppress(Exception):  # a broken gates.json keeps the last good one
                 self.gates = self.gates_loader()
         self._release_ended()
+        self._refresh_ceilings()
         self._dispatch_offers()
         self._persist()
+
+    def _refresh_ceilings(self):
+        """Tell the scheduler the longest job each worker will take: the smallest of what it said itself, what
+        the policy allows it and what its gate caps (a worker that said nothing is judged by the other two).
+        """
+        for name, sess in self.sessions.items():
+            known = [sess.advertised_minutes, policy.limits_for(("worker", name)).get("max_minutes")]
+            cap = self.gates.get(name, {}).get("max_minutes")
+            if isinstance(cap, (int, float)) and cap > 0:
+                known.append(cap)
+            self.sched.set_ceiling(name, min(c for c in known if c))
 
     def _dispatch_offers(self):
         for job, worker, device in self.sched.next_offers(self.clock()):
@@ -497,7 +520,7 @@ class Coordinator:
                 "job": job.id,
                 "lease": job.lease,
                 "expires": job.deadline,
-                "spec": job.spec,
+                "spec": jobs.worker_spec(job.spec),  # an older worker refuses fields it does not know
                 "device": device,
                 "input_sha256": job.input_sha256,
                 "input_bytes": job.input_bytes,
