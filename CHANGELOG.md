@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (solver: sheet copper edges)
+- Zero-thickness (sheet) copper now uses the same robust edge test as slab copper. With grid lines snapped onto a copper edge the old ray cast decided a whole row of PEC edges by rounding, so the patch's resonance jumped by up to 6 % with the domain size and a 2 nm shift of the copper moved it 2.8 %. Results of earlier sheet-copper runs can change.
+
 ### Added (farm: pausing and resuming)
 - A worker that can checkpoint (`features: ["checkpoint"]` in its hello) runs jobs with `--checkpoint-dir`. At its time ceiling it no longer kills the solver: it asks it to write a checkpoint and leave, and the job is **paused** (`paused at step N on WORKER (ceiling reached); resume with: emfdtd-farm resume JOB [--max-minutes N]`). `emfdtd-farm resume JOB [--max-minutes N]` continues it on the worker that holds the checkpoint (the ceiling is now per run segment); `emfdtd-farm restart JOB` drops it and starts from step 0. A job whose worker is lost, or whose agent restarts, waits for that worker for 60 minutes (`serve --hold-minutes`) and continues from the checkpoint when it is back; a polite `agent stop` pauses the job the same way. Checkpoints stay on the worker (7 days), are listed in its hello, and are deleted when the job is cancelled, restarted or finished. `agent doctor` checks the disk for them; `agent stop` waits up to 90 s. Old workers keep the old behavior. Docs: `docs/farm.md` "Pausing and resuming".
 

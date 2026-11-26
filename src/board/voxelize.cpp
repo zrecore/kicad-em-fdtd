@@ -26,12 +26,6 @@ bool insideRing(const Ring& r, double x, double y) { // even-odd ray casting
   return in;
 }
 
-bool insideShape(const CopperShape& s, double x, double y) {
-  if (!insideRing(s.outer, x, y))
-    return false;
-  return std::none_of(s.holes.begin(), s.holes.end(), [&](const Ring& h) { return insideRing(h, x, y); });
-}
-
 double distanceToRing(const Ring& r, double x, double y) {
   double best = std::numeric_limits<double>::max();
   for (std::size_t a = 0, b = r.size() - 1; a < r.size(); b = a++) {
@@ -43,7 +37,7 @@ double distanceToRing(const Ring& r, double x, double y) {
   return best;
 }
 
-// Like insideShape, but a point on the shape's edge (within `tol`, metres) counts as inside, on every side.
+// Inside the shape, where a point on its edge (within `tol`, metres) counts as inside, on every side.
 // The even-odd ray test decides a point exactly on an edge by rounding, so with grid lines snapped onto a
 // copper edge one wall of a slab could be claimed and the opposite one not. A hole's edge is copper too.
 bool insideShapeOrOn(const CopperShape& s, double x, double y, double tol = 1e-7) {
@@ -511,10 +505,8 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       continue;
     }
     const std::size_t li = layerIndex(shape.layer);
-    const bool slabLayer = slabHiNode[li] > slabLoNode[li];
-    auto inside = [&](double x, double y) {
-      return slabLayer ? insideShapeOrOn(shape, x, y) : insideShape(shape, x, y);
-    };
+    // Sheets too: snapping puts grid lines exactly on copper edges, where the even-odd test is a coin toss.
+    auto inside = [&](double x, double y) { return insideShapeOrOn(shape, x, y); };
     std::uint16_t id = 0;
     std::vector<std::uint16_t>* claim = nullptr;
     std::vector<std::uint16_t>* nodeClaim = nullptr;

@@ -1189,3 +1189,24 @@ SCENARIO("A slab's walls are solid on both sides when grid lines fall exactly on
     }
   }
 }
+
+SCENARIO("A sheet's walls are solid on both sides when grid lines fall exactly on its edges") {
+  GIVEN("the pad with grid lines snapped onto its corners (x 3.6 and 6.4 mm), a zero-thickness sheet") {
+    const board::Snapshot snap = board::parseSnapshot(thickFixture(0.0));
+    board::GridPlan plan = kPlan;
+    plan.snapToGeometry = true;
+    const auto m = board::voxelize(snap, board::Selection{}, plan, kF0);
+    const auto& g = m.grid;
+    THEN("the sheet's Ey edges reach both the left and the right edge of the pad") {
+      std::vector<double> xs;
+      for (const auto& e : m.pecEdges)
+        if (e.axis == fdtd::Y && e.node / (g.nodes(fdtd::X) * g.nodes(fdtd::Y)) == m.copperPlaneNode[0])
+          xs.push_back((g.edge(fdtd::X, e.node % g.nodes(fdtd::X)) + m.originX) * 1e3);
+      REQUIRE_FALSE(xs.empty());
+      std::sort(xs.begin(), xs.end());
+      INFO("first " << xs.front() << " last " << xs.back());
+      REQUIRE(xs.front() == Approx(3.6).margin(1e-6));
+      REQUIRE(xs.back() == Approx(6.4).margin(1e-6));
+    }
+  }
+}
