@@ -26,8 +26,15 @@ DEVICE_LINE = re.compile(
 PROGRESS_PERCENT = re.compile(r"^progress: \d+ steps, about (\d{1,3})%")
 SPEED = re.compile(r"\(([\d.]+) Mcells/s\)")
 ESTIMATE_MB = re.compile(r"estimate:.*?(\d+(?:\.\d+)?) (MB|GB)")
+CKPT_LINE = re.compile(r"^checkpoint: step (\d+) written")  # the solver's line after each checkpoint
+PAUSED_LINE = re.compile(r"^paused: checkpoint at step (\d+)")
 MAX_LOG_BYTES = 5 * 1024 * 1024
 PROGRESS_EVERY = 2.0
+CHECKPOINT_WAIT_S = 60.0  # how long a solver asked to pause gets to write its checkpoint before it is killed
+CHECKPOINT_EVERY_RANGE = (10.0, 3600.0)  # seconds between checkpoints: the offer's value is clamped to this
+RETENTION_S = 7 * 24 * 3600  # job folders (and so checkpoints) are kept this long
+MAX_CHECKPOINTS_IN_HELLO = 64
+EXIT_PAUSED = 75  # the solver's exit status after it wrote a checkpoint at a pause request
 
 
 class WorkerRefused(Exception):
@@ -47,6 +54,11 @@ def clamp_limits(offered, caps):
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value < cap:
                 out[key] = value
     return out
+
+
+CHECKPOINT_REFUSED = (
+    "checkpoint refused:"  # scheduler.CHECKPOINT_REFUSED: the coordinator starts the job again
+)
 
 
 class DeviceGone(Exception):
@@ -117,6 +129,8 @@ class Worker:
         watchdog_s=20.0,
         lock_wait_s=6 * 3600.0,
         status_file=None,
+        checkpoint_wait_s=CHECKPOINT_WAIT_S,
+        checkpoint=True,
     ):
         modes = [bool(lock_command), bool(no_lock), bool(turn_from_coordinator)]
         if sum(modes) != 1:
@@ -159,6 +173,10 @@ class Worker:
         self._tiers = None
         self._speed = {}
         self._stop = False
+        self.checkpoint_wait_s = float(checkpoint_wait_s)
+        self.checkpoint = bool(checkpoint)  # False behaves like a worker from before checkpoints existed
+        self._ckpt_dirs = {}  # job id -> the checkpoint folder of a running job (where its stop file goes)
+        self._ctl_writer = None  # the control connection of the current session
 
     @property
     def connected(self):
@@ -359,11 +377,102 @@ class Worker:
         for r in list(self.running.values()):
             r.kill_tree()
 
+    async def graceful_stop(self, wait=None):
+        """Stop the worker politely: every running solver that can checkpoint is asked to write one and leave
+        (the job is reported paused and continues when this worker is back); whatever is left after `wait`
+        seconds is killed. The connection stays up meanwhile so the coordinator hears about it."""
+        self._stop = True
+        wait = self.checkpoint_wait_s + 15.0 if wait is None else wait
+        await (
+            self._say_unavailable()
+        )  # first: the paused job must not be offered back to this stopping worker
+        for job in list(self.running):
+            folder = self._ckpt_dirs.get(job)
+            if folder is not None:
+                with contextlib.suppress(OSError):
+                    (folder / "stop").write_text("stop\n")
+        loop = asyncio.get_running_loop()
+        end = loop.time() + wait
+        while self.running and loop.time() < end:
+            await asyncio.sleep(0.1)
+        self.stop()
+
+    async def _say_unavailable(self):
+        """Tell the coordinator every GPU of this worker is out (an immediate heartbeat with ok false)."""
+        try:
+            uuids = [d["uuid"] for d in self.recorded_devices()]
+        except RuntimeError:
+            return
+        self.bad_devices.update(uuids)
+        if self._ctl_writer is not None:
+            payload = [{"uuid": u, "ok": False, "mcells_per_s": self._speed.get(u, 0.0)} for u in uuids]
+            with contextlib.suppress(Exception):
+                await self._send(self._ctl_writer, {"type": "heartbeat", "devices": payload})
+
+    # --- checkpoints held on this machine ---------------------------------------------------------
+
+    def _job_folder(self, job):
+        return self.work_root / "jobs" / store.job_dir(job).name
+
+    @staticmethod
+    def _write_sidecar(work, job, step, device):
+        """What `hello` reports: the newest checkpoint of this job (the solver's own files are binary)."""
+        with contextlib.suppress(OSError):
+            tmp = work / "checkpoint.tmp"
+            tmp.write_text(
+                json.dumps({"job": job, "step": int(step), "device": device, "written": time.time()})
+            )
+            os.replace(str(tmp), str(work / "checkpoint.json"))
+
+    def held_checkpoints(self):
+        """[{"job", "step", "device"}] for the job folders that hold a checkpoint (validated, capped)."""
+        out = []
+        for side in sorted((self.work_root / "jobs").glob("*/checkpoint.json")):
+            try:
+                data = json.loads(side.read_text())
+                job, step, dev = data["job"], data["step"], data.get("device")
+                if (
+                    not (isinstance(job, str) and re.match(r"^[0-9a-f]{32}$", job))
+                    or isinstance(step, bool)
+                    or not isinstance(step, int)
+                    or step < 0
+                    or store.job_dir(job).name != side.parent.name
+                    or job in self.running
+                ):
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            out.append({"job": job, "step": step, "device": dev if isinstance(dev, str) else None})
+        return out[:MAX_CHECKPOINTS_IN_HELLO]
+
+    def sweep_jobs(self, now=None):
+        """Remove job folders nobody can use: leftovers without a checkpoint, and checkpoints older than the
+        retention time (7 days). A folder of a job that is running now is never touched."""
+        now = time.time() if now is None else now
+        for folder in list((self.work_root / "jobs").glob("*")):
+            if not folder.is_dir() or any(self._job_folder(j) == folder for j in self.running):
+                continue
+            keep = False
+            with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+                written = json.loads((folder / "checkpoint.json").read_text())["written"]
+                keep = now - float(written) < RETENTION_S
+            if not keep:
+                shutil.rmtree(str(folder), ignore_errors=True)
+
+    def _discard(self, job):
+        """The coordinator does not need this job's checkpoint any more (cancelled, restarted, abandoned)."""
+        if job in self.tasks or job in self.running:
+            return  # a run is using the folder: its own cleanup removes it
+        if isinstance(job, str) and re.match(r"^[0-9a-f]{32}$", job):
+            shutil.rmtree(str(self._job_folder(job)), ignore_errors=True)
+
     async def _session(self, data_hash, solver_version):
         reader, writer = await self._connect()
+        self._ctl_writer = writer
         beat = dog = None
         try:
             devs = await self.devices_for_hello()
+            self.sweep_jobs()  # before the hello lists what is held: nothing past its retention is reported
             hello = {
                 "type": "hello",
                 "protocol": protocol.PROTOCOL_VERSION,
@@ -374,6 +483,9 @@ class Worker:
                 "watchdog_s": self.watchdog_s,
                 # the longest job this worker will run: lets the coordinator keep a longer job away from it
                 "limits": {"max_minutes": self.caps["max_minutes"]},
+                # this worker can pause a job at a checkpoint and resume it (an older worker says nothing)
+                "features": ["checkpoint"] if self.checkpoint else [],
+                "checkpoints": self.held_checkpoints() if self.checkpoint else [],
             }
             await self._send(writer, hello)
             self._heard = asyncio.get_running_loop().time()
@@ -391,6 +503,8 @@ class Worker:
                     self.tasks[msg["job"]] = asyncio.ensure_future(self._run_offer(msg, writer))
                 elif kind == "cancel":
                     self._cancel(msg["job"])
+                elif kind == "discard":
+                    self._discard(msg["job"])
                 elif kind == "refused":
                     raise WorkerRefused(msg["reason"])
         finally:
@@ -431,15 +545,29 @@ class Worker:
         job, lease, device = offer["job"], offer["lease"], offer["device"]
         work = self.work_root / "jobs" / store.job_dir(job).name
         fail = {"type": "fail", "job": job, "lease": lease, "retry": False}
+        keep = False  # a paused job keeps its folder: the checkpoint is in it
+        ckpt = self._checkpoint_plan(offer, work)
         self._status(job={"id": job, "label": None, "phase": "starting", "percent": None})
         try:
             if self.mode == "coordinator" and offer.get("turn") is not True:
                 raise jobs.JobError("this worker only runs jobs while the coordinator holds the GPU turn")
             await self._send(ctl, {"type": "accept", "job": job, "lease": lease})
             await self._phase(ctl, job, lease, "fetching the input")
-            shutil.rmtree(str(work), ignore_errors=True)
-            (work / "in").mkdir(parents=True)
-            (work / "run").mkdir()
+            if ckpt and ckpt["resume"]:
+                if not (work / "ckpt").is_dir() or not (work / "run").is_dir():
+                    raise jobs.JobError(
+                        f"{CHECKPOINT_REFUSED} this worker has no checkpoint of the job (it was removed)"
+                    )
+                shutil.rmtree(
+                    str(work / "in"), ignore_errors=True
+                )  # the input is fetched again; the rest stays
+                (work / "in").mkdir(parents=True)
+            else:
+                shutil.rmtree(str(work), ignore_errors=True)
+                (work / "in").mkdir(parents=True)
+                (work / "run").mkdir()
+                if ckpt:
+                    (work / "ckpt").mkdir()
             limits = clamp_limits(offer.get("limits") or {}, self.caps)
             await self._fetch_input(job, work / "in", offer, limits)
             spec = jobs.validate(offer["spec"], await self.tiers(), limits)
@@ -448,16 +576,27 @@ class Worker:
                 self.bad_devices.add(device)
                 raise DeviceGone("the GPU is not present any more")
             self.bad_devices.discard(device)
-            argv = jobs.build_argv(self.solver, work / "in" / "input.json", spec, work / "run", device)
+            argv = jobs.build_argv(
+                self.solver,
+                work / "in" / "input.json",
+                spec,
+                work / "run",
+                device,
+                checkpoint=(work / "ckpt", ckpt["every"], ckpt["resume"]) if ckpt else None,
+            )
             if not self._fresh():
                 raise ConnectionError("the coordinator has gone quiet: not starting the solver")
             self._check_cancelled(job)
-            await self._solve(job, lease, argv, work, device, limits, ctl)
+            if ckpt:
+                self._ckpt_dirs[job] = work / "ckpt"
+            keep = await self._solve(job, lease, argv, work, device, limits, ctl, ckpt) == "paused"
         except jobs.JobError as e:
             await self._send(ctl, {**fail, "reason": str(e)[:300]})
         except DeviceGone as e:
+            keep = (work / "checkpoint.json").exists()  # a retry may still resume from an earlier checkpoint
             await self._send(ctl, {**fail, "reason": str(e), "retry": True})
         except (protocol.ProtocolError, OSError, asyncio.TimeoutError, ssl.SSLError, RuntimeError) as e:
+            keep = (work / "checkpoint.json").exists()
             with contextlib.suppress(Exception):
                 reason = f"worker error: {type(e).__name__}: {e}"[:300]
                 await self._send(ctl, {**fail, "reason": reason, "retry": True})
@@ -465,7 +604,10 @@ class Worker:
             pass
         except asyncio.CancelledError:
             if job not in self.cancelled:
-                raise  # the session ended or the watchdog fired: nobody to report to
+                # the session ended or the watchdog fired: nobody to report to. The solver is dead, but a
+                # checkpoint it wrote stays: the job waits for this worker (docs/farm.md)
+                keep = (work / "checkpoint.json").exists()
+                raise
         finally:
             await self._reap(job)  # no solver process of this job may outlive this point
             if job in self.cancelled:
@@ -474,9 +616,23 @@ class Worker:
                     await self._send(ctl, {"type": "stopped", "job": job, "lease": lease})
             self.running.pop(job, None)
             self._children.pop(job, None)
+            self._ckpt_dirs.pop(job, None)
             self.tasks.pop(job, None)
             self._status(job=None, solver_pids=[])
-            shutil.rmtree(str(work), ignore_errors=True)
+            if not keep:
+                shutil.rmtree(str(work), ignore_errors=True)
+
+    def _checkpoint_plan(self, offer, work):
+        """{"every", "resume"} when the coordinator offered checkpointing (only to a worker that said
+        it can), else None: the job then runs as it always did."""
+        plan = offer.get("checkpoint")
+        if not isinstance(plan, dict):
+            return None
+        every = plan.get("every")
+        if isinstance(every, bool) or not isinstance(every, (int, float)):
+            every = 300.0
+        low, high = CHECKPOINT_EVERY_RANGE
+        return {"every": min(high, max(low, float(every))), "resume": plan.get("resume") is True}
 
     async def _phase(self, ctl, job, lease, text):
         """Tell the coordinator what this job is doing, so 'running' is never silent."""
@@ -513,7 +669,8 @@ class Worker:
         finally:
             writer.close()
 
-    async def _solve(self, job, lease, argv, work, device, limits, ctl):
+    async def _solve(self, job, lease, argv, work, device, limits, ctl, ckpt=None):
+        """Run the solver and report. Returns "paused" when it left a checkpoint (the folder is kept)."""
         self._check_cancelled(job)
         if not self._fresh():
             raise ConnectionError("the coordinator has gone quiet: not starting the solver")
@@ -523,9 +680,19 @@ class Worker:
         self.running[job] = running
         self._status(solver_pids=[running.proc.pid])
         loop = asyncio.get_running_loop()
-        state = {"last": 0.0, "speed": None}
+        state = {"last": 0.0, "speed": None, "ckpt_step": None}
+        stop_file = work / "ckpt" / "stop"
 
         def on_line(line):
+            c = CKPT_LINE.match(line)
+            if c:
+                state["ckpt_step"] = int(c.group(1))
+                self._write_sidecar(work, job, state["ckpt_step"], device)
+                asyncio.ensure_future(
+                    self._send(
+                        ctl, {"type": "checkpointed", "job": job, "lease": lease, "step": state["ckpt_step"]}
+                    )
+                )
             m = SPEED.search(line)
             if m:
                 state["speed"] = float(m.group(1))
@@ -542,8 +709,27 @@ class Worker:
 
         log = work / "run.log"
         code, timed_out, last = await procs.pump(
-            running, str(log), on_line, MAX_LOG_BYTES, limits["max_minutes"] * 60
+            running,
+            str(log),
+            on_line,
+            MAX_LOG_BYTES,
+            limits["max_minutes"] * 60,
+            # at the ceiling: ask for a checkpoint and a clean exit first, kill only if it does not come
+            soft_stop=(lambda: stop_file.write_text("stop\n")) if ckpt else None,
+            soft_wait=self.checkpoint_wait_s,
         )
+        if ckpt and code == EXIT_PAUSED:
+            paused = next((PAUSED_LINE.match(x) for x in reversed(last) if PAUSED_LINE.match(x)), None)
+            step = int(paused.group(1)) if paused else state["ckpt_step"] or 0
+            self._write_sidecar(work, job, step, device)
+            await self._send(
+                ctl,
+                {
+                    "type": "paused", "job": job, "lease": lease, "step": step,
+                    "why": "ceiling" if timed_out else "stopped",
+                },
+            )  # fmt: skip
+            return "paused"
         if running.killed and not timed_out:
             # cancelled by the coordinator: say the solver is dead, so the GPU turn can be given back
             with contextlib.suppress(Exception):
@@ -556,6 +742,11 @@ class Worker:
             )
             return
         if code != 0:
+            if ckpt and ckpt["resume"] and any("checkpoint" in x for x in last[-3:]):
+                await self._send(
+                    ctl, {**fail, "reason": f"{CHECKPOINT_REFUSED} " + " | ".join(last[-2:])[:200]}
+                )
+                return
             await self._send(
                 ctl, {**fail, "reason": f"the solver exited with {code}: " + " | ".join(last[-3:])[:200]}
             )

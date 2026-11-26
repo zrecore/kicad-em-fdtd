@@ -29,6 +29,7 @@ class _Session:
         self.pinger = None
         self.watchdog_s = watchdog_s  # how long the worker waits in silence before killing its solver
         self.advertised_minutes = None  # the longest job the worker says it will run (None: it did not say)
+        self.features = set()  # what the worker said it can do ("checkpoint"); an old worker says nothing
 
     def close(self):
         if self.task:
@@ -54,10 +55,15 @@ class Coordinator:
         gates_loader=None,
         ping_every=5.0,
         turn_margin_s=10.0,
+        checkpoint_every_s=300.0,
+        hold_s=None,
     ):
         self.bundle = bundle
         self.host, self.requested_port = host, port
         self.sched = scheduler or Scheduler()
+        if hold_s is not None:
+            self.sched.hold_s = float(hold_s)  # how long a job waits for the worker that holds its checkpoint
+        self.checkpoint_every_s = float(checkpoint_every_s)
         self.clock = clock
         self.data_hash = data_hash
         self.check_every = check_every
@@ -168,12 +174,13 @@ class Coordinator:
         writer.write(protocol.encode(message))
         await writer.drain()
 
-    def _allowed(self, ident, der, action, job=None):
-        """Per-request authorisation: not revoked, enrolled, and granted this action. Audited either way."""
+    def _allowed(self, ident, der, action, job=None, grant=None):
+        """Per-request authorisation: not revoked, enrolled, and granted this action (`grant` names the policy
+        entry when it differs: resume and restart need the same grant as cancel). Audited either way."""
         if pki.is_revoked(der):
             audit.record(ident, action, False, job, "certificate revoked")
             return False, "certificate revoked"
-        ok, why = policy.authorize(ident, action)
+        ok, why = policy.authorize(ident, grant or action)
         audit.record(ident, action, ok, job, "" if ok else why)
         return ok, why
 
@@ -188,9 +195,11 @@ class Coordinator:
     def _client_msg(self, ident, der, msg):
         owner = f"{ident[0]}:{ident[1]}"
         kind = msg["type"]
-        if kind not in ("submit", "status", "cancel", "results"):
+        if kind not in ("submit", "status", "cancel", "results", "resume", "restart"):
             return {"type": "refused", "reason": f"unexpected message {kind}"}
-        ok, why = self._allowed(ident, der, kind, msg.get("job"))
+        ok, why = self._allowed(
+            ident, der, kind, msg.get("job"), "cancel" if kind in ("resume", "restart") else None
+        )
         if not ok:
             return {"type": "refused", "reason": why}
         now = self.clock()
@@ -222,6 +231,13 @@ class Coordinator:
                     "jobs": self.sched.listing(owner),
                     "devices": self.sched.device_listing(),
                 }
+            if kind in ("resume", "restart"):
+                if kind == "resume":
+                    self.sched.resume(msg["job"], owner, msg.get("max_minutes"), now)
+                else:
+                    self.sched.restart(msg["job"], owner, now)
+                self._dispatch()
+                return {"type": "ok"}
             if kind == "cancel":
                 running = self.sched.cancel(msg["job"], owner, now)
                 if running:
@@ -260,12 +276,19 @@ class Coordinator:
             float(wd) if isinstance(wd, (int, float)) and not isinstance(wd, bool) and 0 < wd <= 600 else 20.0
         )
         sess = _Session(writer, wd)
+        features = [f for f in (hello.get("features") or []) if isinstance(f, str)][:8]
+        sess.features = set(features)
         limits = hello.get("limits")
         minutes = limits.get("max_minutes") if isinstance(limits, dict) else None
         if isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and minutes > 0:
             sess.advertised_minutes = float(minutes)
         self.sessions[name] = sess
-        self.sched.worker_hello(name, devices, self.clock(), max_minutes=sess.advertised_minutes)
+        discard = self.sched.worker_hello(
+            name, devices, self.clock(), max_minutes=sess.advertised_minutes,
+            features=features, checkpoints=self._clean_checkpoints(hello.get("checkpoints")),
+        )  # fmt: skip
+        for job_id in discard:  # checkpoints of jobs that were cancelled, finished, or restart from step 0
+            sess.outbox.put_nowait({"type": "discard", "job": job_id})
         sess.task = asyncio.ensure_future(self._pump_outbox(sess))
         sess.pinger = asyncio.ensure_future(self._ping_loop(sess))
         self._dispatch()
@@ -285,6 +308,24 @@ class Coordinator:
                 audit.record(ident, "worker_gone", True)
             sess.close()
             self._dispatch()
+
+    @staticmethod
+    def _clean_checkpoints(raw):
+        """What a worker says it holds: [{"job", "step", "device"}], validated and capped."""
+        out = []
+        for c in (raw or [])[:64] if isinstance(raw, list) else []:
+            if (
+                not isinstance(c, dict)
+                or not isinstance(c.get("job"), str)
+                or not store.JOB_ID.match(c["job"])
+            ):
+                continue
+            step = c.get("step")
+            if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+                continue
+            dev = c.get("device")
+            out.append({"job": c["job"], "step": step, "device": dev if isinstance(dev, str) else None})
+        return out
 
     @staticmethod
     def _clean_devices(raw):
@@ -334,6 +375,17 @@ class Coordinator:
             self.sched.progress(msg["job"], msg["lease"], str(msg["line"]))
         elif kind == "stopped":
             self._confirm_dead(msg["job"], msg["lease"])
+        elif kind == "checkpointed":
+            self.sched.checkpointed(msg["job"], msg["lease"], msg["step"])
+            self._persist()
+        elif kind == "paused":
+            self._confirm_dead(
+                msg["job"], msg["lease"]
+            )  # the solver has exited to be paused: the turn can go
+            why = "ceiling" if msg.get("why") == "ceiling" else "stopped"
+            if self.sched.pause(msg["job"], msg["lease"], msg["step"], why, now):
+                audit.record(ident, "job_paused", True, msg["job"], f"step {msg['step']} ({why})")
+            self._dispatch()
         elif kind == "result":
             self._confirm_dead(msg["job"], msg["lease"])  # the solver has exited to have a result
             self._finish(ident, msg, now)
@@ -494,6 +546,10 @@ class Coordinator:
         self._release_ended()
         self._refresh_ceilings()
         self._dispatch_offers()
+        for worker, job_id in self.sched.take_discards():
+            sess = self.sessions.get(worker)
+            if sess:  # an offline worker is told at its next hello
+                sess.outbox.put_nowait({"type": "discard", "job": job_id})
         self._persist()
 
     def _refresh_ceilings(self):
@@ -526,6 +582,14 @@ class Coordinator:
                 "input_bytes": job.input_bytes,
                 "limits": limits,
             }
+            if "checkpoint" in sess.features:
+                offer["checkpoint"] = {"every": self.checkpoint_every_s, "resume": bool(job.resume)}
+            if job.run_limit:  # resume --max-minutes: a shorter ceiling for this run only
+                offer["limits"] = {
+                    **offer["limits"],
+                    "max_minutes": min(limits["max_minutes"], job.run_limit),
+                }
+                job.run_limit = None
             if worker in self.gates:
                 cap = self.gates[worker].get("max_minutes")
                 if isinstance(cap, (int, float)) and cap > 0:

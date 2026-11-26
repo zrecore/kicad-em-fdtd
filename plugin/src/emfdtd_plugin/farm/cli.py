@@ -118,6 +118,15 @@ def _parser():
     s = sub.add_parser("serve", help="coordinator: run the farm")
     s.add_argument("--listen", required=True, help="the one LAN address to listen on")
     s.add_argument("--port", type=int, default=7420)
+    s.add_argument(
+        "--checkpoint-every", type=float, default=300.0, metavar="SECONDS",
+        help="how often workers that can checkpoint write one (default 300)",
+    )  # fmt: skip
+    s.add_argument(
+        "--hold-minutes", type=float, default=60.0,
+        help="how long a job whose worker went away waits for it (and its checkpoint) before starting "
+        "again from step 0 on any worker (default 60; 0 = never wait)",
+    )  # fmt: skip
     sub.add_parser("members", help="coordinator: list enrolled devices").add_argument(
         "--json", action="store_true"
     )
@@ -210,6 +219,19 @@ def _parser():
     sub.add_parser("queue", help="client: my jobs and the farm's devices").add_argument(
         "--json", action="store_true"
     )
+    s = sub.add_parser("resume", help="client: continue a paused job from its checkpoint")
+    s.add_argument("job")
+    s.add_argument(
+        "--max-minutes",
+        type=float,
+        help="stop this run after this long (at most what the worker allows); it pauses again if needed",
+    )
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser(
+        "restart", help="client: drop a paused job's checkpoint and start it again from step 0"
+    )
+    s.add_argument("job")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("cancel", help="client: cancel one of my jobs")
     s.add_argument("job")
     s = sub.add_parser("results", help="client: download a finished job's results")
@@ -410,7 +432,10 @@ def _farm_command(args, say):
         bundle = pki.load_identity("coordinator")
 
         async def go():
-            c = Coordinator(bundle, args.listen, args.port, gates=_load_gates(), gates_loader=read_gates)
+            c = Coordinator(
+                bundle, args.listen, args.port, gates=_load_gates(), gates_loader=read_gates,
+                checkpoint_every_s=args.checkpoint_every, hold_s=args.hold_minutes * 60,
+            )  # fmt: skip
             await c.start()
             say(f"farm coordinator listening on {args.listen}:{c.port} (Ctrl-C or SIGTERM to stop)")
             stop = asyncio.Event()
@@ -514,9 +539,19 @@ def _farm_command(args, say):
             task = asyncio.ensure_future(w.run_forever())
             loop = asyncio.get_running_loop()
 
-            def stop_now():
-                w.stop()  # ends any solver now
+            stopping = []
+
+            async def graceful():
+                await w.graceful_stop()  # a solver that can checkpoint writes one and leaves: the job pauses
                 task.cancel()
+
+            def stop_now():
+                if stopping:  # a second signal: no more waiting
+                    w.stop()
+                    task.cancel()
+                    return
+                stopping.append(True)
+                asyncio.ensure_future(graceful())
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 with contextlib.suppress(NotImplementedError, ValueError):  # not on Windows loops
@@ -553,11 +588,38 @@ def _farm_command(args, say):
         say("your jobs:")
         for j in st["jobs"]:
             pct = f"{j['percent']:>3}%" if j.get("percent") is not None else "    "
-            say(f"  {j['job']}  {j['state']:<10} {pct} {j['label']}  {j['progress'] or j['reason']}")
+            note = (
+                j["reason"]
+                if j["state"] in ("paused", "failed", "cancelled")
+                else (j["progress"] or j["reason"])
+            )
+            say(f"  {j['job']}  {j['state']:<10} {pct} {j['label']}  {note}")
         return 0
     if cmd == "cancel":
         _run(client.cancel(bundle, host, port, args.job))
         say("cancel requested")
+        return 0
+    if cmd in ("resume", "restart"):
+        try:
+            if cmd == "resume":
+                _run(client.resume(bundle, host, port, args.job, args.max_minutes))
+            else:
+                _run(client.restart(bundle, host, port, args.job))
+        except client.ClientError as e:
+            if args.json:
+                say(json.dumps({"ok": False, "error": str(e)}))
+            else:
+                print(f"error: {e}", file=sys.stderr)
+            return 1
+        say(
+            json.dumps({"ok": True, "job": args.job})
+            if args.json
+            else (
+                "resume requested: it continues on the worker that holds its checkpoint"
+                if cmd == "resume"
+                else "restart requested: it starts again from step 0"
+            )
+        )
         return 0
     if cmd == "results":
         got = _run(client.fetch(bundle, host, port, args.job, args.dest))

@@ -281,6 +281,27 @@ after a cancel; a cancel stops the job wherever it is: fetching input, checking 
 ended on the coordinator's side. If the hold command itself ends while the job runs, the coordinator cancels the
 job and requeues it.
 
+## Pausing and resuming
+
+A worker that says `features: ["checkpoint"]` in its hello (this version and later) runs every job with the solver's checkpoints on (`docs/checkpoint.md`), so a job that is stopped can continue instead of starting over. **A checkpoint lives only on the worker that wrote it and resumes only there, on the same GPU, driver and binary.** Nothing moves between machines. An older worker that says nothing keeps the old behavior: no checkpoint flags are sent to it, and a job at its ceiling fails as before.
+
+**What is saved where.** Each job gets a folder under the worker's work folder (`jobs/JOBID/`) with `in/` (the snapshot), `run/` (the results folder) and `ckpt/` (the solver's two checkpoint generations, `ckpt.a` and `ckpt.b`, written every 5 minutes by default; `serve --checkpoint-every SECONDS` changes it, clamped to 10 s to 1 h on the worker). `checkpoint.json` records the newest step; it is what the worker lists in its hello. A checkpoint is about 28 bytes per cell per generation (the 20 M cell board: about 0.55 GB each). The folder of a finished, failed or cancelled job is removed. The folder of a paused job is kept for 7 days (the worker's retention time, checked at every connect), then removed; the job is then `failed` with the reason `paused at step N, but WORKER no longer has its checkpoint (kept for 7 days); submit the job again`.
+
+**The ceiling is now per run segment, not per job.** At the worker's time ceiling the worker no longer kills the solver: it writes `ckpt/stop`, waits up to 60 s for the solver to write a checkpoint and exit (status 75), and reports the job **paused** at that step (a solver that does not leave in time is killed and the job fails as before). A 65 minute job on a worker with a 45 minute ceiling therefore pauses once and finishes after a resume. The coordinator never raises a worker's ceiling.
+
+```
+paused at step 91200 on mac-m1 (ceiling reached); resume with: emfdtd-farm resume JOBID [--max-minutes N]
+```
+
+- `emfdtd-farm resume JOB [--max-minutes N]` (the submitter, with the same grant as cancel) queues the job again, **pinned to the worker and GPU that hold the checkpoint**, and the solver continues with `--resume`. `N` shortens this run's ceiling; more than the worker allows is refused (`mac-m1 allows at most 120 minutes per run: resume with --max-minutes 120 or less`). Resuming does not count as a failed attempt. A resume after the ceiling is never automatic: the owner decides.
+- `emfdtd-farm restart JOB` drops the checkpoint (the worker deletes the folder) and starts the job again from step 0 on any worker. `cancel` also removes it.
+- **After a lost connection, a restart of the coordinator or of the agent** a job that has a checkpoint is not sent to another worker. It waits for the worker that holds it (`waiting for mac-m1 to come back (it holds the checkpoint at step 91200); starts again from step 0 on any worker after 60 min`) and continues automatically when that worker is back, because the worker lists its checkpoints at every connect. If the worker does not return within the waiting time (`serve --hold-minutes N`, default 60; 0 = never wait) or comes back without the checkpoint, the job starts again from step 0 on any worker (`gave up waiting for mac-m1's checkpoint after 60 min; starting from step 0`). A job that never wrote a checkpoint is requeued at once, as before.
+- **`agent stop` and a worker's SIGTERM** are polite: the worker first tells the coordinator its GPUs are out (so the paused job is not offered back to it), asks the solver for a checkpoint and waits for it (up to 75 s; a second signal kills at once). The job shows `paused at step N (the worker stopped); it resumes when WORKER is back` and continues when the agent starts again. This does not count as a failed attempt. `agent stop` now waits up to 90 s by default for that.
+- The GPU turn of a paused job is given back exactly like the turn of a finished job (the coordinator-held turn after the worker confirms the solver is gone; the lock command ends with the solver).
+- **Disk.** `agent doctor` now wants 2 GiB free for work plus 2 GiB for a job's checkpoint (2 x 1 GiB, because the size of the biggest job is not known). `queue --json` shows `checkpoint_step` for a job that has one; a paused job's reason says how to resume it.
+
+Not covered: moving a checkpoint to another machine or device, jobs with animation views (those are not farmed), sweeps (each point is its own job and pauses on its own).
+
 ## Jobs that would not fit
 
 Every worker has a longest-job ceiling (its agent's `--max-minutes`, lowered further by the coordinator's policy and gates). A job that outruns it is killed and fails, and the time already spent is lost: there is no checkpoint to resume from. To avoid that, `submit` sizes the job first and the scheduler places it only where it fits.

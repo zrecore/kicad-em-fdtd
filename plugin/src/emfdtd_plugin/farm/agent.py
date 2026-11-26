@@ -27,6 +27,9 @@ TOOL = Path(__file__).resolve().parents[3] / "tools" / "emfdtd_farm.py"
 STATUS_FRESH_S = 45.0  # a worker that has not touched its status file for this long is hung or gone
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
 MIN_FREE_BYTES = 2 * (1 << 30)
+# A job may leave a checkpoint: two generations of about 28 bytes per cell (0.5 GB for the 20 M cell board).
+# The size of the biggest job is not known, so the check allows 2 x 1 GiB for it.
+CHECKPOINT_RESERVE_BYTES = 2 * (1 << 30)
 CONFIG_KEYS = (
     "solver",
     "devices",
@@ -373,8 +376,9 @@ def _kill_pids(pids, force):
                 os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)  # a session leader: its group
 
 
-def stop(timeout=20.0):
-    """End the agent and its solver. Returns {"was_running", "stopped", "forced"}."""
+def stop(timeout=90.0):
+    """End the agent and its solver. Returns {"was_running", "stopped", "forced"}. The worker first asks a
+    running solver to write a checkpoint and leave (up to about 75 s); an idle agent leaves at once."""
     info = _read_json(pid_file()) or {}
     state = _read_json(status_file())
     pid = info.get("pid")
@@ -682,10 +686,11 @@ def _workdir_check(work):
             "workdir", False, f"{work}: {e}", "choose a writable folder with `agent configure --work`"
         )
     gib = free / (1 << 30)
+    need = (MIN_FREE_BYTES + CHECKPOINT_RESERVE_BYTES) / (1 << 30)
     return _check(
         "workdir",
-        free >= MIN_FREE_BYTES,
-        f"{work}: {gib:.1f} GiB free",
+        free >= MIN_FREE_BYTES + CHECKPOINT_RESERVE_BYTES,
+        f"{work}: {gib:.1f} GiB free ({need:g} needed: room to work plus a job's checkpoint)",
         "free some disk space or choose another folder with `agent configure --work`",
     )
 
@@ -721,7 +726,7 @@ def add_parsers(sub):
         s = a.add_parser(name)
         s.add_argument("--json", action="store_true")
     s = a.add_parser("stop")
-    s.add_argument("--timeout", type=float, default=20.0)
+    s.add_argument("--timeout", type=float, default=90.0)
     s.add_argument("--json", action="store_true")
     a.add_parser("status").add_argument("--json", action="store_true")
     a.add_parser("doctor").add_argument("--json", action="store_true")

@@ -39,6 +39,18 @@ MESSAGES = {
     "result": {"job": _STR, "lease": _STR, "files": _DICT},
     "fail": {"job": _STR, "lease": _STR, "reason": _STR},
     "cancel": {"job": _STR},
+    # checkpoints (a worker that said `features: ["checkpoint"]` in its hello; docs/farm.md)
+    "paused": {
+        "job": _STR,
+        "lease": _STR,
+        "step": _INT,
+    },  # worker -> coordinator: the solver wrote a checkpoint and left
+    "checkpointed": {
+        "job": _STR,
+        "lease": _STR,
+        "step": _INT,
+    },  # worker -> coordinator: a checkpoint now exists
+    "discard": {"job": _STR},  # coordinator -> worker: the checkpoint of this job is not needed any more
     "drain": {},
     "ping": {},  # coordinator -> worker: proof the coordinator is still there (see the worker's watchdog)
     "stopped": {"job": _STR, "lease": _STR},  # worker -> coordinator: the solver for this job is dead
@@ -46,6 +58,8 @@ MESSAGES = {
     "submit": {"spec": _DICT, "input_sha256": _STR, "input_bytes": _INT, "label": _STR},
     "submitted": {"job": _STR},
     "status": {},
+    "resume": {"job": _STR},  # client: continue a paused job from its checkpoint (optional max_minutes)
+    "restart": {"job": _STR},  # client: drop the checkpoint and start the job again from step 0
     "status_reply": {"jobs": _LIST, "devices": _LIST},
     "results": {"job": _STR},
     "result_info": {"job": _STR, "files": _DICT},

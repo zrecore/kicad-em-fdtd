@@ -76,9 +76,11 @@ async def _spawn(argv, cwd, env):
     return Running(proc)
 
 
-async def pump(running, log_path, on_line, max_bytes, timeout):
+async def pump(running, log_path, on_line, max_bytes, timeout, soft_stop=None, soft_wait=60.0):
     """Copy the child's output to log_path (capped), call on_line(text) for each line, and wait for it to end.
-    Kills the tree on timeout. Returns (returncode, timed_out, last_lines)."""
+    At the timeout the tree is killed, unless `soft_stop` (a function that asks the child to write a
+    checkpoint and leave) is given: then the child gets `soft_wait` seconds to leave before the kill.
+    Returns (returncode, timed_out, last_lines)."""
     last = []
     written = 0
 
@@ -100,7 +102,13 @@ async def pump(running, log_path, on_line, max_bytes, timeout):
         await asyncio.wait_for(running.proc.wait(), timeout)
     except asyncio.TimeoutError:
         timed_out = True
-        running.kill_tree()
+        if soft_stop is not None:
+            with contextlib.suppress(Exception):
+                soft_stop()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(running.proc.wait(), soft_wait)
+        if running.proc.returncode is None:
+            running.kill_tree()
         await running.proc.wait()
     except asyncio.CancelledError:
         running.kill_tree()

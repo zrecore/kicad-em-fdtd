@@ -108,6 +108,7 @@ class Farm:
         bundle = pki.issue("worker", name)
         if not any(k in worker_args for k in ("lock_command", "turn_from_coordinator")):
             worker_args["no_lock"] = True
+        worker_args.setdefault("checkpoint_wait_s", 1.0)  # the stub that hangs ignores a pause request
 
         self.save_devices(name)  # a worker makes no Vulkan call to connect: it offers the recorded devices
 

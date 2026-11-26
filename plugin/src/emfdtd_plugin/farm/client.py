@@ -79,6 +79,19 @@ async def cancel(bundle, host, port, job):
     await _ask(bundle, host, port, {"type": "cancel", "job": job})
 
 
+async def resume(bundle, host, port, job, max_minutes=None):
+    """Continue a paused job from its checkpoint (on the worker that holds it)."""
+    msg = {"type": "resume", "job": job}
+    if max_minutes is not None:
+        msg["max_minutes"] = max_minutes
+    await _ask(bundle, host, port, msg)
+
+
+async def restart(bundle, host, port, job):
+    """Drop a paused job's checkpoint and start the job again from step 0 on any worker."""
+    await _ask(bundle, host, port, {"type": "restart", "job": job})
+
+
 async def fetch(bundle, host, port, job, dest):
     """Download a finished job's result files into dest. Returns {name: path}."""
     info = (await _ask(bundle, host, port, {"type": "results", "job": job}))["files"]

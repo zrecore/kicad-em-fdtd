@@ -141,8 +141,9 @@ def worker_spec(spec):
     return {k: v for k, v in spec.items() if k not in SCHEDULING_HINTS}
 
 
-def build_argv(solver, snapshot, job, project_dir, device):
-    """The full command line. Every element is its own argv entry (no shell). The job is validated first."""
+def build_argv(solver, snapshot, job, project_dir, device, checkpoint=None):
+    """The full command line. Every element is its own argv entry (no shell). The job is validated first.
+    `checkpoint` is (folder, seconds between checkpoints, resume?) chosen by the worker, never by the job."""
     if not DEVICE.match(str(device)):
         raise JobError("the device selector is not allowed")
     argv = [solver, str(snapshot)]
@@ -163,6 +164,11 @@ def build_argv(solver, snapshot, job, project_dir, device):
     if job["ground_nets"]:
         argv += ["--ground-nets", ",".join(job["ground_nets"])]
     argv += ["--gpu", "--device", str(device), "--project-dir", str(project_dir)]
+    if checkpoint:
+        folder, every, resume = checkpoint
+        argv += ["--checkpoint-dir", str(folder), "--checkpoint-every", f"{every:g}"]
+        if resume:
+            argv.append("--resume")
     return argv
 
 

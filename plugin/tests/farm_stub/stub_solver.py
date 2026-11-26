@@ -46,6 +46,8 @@ while i < len(args):
         "--profile",
         "--device",
         "--project-dir",
+        "--checkpoint-dir",
+        "--checkpoint-every",
     ):
         opts.setdefault(a, []).append(args[i + 1])
         i += 2
@@ -68,9 +70,69 @@ print("backend: GPU (Stub)", flush=True)
 pid_file = stub.get("pid_file")
 if pid_file:
     open(pid_file, "w").write(str(os.getpid()))
-for n in range(int(stub.get("lines", 2))):
+
+# Checkpoints (the real solver: docs/checkpoint.md): --checkpoint-dir DIR [--resume]; a DIR/stop file makes the run
+# write a checkpoint, print "paused: checkpoint at step N" and exit 75. The stub's state is just the line number.
+import hashlib
+
+ckdir = (opts.get("--checkpoint-dir") or [None])[0]
+ident = hashlib.sha256(open(snapshot, "rb").read()).hexdigest()[:16]
+start = 0
+resumed_at = None
+
+
+def write_checkpoint(step):
+    names = ("ckpt.a", "ckpt.b")
+    old = [
+        (json.load(open(os.path.join(ckdir, n)))["step"], n)
+        for n in names
+        if os.path.exists(os.path.join(ckdir, n))
+    ]
+    target = names[0] if not old else (names[1] if max(old)[1] == names[0] else names[0])
+    with open(os.path.join(ckdir, target), "w") as f:
+        json.dump({"hash": ident, "step": step}, f)
+
+
+if ckdir and "--resume" in opts:
+    found = []
+    for n in ("ckpt.a", "ckpt.b"):
+        path = os.path.join(ckdir, n)
+        try:
+            found.append((json.load(open(path)), n))
+        except (OSError, ValueError):
+            continue
+    if not found:
+        print(f"emfdtd: the checkpoint in {ckdir} is missing", file=sys.stderr, flush=True)
+        sys.exit(1)
+    best, name = max(found, key=lambda x: x[0]["step"])
+    if best["hash"] != ident:
+        print(
+            f"emfdtd: checkpoint {name} was written for other inputs (the board, the settings or the "
+            "options differ)",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(1)
+    start = resumed_at = best["step"]
+    try:
+        os.remove(os.path.join(ckdir, "stop"))
+    except OSError:
+        pass
+    print(f"resuming from the checkpoint at step {start}", flush=True)
+elif ckdir:
+    for n in os.listdir(ckdir):
+        os.remove(os.path.join(ckdir, n))  # a fresh run clears the files of an earlier run
+every = int(stub.get("checkpoint_lines", 0))
+for n in range(start, int(stub.get("lines", 2))):
+    if ckdir and os.path.exists(os.path.join(ckdir, "stop")):
+        write_checkpoint(n)
+        print(f"paused: checkpoint at step {n}", flush=True)
+        sys.exit(75)
     print(f"step {n}", flush=True)
     time.sleep(float(stub.get("sleep", 0.0)))
+    if ckdir and every and (n + 1) % every == 0:
+        write_checkpoint(n + 1)
+        print(f"checkpoint: step {n + 1} written (0 MB, 0.0 s)", flush=True)
 if stub.get("crash"):
     print("boom", file=sys.stderr, flush=True)
     sys.exit(3)
@@ -78,9 +140,14 @@ if stub.get("hang"):
     time.sleep(600)
 project = opts["--project-dir"][0]
 run = os.path.join(project, "em-fdtd", "results", "run-20260101-000000")
-os.makedirs(run)
+os.makedirs(run, exist_ok=True)
 open(os.path.join(run, "s11.s1p"), "w").write("# Hz S RI R 50\n2.4e9 -0.1 0.0\n")
-open(os.path.join(run, "summary.txt"), "w").write("device " + opts["--device"][0] + "\n")
+open(os.path.join(run, "summary.txt"), "w").write(
+    "device "
+    + opts["--device"][0]
+    + "\n"
+    + (f"resumed at step {resumed_at}\n" if resumed_at is not None else "")
+)
 open(os.path.join(run, "settings.json"), "w").write(json.dumps({"set": opts.get("--set", [])}))
 print("12448 steps of 1.03 ps in 3.2 s (1185 Mcells/s)", flush=True)
 print("best match -6.043 dB at 2.2195 GHz", flush=True)
