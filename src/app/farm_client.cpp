@@ -621,7 +621,17 @@ Output runCapture(const std::vector<std::string>& argv, double timeoutSeconds,
   return out;
 }
 #else
-class Child {};
+// No process plumbing on Windows yet: spawning always fails, so the invite never starts.
+class Child {
+public:
+  static std::unique_ptr<Child> spawn(const std::vector<std::string>&, std::string& error) {
+    error = "the farm panel cannot start processes on Windows yet: use the emfdtd_farm.py command line";
+    return nullptr;
+  }
+  bool read(std::string&, int) { return false; }
+  int wait() { return -1; }
+  void terminate() {}
+};
 Output runCapture(const std::vector<std::string>&, double, const std::atomic<bool>*) {
   Output out;
   out.text = "the farm panel is not wired up on Windows yet: use the emfdtd_farm.py command line";

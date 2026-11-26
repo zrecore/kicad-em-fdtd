@@ -56,6 +56,9 @@ while i < len(args):
     else:
         opts.setdefault(a, []).append(True)
         i += 1
+if "--help" in sys.argv[1:]:  # the worker reads this to see whether the solver can checkpoint
+    print("usage: stub_solver [--checkpoint-dir DIR [--resume]] ...")
+    sys.exit(0)
 stub = json.load(open(snapshot)).get("stub", {})
 if "--dry-run" in opts:
     print("the farm must not call --dry-run (it repeats the whole preparation)", file=sys.stderr)

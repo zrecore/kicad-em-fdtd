@@ -174,6 +174,7 @@ class Worker:
         self._speed = {}
         self._stop = False
         self.checkpoint_wait_s = float(checkpoint_wait_s)
+        self._probed = False
         self.checkpoint = bool(checkpoint)  # False behaves like a worker from before checkpoints existed
         self._ckpt_dirs = {}  # job id -> the checkpoint folder of a running job (where its stop file goes)
         self._ctl_writer = None  # the control connection of the current session
@@ -297,6 +298,17 @@ class Worker:
                 f"{self.solver} --save --device NAME` first, with --lock-command (it waits for your turn) "
                 "or --no-lock (you hold the turn now)"
             ) from None
+
+    async def probe_checkpoint(self):
+        """A solver built before checkpoints existed would fail every job on the unknown flag, so a worker
+        offers the feature only if the solver's own help names it (no GPU call; an empty help keeps it)."""
+        if not self.checkpoint or self._probed:
+            return
+        self._probed = True
+        code, text = await self._capture("--help")
+        if text.strip() and "--checkpoint-dir" not in text:
+            self.checkpoint = False
+            self._status(last_error="the solver has no --checkpoint-dir: jobs run without checkpoints")
 
     async def tiers(self):
         if self._tiers is None:
@@ -471,6 +483,7 @@ class Worker:
         self._ctl_writer = writer
         beat = dog = None
         try:
+            await self.probe_checkpoint()
             devs = await self.devices_for_hello()
             self.sweep_jobs()  # before the hello lists what is held: nothing past its retention is reported
             hello = {

@@ -166,3 +166,24 @@ def test_the_resume_and_restart_commands_exist():
     assert (b.cmd, b.job) == ("restart", "J")
     c = p.parse_args(["serve", "--listen", "127.0.0.1", "--hold-minutes", "0"])
     assert c.hold_minutes == 0 and c.checkpoint_every == 300.0
+
+
+def test_a_worker_offers_checkpoints_only_if_its_solver_names_the_flag(tmp_path):
+    """Scenario: a solver built before checkpoints existed (its help has no --checkpoint-dir) must not be
+    offered checkpoint jobs, which it would fail on the unknown flag."""
+    import asyncio
+    import stat
+    import sys
+
+    from emfdtd_plugin.farm.worker import Worker
+
+    def probe(help_text):
+        solver = tmp_path / f"solver{abs(hash(help_text))}.py"
+        solver.write_text(f"#!{sys.executable}\nprint({help_text!r})\n")
+        solver.chmod(solver.stat().st_mode | stat.S_IEXEC)
+        w = Worker({}, "127.0.0.1", 1, str(solver), tmp_path / "work", [], no_lock=True)
+        asyncio.run(w.probe_checkpoint())
+        return w.checkpoint
+
+    assert probe("usage: emfdtd [--checkpoint-dir DIR]") is True
+    assert probe("usage: emfdtd [--cpu]") is False
