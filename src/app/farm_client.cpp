@@ -106,6 +106,42 @@ bool parseQueue(const std::string& json, Snapshot& out, std::string& error) {
   }
 }
 
+bool parseLocalStatus(const std::string& json, Snapshot& out, std::string& error) {
+  try {
+    const auto j = nlohmann::json::parse(json);
+    LocalGpu g;
+    g.available = j.value("available", false);
+    g.enabled = j.value("enabled", false);
+    g.running = j.value("running", false);
+    g.connected = j.value("connected", false);
+    g.reason = str(j, "reason");
+    g.name = str(j, "name");
+    g.device = str(j, "device");
+    g.solver = str(j, "solver");
+    g.turn = str(j, "turn");
+    g.have = true;
+    out.local = std::move(g);
+    return true;
+  } catch (const std::exception& ex) {
+    error = std::string("this computer's GPU state was not understood: ") + ex.what();
+    return false;
+  }
+}
+
+std::string localActionWords(const std::string& json) {
+  try {
+    const auto j = nlohmann::json::parse(json);
+    if (!j.value("ok", false))
+      return str(j, "error");
+    if (j.contains("was_running"))
+      return j.value("was_running", false) ? "stopped; its GPU is no longer offered"
+                                           : "its GPU is no longer offered";
+    return "offering " + str(j, "device") + " as " + str(j, "name");
+  } catch (const std::exception&) {
+    return "";
+  }
+}
+
 bool parseMembers(const std::string& json, Snapshot& out, std::string& error) {
   try {
     const auto j = nlohmann::json::parse(json);
@@ -576,21 +612,32 @@ void Client::pollOnce() {
     next.haveMembers = false;
     next.members.clear();
   }
+  if (next.haveStatus && next.coordinator) {
+    const Output l = call({"local-worker", "status", "--json"}, 15);
+    std::string lerr;
+    if (l.code == 0 && parseLocalStatus(l.text, next, lerr)) {
+    } else {
+      next.local = {};
+      next.local.error = l.timedOut ? "the farm tool did not answer" : (lerr.empty() ? l.text : lerr);
+    }
+  } else {
+    next.local = {};
+  }
   std::lock_guard<std::mutex> lock(mu_);
   snap_ = std::move(next);
 }
 
-void Client::run(std::vector<std::string> args, std::string label) {
+void Client::run(std::vector<std::string> args, std::string label, double timeoutSeconds) {
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (action_.running)
       return;
     action_ = {true, label, {}, 0};
   }
-  actions_.emplace_back([this, args = std::move(args), label = std::move(label)] {
+  actions_.emplace_back([this, args = std::move(args), label = std::move(label), timeoutSeconds] {
     auto argv = toolCommand();
     argv.insert(argv.end(), args.begin(), args.end());
-    const Output o = runCapture(argv, 60);
+    const Output o = runCapture(argv, timeoutSeconds);
     {
       std::lock_guard<std::mutex> lock(mu_);
       action_.running = false;

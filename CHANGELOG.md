@@ -5,6 +5,15 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (coordinator's own GPU)
+- `emfdtd-farm local-worker status|enable|disable`: the coordinator machine offers its own GPU to the farm on request (never automatic): it turns the worker role on, enrolls this computer with its own certificate authority, records one entry per physical GPU, saves the agent settings (an existing `agent.json` is kept) and starts the agent. The Farm tab has the button (see below).
+
+### Added (this computer's GPU in the Farm tab)
+- Farm tab: a section "This computer's GPU" (coordinator role on) with one explicit, two-step control to offer the coordinator machine's own GPU to the farm, and a Stop button. Off until clicked. The window runs `emfdtd_farm.py local-worker status|enable|disable --json`; `scripts/ui_farm_check.sh` covers the states.
+
+### Tests (farm placement)
+- Scheduler scenarios pin down the placement order: fastest idle device first, an unmeasured device last but used when it is the only one idle, ties by worker name.
+
 ### Added (KiCad toolbar button)
 - Plugin action **EM FDTD farm** (`plugin/action_farm.py`, its own icon): opens the solver window on the Farm tab, or switches an open window to it, without starting a run. The farm stays off until turned on there. A new window gets `--ui-tab Farm`; an open one reads `farm` from `request.txt`.
 

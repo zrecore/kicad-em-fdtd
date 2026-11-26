@@ -35,6 +35,19 @@ need farm 'text "Solved on win-egpu (NVIDIA GeForce RTX 4060 Ti)."' "where a don
 need farm 'button "Fetch and open the results of patch-farm-1"' "the Fetch button"
 need farm 'button "Revoke worker:win-egpu"' "Revoke"
 need farm 'textinput "Name of the new device"' "the invitation form"
+# This computer's GPU (coordinator only): off but available shows the button, a click asks first, on shows state
+# and Stop, unavailable shows why.
+need farm 'group "This computer.s GPU"' "the section for this computer's GPU"
+need farm 'button "Also use this computer.s GPU for the farm"' "the one-click option"
+run local_confirm Farm 720x1100 --ui-click 150,427
+need local_confirm 'button "Use this GPU"' "the confirmation for this computer's GPU"
+need local_confirm 'button "Keep it off"' "the confirmation for this computer's GPU"
+(EMFDTD_FARM_STUB_LOCAL=on; export EMFDTD_FARM_STUB_LOCAL; run local_on Farm 720x1100)
+need local_on 'Apple M1 Pro is offered to the farm: running and connected' "the running state"
+need local_on 'button "Stop using this computer.s GPU"' "the Stop button"
+(EMFDTD_FARM_STUB_LOCAL=unavailable; export EMFDTD_FARM_STUB_LOCAL; run local_unavailable Farm 720x1100)
+need local_unavailable 'no Vulkan GPU that the solver can use' "why this computer's GPU cannot be offered"
+if grep -q 'button "Also use this computer' "$OUT/local_unavailable.txt"; then echo "ui_farm_check: the button is shown although the GPU is unavailable" >&2; exit 1; fi
 (EMFDTD_FARM_STUB_MANY=25; export EMFDTD_FARM_STUB_MANY; run farm_many Farm 720x520) # a subshell: the variable must not leak
 need farm_many 'older finished jobs are not listed' "the cap on the jobs list"
 run farm_confirm Farm 720x700 --ui-click 20,229 # the Worker checkbox
@@ -42,7 +55,7 @@ need farm_confirm 'button "Turn on"' "a confirmation step"
 need farm_confirm 'button "Keep it off"' "a confirmation step"
 # Clicking "Fetch and open" on the done job: the tool fetches into <project>/em-fdtd/results/run-farm-<id8> and the
 # window shows the S11 and says it came from the farm.
-run fetch_click Farm 720x1100 --ui-click 70,667
+run fetch_click Farm 720x1100 --ui-click 70,777
 need fetch_click 'Fetched from the farm' "the window shows a fetched farm result"
 [ -f "$OUT/project/em-fdtd/results/run-farm-d0d0d0d0/s11.s1p" ] || { echo "ui_farm_check: the results were not fetched into the project's results folder" >&2; exit 1; }
 run preview Preview 720x520

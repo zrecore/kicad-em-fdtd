@@ -327,3 +327,52 @@ SCENARIO("The window's submit and fetch run the tool and keep its answers", "[fa
   }
   unsetenv("EMFDTD_FARM_COMMAND");
 }
+
+SCENARIO("The window reads what this computer's own GPU offers the farm", "[farm]") {
+  GIVEN("the tool's `local-worker status --json` output") {
+    farm::Snapshot s;
+    std::string error;
+    WHEN("it is available but not turned on") {
+      REQUIRE(farm::parseLocalStatus(
+          R"({"available":true,"reason":"","enabled":false,"running":false,"connected":false,"name":"","device":"","solver":"","turn":"lock"})",
+          s, error));
+      THEN("the window can offer the button") {
+        REQUIRE(s.local.have);
+        REQUIRE(s.local.available);
+        REQUIRE_FALSE(s.local.enabled);
+        REQUIRE(s.local.turn == "lock");
+      }
+    }
+    WHEN("it is running and connected") {
+      REQUIRE(farm::parseLocalStatus(
+          R"({"available":true,"reason":"","enabled":true,"running":true,"connected":true,"name":"mac-m1","device":"Apple M1 Pro","solver":"/x/emfdtd","turn":"lock"})",
+          s, error));
+      THEN("the window shows the device and its state") {
+        REQUIRE(s.local.enabled);
+        REQUIRE(s.local.running);
+        REQUIRE(s.local.connected);
+        REQUIRE(s.local.device == "Apple M1 Pro");
+      }
+    }
+    WHEN("it cannot be offered") {
+      REQUIRE(farm::parseLocalStatus(R"({"available":false,"reason":"turn on the coordinator role first"})",
+                                     s, error));
+      THEN("the reason is kept") {
+        REQUIRE_FALSE(s.local.available);
+        REQUIRE(s.local.reason == "turn on the coordinator role first");
+      }
+    }
+    THEN("bad input is refused with a reason") {
+      REQUIRE_FALSE(farm::parseLocalStatus("not json", s, error));
+      REQUIRE_FALSE(error.empty());
+    }
+    THEN("the outcome of enable and disable becomes a sentence") {
+      REQUIRE(farm::localActionWords(R"({"ok":true,"name":"mac-m1","device":"Apple M1 Pro"})") ==
+              "offering Apple M1 Pro as mac-m1");
+      REQUIRE(farm::localActionWords(R"({"ok":true,"was_running":true})") ==
+              "stopped; its GPU is no longer offered");
+      REQUIRE(farm::localActionWords(R"({"ok":false,"error":"no solver found"})") == "no solver found");
+      REQUIRE(farm::localActionWords("plain text").empty());
+    }
+  }
+}

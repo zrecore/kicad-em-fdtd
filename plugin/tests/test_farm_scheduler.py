@@ -303,3 +303,9 @@ def _no_progress(ctx):
 def _failed_reason(ctx, reason):
     job = ctx["jobs"][0]
     assert job.state == "failed" and reason in job.reason
+
+
+@then("both devices are busy")
+def _both_busy(ctx):
+    busy = [d["busy"] for w in ctx["s"].workers.values() for d in w["devices"].values()]
+    assert len(busy) == 2 and all(busy)

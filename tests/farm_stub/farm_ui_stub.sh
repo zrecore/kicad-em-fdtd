@@ -27,6 +27,19 @@ JSON
   ;;
 members)
   echo '{"members":[{"key":"worker:win-egpu","fingerprint":"b323457cf967618f0000","may":["run"],"revoked":false},{"key":"client:mac-main","fingerprint":"672f81215c9873050000","may":["cancel","results","status","submit"],"revoked":false}]}' ;;
+local-worker)
+  # EMFDTD_FARM_STUB_LOCAL: off (default, available), on, unavailable
+  case "$2" in
+  status)
+    case "${EMFDTD_FARM_STUB_LOCAL:-off}" in
+    on) echo '{"available":true,"reason":"","enabled":true,"running":true,"connected":true,"name":"mac-m1","device":"Apple M1 Pro","solver":"/stub/emfdtd","turn":"lock"}' ;;
+    unavailable) echo '{"available":false,"reason":"this computer has no Vulkan GPU that the solver can use","enabled":false,"running":false,"connected":false,"name":"","device":"","solver":"","turn":"none"}' ;;
+    *) echo '{"available":true,"reason":"","enabled":false,"running":false,"connected":false,"name":"","device":"","solver":"","turn":"lock"}' ;;
+    esac ;;
+  enable) echo '{"ok":true,"name":"mac-m1","device":"Apple M1 Pro"}' ;;
+  disable) echo '{"ok":true,"was_running":true}' ;;
+  *) echo "stub: unknown local-worker command $*" >&2; exit 2 ;;
+  esac ;;
 enable|disable|cancel|revoke)
   echo "stub: $*" ;;
 submit)

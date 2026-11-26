@@ -2925,11 +2925,59 @@ void Ui::drawFarmTab(float, float) {
     }
     ImGui::PopID();
   }
+  constexpr const char* kLocalOn = "Also use this computer's GPU for the farm";
+  constexpr const char* kLocalOff = "Stop using this computer's GPU";
   if (act.running) {
     wrapped("Working: " + act.label + "...");
+    if (act.label == kLocalOn)
+      wrapped("Setting up... this can take several minutes: it waits for this GPU's turn if another program "
+              "is using it.");
   } else if (!act.label.empty()) {
+    const std::string words = farm::localActionWords(act.text);
     coloured(ImVec4(ImColor(act.code == 0 ? pal.good : pal.bad)),
-             act.label + (act.code == 0 ? ": done. " : ": failed. ") + firstLines(act.text, 3));
+             act.label + (act.code == 0 ? ": done. " : ": failed. ") +
+                 (words.empty() ? firstLines(act.text, 3) : words));
+  }
+
+  // ---- this computer's own GPU (coordinator only): the coordinator machine can offer its GPU with one click
+  if (s.coordinator) {
+    ImGui::SeparatorText("This computer's GPU");
+    noteText("This computer's GPU", viz::access::Role::Group);
+    const farm::LocalGpu& g = s.local;
+    if (!g.have) {
+      coloured(ImVec4(ImColor(pal.warn)), g.error.empty()
+                                              ? "Reading this computer's GPU..."
+                                              : "This computer's GPU is not available: " + g.error);
+    } else if (g.enabled) {
+      const std::string state = g.running ? (g.connected ? "running and connected to the farm"
+                                                         : "running, connecting to the farm...")
+                                          : "not running";
+      wrapped((g.device.empty() ? std::string("This computer's GPU") : g.device) +
+              " is offered to the farm: " + state + ".");
+      if (button("Stop using this computer's GPU##localoff") && !act.running)
+        farm_->run({"local-worker", "disable", "--json"}, kLocalOff);
+    } else {
+      wrapped("This computer's own GPU can run farm jobs like any other device. It is off until you turn it "
+              "on, it shares the GPU's turn lock with other programs, and you can turn it off again here.");
+      if (!g.available) {
+        coloured(ImVec4(ImColor(pal.warn)), g.reason.empty() ? "It cannot be offered yet." : g.reason);
+      } else if (!farmLocalConfirm_) {
+        if (button("Also use this computer's GPU for the farm##localon"))
+          farmLocalConfirm_ = true;
+      } else {
+        coloured(ImVec4(ImColor(pal.warn)),
+                 "Turning this on enrolls this computer as its own worker and starts a background program "
+                 "that runs the solver on its GPU for the farm's jobs. Each job waits for the GPU's turn "
+                 "and is stopped at the agent's time ceiling. Nothing opens a port.");
+        if (button("Use this GPU##localconfirm") && !act.running) {
+          farm_->run({"local-worker", "enable", "--yes", "--json"}, kLocalOn, 1800);
+          farmLocalConfirm_ = false;
+        }
+        ImGui::SameLine();
+        if (button("Keep it off##localkeep"))
+          farmLocalConfirm_ = false;
+      }
+    }
   }
 
   // ---- devices and jobs (client role)

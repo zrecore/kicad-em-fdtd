@@ -405,6 +405,7 @@ private:
   // runs nothing.
   std::unique_ptr<farm::Client> farm_;
   std::string farmPendingEnable_, farmPendingRevoke_;
+  bool farmLocalConfirm_ = false; // the two-step confirmation for offering this computer's GPU
   char farmName_[64] = "";
   char farmListen_[64] = "";
   bool farmInviteForClient_ = false;

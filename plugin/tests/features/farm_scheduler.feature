@@ -34,6 +34,24 @@ Feature: The scheduler shares devices fairly and never loses or doubles a job
     And offers are made
     Then the job is running on "mac" and the device is busy
 
+  Scenario: A device with no measured speed ranks after measured ones
+    Given the worker "mac" offers a second device at 0 Mcells/s
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    Then the job is running on "win" and the device is busy
+
+  Scenario: A device with no measured speed still gets a job when it is the only one idle
+    Given the worker "mac" offers a second device at 0 Mcells/s
+    When "client:alice" submits 2 jobs and their inputs arrive
+    And offers are made
+    Then both devices are busy
+
+  Scenario: Equal speeds are broken by worker name
+    Given the worker "aaa" offers a second device at 1200 Mcells/s
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    Then the job is running on "aaa" and the device is busy
+
   Scenario: A lost worker's job goes back to the queue and a late result is refused
     When "client:alice" submits a job and its input arrives
     And offers are made

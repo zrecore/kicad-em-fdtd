@@ -30,6 +30,14 @@ struct Member {
   std::string key, fingerprint, may;
   bool revoked = false;
 };
+// This computer's own GPU offered to its farm (`local-worker status --json`, docs/ux.md "This computer's
+// GPU").
+struct LocalGpu {
+  bool have = false;      // the status was read
+  bool available = false; // this machine can offer its GPU; if not, `reason` says why
+  bool enabled = false, running = false, connected = false;
+  std::string reason, name, device, solver, turn, error; // turn: lock, coordinator, none
+};
 struct Snapshot {
   bool haveStatus = false;
   std::string home, statusError;
@@ -39,12 +47,16 @@ struct Snapshot {
   std::vector<Device> devices;
   std::vector<Job> jobs;
   std::vector<Member> members;
+  LocalGpu local;
 };
 
 // Parsers for the tool's `--json` output (pure, tested). Each returns false and sets `error` on bad input.
 bool parseStatus(const std::string& json, Snapshot& out, std::string& error);
 bool parseQueue(const std::string& json, Snapshot& out, std::string& error);
 bool parseMembers(const std::string& json, Snapshot& out, std::string& error);
+bool parseLocalStatus(const std::string& json, Snapshot& out, std::string& error);
+// What `local-worker enable|disable --json` said, as a sentence for the window; "" if the text is not JSON.
+std::string localActionWords(const std::string& json);
 // "progress: 41200 steps, about 37%, 312 s": -1 if the text is not that line.
 int percentFromProgressLine(const std::string& line);
 // What a worker's last line means to a reader: the solver's progress line becomes "step 41200, 312 s so far",
@@ -119,7 +131,7 @@ public:
     std::string label, text;
     int code = 0;
   };
-  void run(std::vector<std::string> args, std::string label);
+  void run(std::vector<std::string> args, std::string label, double timeoutSeconds = 60);
   Action action() const;
 
   // An invitation for a new device: `invite` runs until the device joins or the time is up.

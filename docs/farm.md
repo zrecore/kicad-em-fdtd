@@ -163,6 +163,18 @@ tested headless in `plugin/tests/test_farm_gui_controller.py`; the window itself
 and with the variable set any failure to build the window fails the test; `EMFDTD_GUI_PYTHON` picks the Python,
 `EMFDTD_GUI_SHOTS=<folder>` saves a screenshot of each tab on macOS).
 
+## Using the coordinator's own GPU
+
+The coordinator machine does not offer its own GPU until you ask. One command (or the button in the Farm tab) does what you would do by hand on another machine, without the network step because the certificate authority is on the same computer:
+
+```
+emfdtd-farm local-worker status [--json]
+emfdtd-farm local-worker enable [--solver PATH] [--lock-command CMD] [--max-minutes N] [--yes] [--no-start]
+emfdtd-farm local-worker disable
+```
+
+`enable` turns the worker role on, enrolls this computer as a worker of its own farm (named after the host), asks the solver which GPUs it has (one Vulkan call, through the lock command if you gave one; the call can wait in that queue), keeps one entry per physical GPU (an Apple GPU is listed once per Vulkan driver: the newest is kept), saves the agent's settings (an existing `agent.json` is kept: solver, lock and limits) and starts the agent. The default longest job is 45 minutes. Run it again and nothing is duplicated. `disable` stops the agent and turns the worker role off; the identity stays, so enabling again is quick. It needs the coordinator role on and the coordinator's address in `coordinator.json`.
+
 ## Running the worker as a managed agent
 
 The worker can be configured once and then started and stopped like any program, with no assistant: `emfdtd-farm agent ...`
@@ -281,7 +293,7 @@ good one stays in force (a broken one at start-up stops the coordinator with a m
 
 Several people can share a coordinator. Jobs are served round-robin by how many each person has already had
 started, so one person's long sweep does not starve everyone else. Each device runs one job at a time and the
-fastest idle device is chosen first (speed is measured from completed jobs). On a worker that shares its GPU with
+fastest idle device is chosen first (speed is measured from completed jobs; a device with no measurement yet ranks after measured ones but still gets a job when it is the only one idle, which is how a new worker records its first speed; equal speeds go by worker name). A job is never held back for a faster device that is busy. On a worker that shares its GPU with
 other tools, wrap the solver in your own lock with `--lock-command`, for example
 `--lock-command /path/to/with_gpu_lock.sh nice -n 10`.
 

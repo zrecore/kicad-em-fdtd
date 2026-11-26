@@ -11,7 +11,7 @@ import ssl
 import sys
 from pathlib import Path
 
-from . import agent, client, config, enroll, jobs, pki, policy
+from . import agent, client, config, enroll, jobs, local_worker, pki, policy
 
 CONSEQUENCE = {
     "client": (
@@ -205,6 +205,7 @@ def _parser():
     s.add_argument("job")
     s.add_argument("--dest", required=True)
     agent.add_parsers(sub)
+    local_worker.add_parsers(sub)
     return p
 
 
@@ -289,6 +290,8 @@ def main(argv=None, stdin=None, out=None):
         return 0
     if args.cmd in ("agent", "setup"):  # they report a missing TLS 1.3 themselves, as a failed check
         return agent.run(args, out, stdin)
+    if args.cmd == "local-worker":
+        return local_worker.run(args, out, stdin)
     try:
         pki.min_tls()  # every other command talks TLS: stop early if this Python cannot do 1.3
     except pki.PkiError as e:
