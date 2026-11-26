@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-from pytest_bdd import given, scenarios, then, when
+from pytest_bdd import given, parsers, scenarios, then, when
 
 scenarios("features/farm_cli_e2e.feature")
 
@@ -117,6 +118,9 @@ def _enrol_client(m):
 def _serve(m):
     p = m.spawn("coord", "serve", "--listen", "127.0.0.1", "--port", str(m.serve_port))
     _read_until(p, r"listening on")
+    # a worker makes no Vulkan call to connect: record its devices once first
+    out = m.run("worker", "devices", "--solver", STUB, "--save", "--device", "stub gpu a", "--no-lock")
+    assert "recorded 1 device" in out
     m.spawn("worker", "worker", "--solver", STUB, "--device", "stub gpu a", "--no-lock")
     time.sleep(1.5)
 
@@ -152,3 +156,66 @@ def _revoke(m):
     out = m.run("coord", "revoke", "worker", "gpu-box")
     assert "revoked" in out
     assert "(removed)" in m.run("coord", "members")
+
+
+# --- SIGTERM gives a held turn back ------------------------------------------------------------------------
+
+GATE_HOLD = str(Path(__file__).parent / "farm_stub" / "gate_hold.py")
+GATE_RELEASE = str(Path(__file__).parent / "farm_stub" / "gate_release.py")
+
+
+@when("the coordinator serves with a gate for the worker and the worker relies on the coordinator's turn")
+def _serve_gated(m):
+    log = m.tmp / "gate.log"
+    label = "{worker}-{job}-{lease}"
+    flag = str(m.tmp / "gate-flag") + "-" + label
+    gate = {
+        "gpu-box": {
+            "hold": [sys.executable, GATE_HOLD, str(log), label, flag],
+            "release": [sys.executable, GATE_RELEASE, str(log), label, flag],
+        }
+    }
+    (m.homes["coord"] / "gates.json").write_text(json.dumps(gate))
+    # the devices the worker offers are recorded once, as a real worker does while it holds a turn
+    m.run("worker", "devices", "--solver", STUB, "--save", "--device", "stub gpu a", "--no-lock")
+    m.serve_proc = m.spawn("coord", "serve", "--listen", "127.0.0.1", "--port", str(m.serve_port))
+    _read_until(m.serve_proc, r"listening on")
+    m.spawn("worker", "worker", "--solver", STUB, "--device", "stub gpu a", "--turn-from-coordinator")
+    time.sleep(1.5)
+    m.gate_log = log
+
+
+@when("the client submits a job whose solver hangs")
+def _submit_hang(m):
+    m.pid_file = m.tmp / "solver.pid"
+    snap = m.tmp / "hang.json"
+    snap.write_text(json.dumps({"stub": {"hang": True, "pid_file": str(m.pid_file)}}))
+    m.run("client", "submit", str(snap), "--profile", "bluetooth", "--label", "hang")
+
+
+@when("the coordinator is holding the turn for the running job")
+def _holding(m):
+    end = time.time() + 30
+    while time.time() < end:
+        held = m.gate_log.exists() and any(x.startswith("hold ") for x in m.gate_log.read_text().splitlines())
+        if held and m.pid_file.exists():
+            return
+        time.sleep(0.1)
+    raise AssertionError("the job never started under a held turn")
+
+
+@when("the coordinator is sent SIGTERM")
+def _sigterm(m):
+    m.serve_proc.send_signal(signal.SIGTERM)
+
+
+@then(parsers.parse("the coordinator exits cleanly within {n:d} seconds"))
+def _exits(m, n):
+    assert m.serve_proc.wait(n) == 0
+    assert "stopping: giving back any GPU turn" in m.serve_proc.stdout.read()
+
+
+@then("the turn was released and its hold command ended")
+def _released(m):
+    kinds = [x.split()[0] for x in m.gate_log.read_text().splitlines()]
+    assert kinds == ["hold", "release", "hold-exit"], kinds

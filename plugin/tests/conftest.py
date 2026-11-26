@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from pytest_bdd import given, parsers, then, when
 
 from emfdtd_plugin.farm import client, pki, policy
 from emfdtd_plugin.farm.coordinator import Coordinator
-from emfdtd_plugin.farm.worker import Worker
+from emfdtd_plugin.farm.worker import Worker, parse_devices
 from farm_stub.paths import STUB
 
 
@@ -68,11 +69,20 @@ class Farm:
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.bundle = pki.issue("coordinator", "main", hosts=["127.0.0.1"])
-        self.coord = Coordinator(self.bundle, "127.0.0.1", 0, check_every=0.2, **(coord_args or {}))
+        self.coord_args = dict(coord_args or {})
+        self.coord = Coordinator(self.bundle, "127.0.0.1", 0, check_every=0.2, **self.coord_args)
         self.run(self.coord.start())
         self.workers, self.worker_tasks, self.clients = {}, {}, {}
         self.jobs = []
         self.result = {}
+
+    def restart_coordinator(self):
+        """Stop the coordinator and start a new one on the same port with the same farm folder (as `serve` run
+        again would): the queue comes back from jobs.json, workers reconnect by themselves."""
+        port = self.coord.port
+        self.run(self.coord.stop())
+        self.coord = Coordinator(self.bundle, "127.0.0.1", port, check_every=0.2, **self.coord_args)
+        self.run(self.coord.start())
 
     def run(self, coro, timeout=30):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
@@ -82,6 +92,15 @@ class Farm:
         self.run(self.proxy.start())
         return self.proxy
 
+    def save_devices(self, name):
+        """What `devices --save` records: the stub's devices, in the worker's folder, made once and offered by
+        every later connect."""
+        out = subprocess.run([STUB, "--list-devices"], capture_output=True, text=True, check=True).stdout
+        work = self.tmp / ("work-" + name)
+        work.mkdir(parents=True, exist_ok=True)
+        devs = [{**d, "vulkan": list(d["vulkan"])} for d in parse_devices(out)]
+        (work / "devices.json").write_text(json.dumps(devs))
+
     def add_worker(self, name, allow, limits=None, via_proxy=False, **worker_args):
         """A worker with the stub solver. Unless a test passes a turn mechanism, the stub GPU is nobody
         else's: an explicit no_lock, which the Worker would otherwise refuse to start without."""
@@ -89,6 +108,8 @@ class Farm:
         bundle = pki.issue("worker", name)
         if not any(k in worker_args for k in ("lock_command", "turn_from_coordinator")):
             worker_args["no_lock"] = True
+
+        self.save_devices(name)  # a worker makes no Vulkan call to connect: it offers the recorded devices
 
         async def make():
             port = self.proxy.port if via_proxy else self.coord.port
@@ -400,10 +421,12 @@ def _client_cannot(farm, name):
         "127.0.0.1",
         farm.coord.port,
         STUB,
-        farm.tmp / "w-evil",
+        farm.tmp / "work-evil",
         ["stub gpu"],
         no_lock=True,
     )
+
+    farm.save_devices("evil")  # it has devices recorded like any worker: the coordinator is what refuses it
 
     async def go():
         from emfdtd_plugin.farm.worker import WorkerRefused

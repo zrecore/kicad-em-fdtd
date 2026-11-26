@@ -66,3 +66,23 @@ def _worker_needs_turn():
     with pytest.raises(SystemExit) as e:
         cli.main(["worker", "--solver", "emfdtd", "--device", "rtx"])
     assert "exactly one of" in str(e.value) and "--lock-command" in str(e.value)
+
+
+@given("the client role is on and a coordinator address is stored but no identity exists")
+def _no_identity(tmp_path):
+    config.set_enabled("client", True)
+    (config.home() / "coordinator.json").write_text('{"host": "127.0.0.1", "port": 7420}')
+
+
+@when(parsers.parse('the user runs the command "{command}"'))
+def _run_raw(ctx, command):
+    try:
+        cli.main(command.split(), stdin=io.StringIO(""), out=io.StringIO())
+    except SystemExit as e:
+        ctx["exit"] = str(e.code)
+
+
+@then("it exits with a one-line message saying there is no client identity")
+def _one_line(ctx):
+    assert ctx["exit"].startswith("error:") and "no client identity" in ctx["exit"]
+    assert "\n" not in ctx["exit"]

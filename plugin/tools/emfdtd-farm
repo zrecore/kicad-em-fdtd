@@ -1,0 +1,56 @@
+#!/bin/sh
+# emfdtd-farm: runs the GPU farm tool with a Python that has TLS 1.3 (the farm refuses to run without it).
+# Looks for a suitable Python in this order: $EMFDTD_PYTHON, python3.13 ... python3.9, python3, then a few
+# well-known install folders. No network access, nothing is downloaded or installed.
+#   emfdtd-farm --which-python    print the Python it would use and stop
+#   emfdtd-farm ARGS...           the same as: PYTHON emfdtd_farm.py ARGS...
+# If this file is a symlink, the real file is found first, so tools/ stays next to emfdtd_farm.py.
+self=$0
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+
+suitable() { # a Python 3.9 or newer whose ssl module has TLS 1.3
+  [ -n "$1" ] && "$1" -c 'import ssl, sys; sys.exit(0 if ssl.HAS_TLSv1_3 and sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+py=""
+if [ -n "${EMFDTD_PYTHON:-}" ] && suitable "$EMFDTD_PYTHON"; then
+  py=$EMFDTD_PYTHON
+else
+  for name in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    cand=$(command -v "$name" 2>/dev/null || true)
+    if suitable "$cand"; then py=$cand; break; fi
+  done
+fi
+if [ -z "$py" ]; then
+  for cand in /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
+    /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3; do
+    if suitable "$cand"; then py=$cand; break; fi
+  done
+fi
+
+if [ -z "$py" ]; then
+  cat >&2 <<'MSG'
+emfdtd-farm: no suitable Python found.
+The farm needs Python 3.9 or newer whose ssl module has TLS 1.3 (OpenSSL 1.1.1 or newer). No older TLS is accepted.
+  macOS:  the Python that ships with Xcode has no TLS 1.3. Install one:  brew install python
+          or the installer from https://www.python.org/downloads/
+  Linux:  install your distribution's python3 (3.9 or newer), for example  sudo apt install python3
+  Check a Python yourself:  python3 -c "import ssl; print(ssl.OPENSSL_VERSION, ssl.HAS_TLSv1_3)"   (must print True)
+  Already installed somewhere else? Point to it:  EMFDTD_PYTHON=/full/path/to/python3 emfdtd-farm ...
+MSG
+  exit 3
+fi
+
+if [ "${1:-}" = "--which-python" ]; then
+  echo "$py"
+  exit 0
+fi
+exec "$py" "$here/emfdtd_farm.py" "$@"

@@ -9,9 +9,11 @@ backoff; any job it was running is the coordinator's to requeue.
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
 import ssl
+import time
 from pathlib import Path
 
 from . import jobs, pki, policy, procs, protocol, store
@@ -21,6 +23,7 @@ DEVICE_LINE = re.compile(
     r"(?P<mem>[\d.]+) GiB\s{2}vulkan (?P<major>\d+)\.(?P<minor>\d+)\s{2}driver (?P<driver>.*?)"
     r"(?P<unusable>\s{2}\(below Vulkan 1\.2: not usable\))?$"
 )
+PROGRESS_PERCENT = re.compile(r"^progress: \d+ steps, about (\d{1,3})%")
 SPEED = re.compile(r"\(([\d.]+) Mcells/s\)")
 ESTIMATE_MB = re.compile(r"estimate:.*?(\d+(?:\.\d+)?) (MB|GB)")
 MAX_LOG_BYTES = 5 * 1024 * 1024
@@ -112,6 +115,8 @@ class Worker:
         no_lock=False,
         turn_from_coordinator=False,
         watchdog_s=20.0,
+        lock_wait_s=6 * 3600.0,
+        status_file=None,
     ):
         modes = [bool(lock_command), bool(no_lock), bool(turn_from_coordinator)]
         if sum(modes) != 1:
@@ -125,7 +130,18 @@ class Worker:
         # connection dropped: a partitioned worker must not keep using a GPU whose turn the coordinator has
         # (rightly) given back. The coordinator pings far more often than this.
         self.watchdog_s = float(watchdog_s)
+        # How long a call that goes through the lock command may wait for its turn (a long run on a shared GPU
+        # holds the lock for an hour or more). Not a limit on the solver: that is the job's own time limit.
+        self.lock_wait_s = float(lock_wait_s)
         self._heard = None
+        # A small JSON file the agent commands read (agent.status.json): who we are, whether we are connected,
+        # what we are doing. Written atomically; never on the job's critical path (errors are ignored).
+        self.status_file = Path(status_file) if status_file else None
+        self._state = {
+            "pid": os.getpid(), "started": time.time(), "updated": time.time(), "connected": False,
+            "coordinator": f"{host}:{port}", "job": None, "device": None, "last_error": None,
+            "solver_pids": [],
+        }  # fmt: skip
         self.caps = {**policy.DEFAULT_LIMITS, **(caps or {})}
         self.bad_devices = set()  # devices the last pre-job check did not find
         self.bundle, self.host, self.port = bundle, host, port
@@ -149,6 +165,17 @@ class Worker:
         if self._connected is None:
             self._connected = asyncio.Event()
         return self._connected
+
+    def _status(self, **fields):
+        """Merge fields into the status and write the file (when one is configured)."""
+        self._state.update(fields)
+        self._state["updated"] = time.time()
+        if self.status_file is None:
+            return
+        with contextlib.suppress(OSError):
+            tmp = self.status_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._state))
+            os.replace(str(tmp), str(self.status_file))
 
     def _fresh(self):
         loop = asyncio.get_running_loop()
@@ -217,7 +244,9 @@ class Worker:
         listing, a solve): it goes through the lock command, like every other use of the GPU."""
         self.work_root.mkdir(parents=True, exist_ok=True)
         prefix = self._gpu_prefix() if gpu else []
-        return await self._child(None, [*prefix, self.solver, *args], str(self.work_root), 60)
+        waits_for_turn = gpu and bool(prefix)
+        timeout = self.lock_wait_s + 60 if waits_for_turn else 60
+        return await self._child(None, [*prefix, self.solver, *args], str(self.work_root), timeout)
 
     async def devices(self):
         """Live enumeration (a Vulkan call): via the lock command, or while the coordinator holds the turn."""
@@ -233,15 +262,22 @@ class Worker:
         self._devices_file().write_text(json.dumps(devs))
 
     async def devices_for_hello(self):
-        """The devices offered at connect time. When the coordinator holds the turn, a worker may not call
-        Vulkan on its own, so it offers the devices recorded earlier during a turn (`devices --save`)."""
-        if self.mode != "coordinator":
-            return await self.devices()
+        """The devices offered at connect time, in every turn mode: the ones recorded earlier with
+        `devices --save` (taken once, under a free lock or a held turn). A worker makes no Vulkan call to
+        connect, so a GPU that someone else is using for the next hour (a long run holding the shared lock)
+        never stops it from joining; the live check that the GPU is still there happens before each job,
+        inside the turn."""
+        return self.recorded_devices()
+
+    def recorded_devices(self):
+        """The saved devices this worker offers (allow list applied), or RuntimeError saying how to save."""
         try:
             return choose(json.loads(self._devices_file().read_text()), self.allow)
         except (OSError, ValueError):
             raise RuntimeError(
-                "no recorded devices: run `emfdtd-farm devices --save` once while you hold the GPU turn"
+                f"no recorded devices in {self._devices_file()}: run `emfdtd-farm devices --solver "
+                f"{self.solver} --save --device NAME` first, with --lock-command (it waits for your turn) "
+                "or --no-lock (you hold the turn now)"
             ) from None
 
     async def tiers(self):
@@ -296,16 +332,25 @@ class Worker:
     async def run_forever(self, data_hash="", solver_version=""):
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._load_speed()
+        self._status(connected=False, last_error=None, job=None, solver_pids=[])
         delay = 1.0
         while not self._stop:
             try:
                 await self._session(data_hash, solver_version)
                 delay = 1.0
-            except WorkerRefused:
+            except WorkerRefused as e:
                 delay = 30.0
-            except (OSError, ssl.SSLError, protocol.ProtocolError, asyncio.TimeoutError, ConnectionError):
-                pass
+                self._status(last_error=f"the coordinator refused this worker: {e}")
+            except (
+                OSError,
+                ssl.SSLError,
+                protocol.ProtocolError,
+                asyncio.TimeoutError,
+                ConnectionError,
+            ) as e:
+                self._status(last_error=f"{type(e).__name__}: {e}"[:300])
             self.connected.clear()
+            self._status(connected=False, job=None, solver_pids=[])
             await asyncio.sleep(delay)
             delay = min(30.0, delay * 2)
 
@@ -331,6 +376,7 @@ class Worker:
             await self._send(writer, hello)
             self._heard = asyncio.get_running_loop().time()
             self.connected.set()
+            self._status(connected=True, last_error=None, device=devs[0]["name"] if devs else None)
             beat = asyncio.ensure_future(self._beat(writer))
             dog = asyncio.ensure_future(self._watchdog(writer))
             while True:
@@ -368,6 +414,7 @@ class Worker:
                 for u in known
             ]
             await self._send(writer, {"type": "heartbeat", "devices": payload})
+            self._status()  # the file's "updated" time is the agent's proof of life
 
     # --- one job ------------------------------------------------------------------------------
 
@@ -382,6 +429,7 @@ class Worker:
         job, lease, device = offer["job"], offer["lease"], offer["device"]
         work = self.work_root / "jobs" / store.job_dir(job).name
         fail = {"type": "fail", "job": job, "lease": lease, "retry": False}
+        self._status(job={"id": job, "label": None, "phase": "starting", "percent": None})
         try:
             if self.mode == "coordinator" and offer.get("turn") is not True:
                 raise jobs.JobError("this worker only runs jobs while the coordinator holds the GPU turn")
@@ -425,10 +473,14 @@ class Worker:
             self.running.pop(job, None)
             self._children.pop(job, None)
             self.tasks.pop(job, None)
+            self._status(job=None, solver_pids=[])
             shutil.rmtree(str(work), ignore_errors=True)
 
     async def _phase(self, ctl, job, lease, text):
         """Tell the coordinator what this job is doing, so 'running' is never silent."""
+        job_state = self._state.get("job")
+        if job_state and job_state.get("id") == job:
+            self._status(job={**job_state, "phase": text})
         with contextlib.suppress(Exception):
             await self._send(ctl, {"type": "progress", "job": job, "lease": lease, "line": text})
 
@@ -467,6 +519,7 @@ class Worker:
         cmd = self._gpu_prefix() + argv
         running = await procs.start(cmd, cwd=str(work / "run"))
         self.running[job] = running
+        self._status(solver_pids=[running.proc.pid])
         loop = asyncio.get_running_loop()
         state = {"last": 0.0, "speed": None}
 
@@ -474,6 +527,10 @@ class Worker:
             m = SPEED.search(line)
             if m:
                 state["speed"] = float(m.group(1))
+            p = PROGRESS_PERCENT.match(line)
+            job_state = self._state.get("job")
+            if p and job_state and job_state.get("id") == job:
+                self._status(job={**job_state, "phase": line[:120], "percent": min(100, int(p.group(1)))})
             now = loop.time()
             if now - state["last"] >= PROGRESS_EVERY:
                 state["last"] = now

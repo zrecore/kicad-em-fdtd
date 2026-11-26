@@ -7,6 +7,8 @@ cancel); clients submit and ask. Bulk files travel on their own short connection
 
 import asyncio
 import contextlib
+import json
+import os
 import re
 import ssl
 import time
@@ -48,6 +50,7 @@ class Coordinator:
         check_every=5.0,
         retention_s=7 * 24 * 3600,
         gates=None,
+        gates_loader=None,
         ping_every=5.0,
         turn_margin_s=10.0,
     ):
@@ -61,6 +64,9 @@ class Coordinator:
         # worker name -> {"hold": [...], "release": [...]}: the coordinator takes the GPU turn for a worker's
         # job (the turn lives on this machine, e.g. win_gpu_lock.sh) and offers only while it is held
         self.gates = gates or {}
+        # Called before every dispatch, so a change to gates.json applies to the next job without a restart.
+        self.gates_loader = gates_loader
+        self._saved = None  # the text last written to jobs.json
         self.turns = {}  # job id -> the held turn (see _gated_offer)
         self.ping_every = ping_every
         self.turn_margin_s = (
@@ -71,7 +77,32 @@ class Coordinator:
         self._server = None
         self._expirer = None
 
+    def _jobs_file(self):
+        return config.home() / "jobs.json"
+
+    def _load_jobs(self):
+        try:
+            rows = json.loads(self._jobs_file().read_text())
+        except (OSError, ValueError):
+            return
+        if isinstance(rows, list):
+            self.sched.restore(rows, self.clock())
+
+    def _persist(self):
+        """Save the queue whenever it changes (atomic replace), so a restart does not lose it."""
+        text = json.dumps(self.sched.snapshot(), sort_keys=True)
+        if text == self._saved:
+            return
+        config.ensure_home()
+        path = self._jobs_file()
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.replace(str(tmp), str(path))
+        self._saved = text
+
     async def start(self):
+        self._load_jobs()
+        self._persist()
         ctx = pki.server_context(self.bundle)
         self._server = await asyncio.start_server(self._handle, self.host, self.requested_port, ssl=ctx)
         self.port = self._server.sockets[0].getsockname()[1]
@@ -104,6 +135,7 @@ class Coordinator:
             self._release_ended()
             for job_id in self.sched.forget_finished(self.retention_s, self.clock()):
                 store.forget(job_id)  # inputs and results are not kept for ever
+            self._persist()
 
     # --- connections --------------------------------------------------------------------------
 
@@ -445,7 +477,14 @@ class Coordinator:
         sess.outbox.put_nowait({**offer, "turn": True})
 
     def _dispatch(self):
+        if self.gates_loader:
+            with contextlib.suppress(Exception):  # a broken gates.json keeps the last good one
+                self.gates = self.gates_loader()
         self._release_ended()
+        self._dispatch_offers()
+        self._persist()
+
+    def _dispatch_offers(self):
         for job, worker, device in self.sched.next_offers(self.clock()):
             sess = self.sessions.get(worker)
             limits = policy.limits_for(("worker", worker))

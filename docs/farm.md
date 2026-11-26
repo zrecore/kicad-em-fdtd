@@ -73,14 +73,22 @@ Run the tool as `python3 plugin/tools/emfdtd_farm.py ...` (in a packaged build:
      other tools on the same machine.
    - `--turn-from-coordinator`: the coordinator takes the turn for each job (see *GPU turns held by the
      coordinator* below) and says so in the offer; the worker refuses an offer that does not carry it. Use this
-     when the lock lives on another machine. The worker offers the devices recorded earlier with
-     `devices --save` (run once while you hold a turn), so it makes no Vulkan call of its own at connect time.
+     when the lock lives on another machine.
    - `--no-lock`: nobody else uses this GPU.
 
+   **In every mode the worker makes no Vulkan call to connect.** It offers the devices you recorded once with
+   `devices --save` (under a free lock, a turn you hold, or with `--no-lock`), so a GPU that someone else is
+   using for the next hour (a long run holding the shared lock) never stops the worker from joining the farm; the
+   live check that the GPU is still there happens before each job, inside the turn. Without a recorded list the
+   worker refuses to start and says which command to run.
+
    ```
-   emfdtd-farm devices --solver C:\emfdtd\emfdtd.exe --no-lock                       # see the GPUs (one Vulkan call)
+   emfdtd-farm devices --solver C:\emfdtd\emfdtd.exe --save --device "RTX 4060 Ti" --lock-command /path/to/with_gpu_lock.sh
    emfdtd-farm worker --solver C:\emfdtd\emfdtd.exe --device "RTX 4060 Ti" --lock-command /path/to/with_gpu_lock.sh
    ```
+
+   Without `--save`, `devices` only lists the GPUs (one Vulkan call, so it also takes the turn through
+   `--lock-command` or needs `--no-lock`).
 
    A worker also has its own **ceilings** (`--max-minutes`, `--max-steps`, `--max-input-mb`, `--max-tier`,
    defaults 120 minutes, 1,000,000 steps, 64 MB, `advanced`): the coordinator's limits can only lower them,
@@ -107,6 +115,14 @@ Turn a role off with `emfdtd-farm disable ROLE`; `emfdtd-farm status` shows what
 `emfdtd-farm members` lists enrolled devices on the coordinator and `emfdtd-farm revoke worker NAME` removes one
 for good (its certificate stops working at once, even for an open connection).
 
+## Setting up a worker on another machine
+
+A worker needs only the farm's Python package (standard library, no installs), a launcher that finds a Python with TLS 1.3,
+the `emfdtd` program for that machine and a Vulkan 1.2 GPU. `scripts/package_farm_agent.sh` builds a self-contained bundle
+(`out/dist/emfdtd-farm-agent-<version>-<date>.tar.gz` and `.zip`, with `SHA256SUMS`) and checks that it runs on its own;
+`farm-setup.md` in it is a step-by-step guide for a person with no assistant: prerequisites, enrol, record devices, the three
+GPU-turn modes, start and stop, update, uninstall, a table of the tool's messages, and the coordinator owner's side.
+
 ## The Farm tab
 
 The emfdtd window has a **Farm** tab for what the command line does: turn roles on and off (turning one on asks
@@ -115,6 +131,82 @@ Cancel), create an invitation for a new device (the one-time code and this machi
 or revoke members. It runs the same `emfdtd_farm.py` while the tab is showing and nothing otherwise, and it needs the
 same Python with TLS 1.3 (set `EMFDTD_PYTHON` to choose one; `enable` records the Python it ran under). The progress
 bar is the solver's estimate ("about N %": 60 % for the pulse, 40 % for the ring-down).
+
+## The agent window
+
+On a worker machine that has only the farm bundle (no emfdtd window), `emfdtd-farm gui` opens a small window to manage
+the worker agent with the mouse and keyboard. It is plain Python `tkinter` (no installs, no listening port) and it does
+nothing in the background unless it is open: while open it asks the agent for its status every 2 seconds, and for the
+log only while the Log tab is showing. Everything it does goes through the command line (`emfdtd-farm agent ...`, `setup`,
+`enroll`, `devices --save`), so the window and the terminal always agree.
+
+- **Status panel (always visible):** Running or Stopped in words, how long, whether it is connected to the coordinator, the
+  current job with its phase and a progress bar, the GPU in use, the last problem; Start, Stop and Restart. Stopping while a
+  job runs asks first and says the job is cancelled and requeued.
+- **Checks:** every check of `agent doctor` with OK or Problem in words, the detail and what to do; Check again.
+- **Settings:** the solver (Browse...), the GPU (from the ones recorded on this machine), how the worker takes its GPU's turn
+  (three choices with a sentence each), the limits and the watchdog; Save goes through `agent configure`, which validates.
+  **Start when I log in** is off by default; switching it on asks first and names what it installs (a launchd agent, a systemd
+  user unit or a Windows scheduled task).
+- **Set up this machine:** the same steps as `emfdtd-farm setup`, one at a time, each opening only after the one before
+  succeeded: check Python, turn the worker role on, join the farm (invitation address, fingerprint, one-time code,
+  coordinator address; the code is cleared from the screen after use and is never written to any file or history), record the
+  GPUs (one GPU call: do it while you hold the GPU's turn if the GPU is shared), save the settings, run the checks, start.
+- **Log:** the tail of the agent's log with Copy.
+
+Needs a Python with `tkinter` (the python.org and Windows installers and the macOS system Python have it; Homebrew's
+needs `python-tk`) and a display; on a machine without it the command says so and points to `agent status`. The window
+follows the system font (larger system text makes it larger), wraps its text, scrolls its content, works from the keyboard
+(Tab, Space or Return on a focused button, the underlined letters) and never uses colour alone. Tests: the controller is
+tested headless in `plugin/tests/test_farm_gui_controller.py`; the window itself is built and walked against a fake agent by
+`tests/gui_smoke.py`, run by `EMFDTD_GUI_TESTS=1 pytest tests/test_farm_gui_view.py` (opt-in: it needs tkinter and a display,
+and with the variable set any failure to build the window fails the test; `EMFDTD_GUI_PYTHON` picks the Python,
+`EMFDTD_GUI_SHOTS=<folder>` saves a screenshot of each tab on macOS).
+
+## Running the worker as a managed agent
+
+The worker can be configured once and then started and stopped like any program, with no assistant: `emfdtd-farm agent ...`
+(`python3 plugin/tools/emfdtd_farm.py agent ...` from a source tree). Everything below also has a `--json` form with a fixed
+shape, which the agent window uses.
+
+| Command | What it does |
+|---|---|
+| `agent configure --solver PATH --device NAME [--device ...] (--no-lock \| --lock-command "CMD" \| --turn-from-coordinator) [--max-minutes N --max-steps N --max-input-mb N --max-tier T --watchdog S --work DIR --log FILE]` | Validate and save the worker's settings in `agent.json` in the farm folder (private to you; no keys or tokens in it). Exactly one turn mode; the solver must exist. `--lock-command` takes one quoted string. |
+| `agent configure --show [--json]` / `--json-in [--json]` | Print the saved settings / replace them from a JSON object on stdin (same checks). |
+| `agent doctor [--json]` | Run every check (below), each with a one-line fix. Exit 0 only if all pass. |
+| `agent start` | Run the doctor, then start `worker --from-agent` detached from the terminal, logging to `agent.log` (rotated at 10 MB at each start). Refuses to start a second copy and says why it cannot start. |
+| `agent stop [--timeout S]` | Polite stop (SIGTERM; `taskkill /T` on Windows), wait, then kill the whole process tree; a running solver is ended too. |
+| `agent restart` | Stop, then start. |
+| `agent status [--json]` | Running or not, pid, uptime, connected to the coordinator, the current job and its phase. |
+| `agent logs [-n N] [--follow]` | The last N lines of the log (default 50), optionally following. |
+| `agent autostart on\|off\|status [--json]` | Start the agent when you log in: a launchd user agent (macOS), a systemd user unit (Linux) or a Task Scheduler task at logon (Windows). **Off unless you turn it on**, `on` needs a saved configuration, `off` removes only what `on` installed. |
+| `setup [--yes] [flags]` | Walk a new machine through: check Python, turn the worker role on, enrol (invitation address, fingerprint, one-time code, coordinator address), record the GPUs (one GPU call, explained first), save the settings, run the doctor, offer to start. With `--yes` and the flags it never asks and says which flag is missing. |
+
+The agent knows it is ours by a small `agent.status.json` the worker rewrites every 10 seconds (pid, connected, job, phase,
+solver pids), so a pid that was recycled by an unrelated program is never mistaken for it and never killed.
+
+**Doctor checks** (stable ids, in this order): `tls13` (this Python has TLS 1.3), `role` (the worker role is on),
+`identity` (enrolled; the certificate is not expired when `openssl` can tell), `coordinator` (an address is stored and the TCP
+port answers), `certificate` (the TLS handshake completes and the coordinator takes our certificate: "rejected" otherwise),
+`solver` (`--version` runs; not a GPU call), `settings` (`--list-settings` lists settings), `devices` (the GPUs to offer were
+recorded with `devices --save` and the configured names match them), `workdir` (writable, at least 2 GiB free), `config`
+(saved and valid).
+
+**JSON shapes.**
+`agent status --json`: `{"running": bool, "pid": int|null, "started": epoch|null, "uptime_s": float|null,
+"connected": bool, "coordinator": "host:port"|null, "job": {"id", "label", "phase", "percent"}|null, "device": str|null,
+"last_error": str|null, "log": path}`.
+`agent doctor --json`: `{"ok": bool, "checks": [{"id", "title", "ok", "detail", "fix"}]}`.
+`agent configure --show --json`: `{"solver", "devices": [..], "turn": {"mode": "lock"|"coordinator"|"none", "lock_command": [..]},
+"max_minutes", "max_steps", "max_input_mb", "max_tier", "watchdog", "work", "log"}` (unset limits are null).
+`agent stop --json`: `{"was_running": bool, "stopped": bool, "forced": bool}`.
+`agent autostart status --json`: `{"enabled": bool, "mechanism": "launchd"|"systemd"|"schtasks", "detail": str}`.
+**Exit codes:** 0 success; 1 an expected failure (the message goes to stderr, or with `--json` to stdout as `{"error": "..."}`;
+`doctor` prints its report and exits 1 when a check fails); 2 flags the command line could not parse.
+
+Not tested on Windows from here: the detached start (`DETACHED_PROCESS`), `taskkill`/`tasklist`/PowerShell process lookups,
+`schtasks` and the file ACLs are written to the documented Windows commands and unit-tested by their exact text, but have not
+been run on a Windows machine.
 
 ## What protects it
 
@@ -177,6 +269,14 @@ after a cancel; a cancel stops the job wherever it is: fetching input, checking 
 ended on the coordinator's side. If the hold command itself ends while the job runs, the coordinator cancels the
 job and requeues it.
 
+## Restarting the coordinator
+
+Stop it with Ctrl-C or SIGTERM (`kill PID`): it gives back any GPU turn it is holding and closes its ports before it
+exits, so a stop never leaves a lock held. Do not kill it with SIGKILL while a turn is held: the lock's hold command
+would be left running until its time limit. `gates.json` is read again before every dispatch, so adding or changing a
+gate applies to the next job without a restart; a `gates.json` that is broken at that moment is ignored and the last
+good one stays in force (a broken one at start-up stops the coordinator with a message).
+
 ## Fairness and sharing
 
 Several people can share a coordinator. Jobs are served round-robin by how many each person has already had
@@ -187,8 +287,10 @@ other tools, wrap the solver in your own lock with `--lock-command`, for example
 
 ## Limits of this version
 
-- The queue is kept in memory: restarting the coordinator loses waiting and running jobs (finished results on disk
-  stay until their 7 days are up, but are no longer listed).
+- The queue is saved (`jobs.json` in the farm folder, on every state change) and comes back when the coordinator
+  starts again: waiting jobs stay queued, finished jobs and their results are still listed, and a job that was
+  running is queued again with that attempt counted (its worker's watchdog killed the solver), or fails with "gave
+  up" if it had used its attempts. Fair-share counters start again from zero, and progress text is not kept.
 - Machine-wide Windows service or launchd installation is not provided; run the coordinator and workers in a
   terminal or under your own service manager. A Windows worker needs Python installed by you.
 - The window's Farm tab runs on macOS and Linux; the Windows build of the window has no Farm tab yet (use the command line).

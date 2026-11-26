@@ -14,6 +14,12 @@ import uuid
 MAX_ATTEMPTS = 2
 HEARTBEAT_TIMEOUT = 45.0  # seconds without a heartbeat before a worker's leases are lost
 DEFAULT_MAX_QUEUED = 100
+RECEIVE_TIMEOUT = 3600.0  # a submission whose input never arrived is dropped after this long
+# What is kept across a coordinator restart (progress text and percentages are not: a job starts over)
+JOB_FIELDS = (
+    "id", "owner", "spec", "input_sha256", "input_bytes", "label", "group",
+    "state", "attempts", "created", "finished", "reason", "files",
+)  # fmt: skip
 # the solver's own progress line: "progress: 41200 steps, about 37%, 312 s"
 SOLVER_PROGRESS = re.compile(r"^progress: (\d+) steps, about (\d{1,3})%")
 
@@ -38,6 +44,7 @@ class Job:
         self.device = None
         self.deadline = None
         self.created = now
+        self.started = None  # when the current attempt began running (for "running 6 min")
         self.finished = None
         self.progress = ""
         self.percent = None  # from the solver's progress line when it prints one (an estimate)
@@ -56,6 +63,7 @@ class Job:
             "device": self.device,
             "progress": self.progress,
             "percent": self.percent,
+            "started": self.started,
             "reason": self.reason,
         }
 
@@ -187,6 +195,9 @@ class Scheduler:
     def expire(self, now):
         """Requeue the jobs of workers that went quiet. Returns the ids of the jobs affected."""
         lost = []
+        for job in self.jobs.values():
+            if job.state == "receiving" and now - job.created > RECEIVE_TIMEOUT:
+                job.state, job.reason, job.finished = "failed", "the input never arrived", now
         for name, w in self.workers.items():
             if w["online"] and now - w["last"] > self.heartbeat_timeout:
                 w["online"] = False
@@ -213,6 +224,7 @@ class Scheduler:
             job.attempts += 1
             job.lease = uuid.uuid4().hex
             job.worker, job.device = worker, uuid_
+            job.started = now
             job.deadline = now + self.heartbeat_timeout
             dev["busy"] = job.id
             self._served[job.owner] = self._served.get(job.owner, 0) + 1
@@ -277,6 +289,42 @@ class Scheduler:
             self._release_device(job)
             job.state, job.reason, job.finished, job.lease = "failed", reason, now, None
         return True
+
+    def snapshot(self):
+        """The jobs as plain data, oldest first, for the coordinator to save."""
+        return [
+            {f: getattr(j, f) for f in JOB_FIELDS} for j in sorted(self.jobs.values(), key=lambda j: j._seq)
+        ]
+
+    def restore(self, rows, now):
+        """Load jobs saved by snapshot(). A job that was running has lost its worker (its watchdog killed
+        the solver): it goes back to the queue with its attempt counted, or fails when attempts are used up.
+        Fair-share counters start again from zero."""
+
+        def created(row):
+            value = row.get("created")
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        for row in sorted(
+            (r for r in rows if isinstance(r, dict)), key=created
+        ):  # a damaged file never stops a start
+            try:
+                job = Job(
+                    row["id"], row["owner"], row["spec"], row["input_sha256"], row["input_bytes"],
+                    row.get("label", ""), now, row.get("group"),
+                )  # fmt: skip
+                job.created = row.get("created", now)
+                job.state = row["state"]
+                job.attempts = int(row.get("attempts", 0))
+                job.finished = row.get("finished")
+                job.reason = row.get("reason", "")
+                job.files = row.get("files", {})
+            except (KeyError, TypeError, ValueError):
+                continue  # a damaged row is skipped, never fatal
+            job._seq = next(self._order)
+            if job.state == "running":
+                self._requeue(job, now, "the coordinator restarted")
+            self.jobs[job.id] = job
 
     def forget_finished(self, older_than, now):
         """Drop records of jobs that ended more than `older_than` seconds ago. Returns their ids."""

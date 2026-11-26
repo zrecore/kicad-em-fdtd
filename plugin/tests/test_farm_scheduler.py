@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 
@@ -144,6 +146,7 @@ def _fatal(ctx):
 def _running_on(ctx, worker):
     job = ctx["jobs"][0]
     assert job.state == "running" and job.worker == worker
+    assert job.started is not None and ctx["s"].listing()[0]["started"] == job.started  # for "running 6 min"
     assert ctx["s"].workers[worker]["devices"][job.device]["busy"] == job.id
 
 
@@ -248,3 +251,55 @@ def _progress_line(ctx, line):
 def _percent(ctx, n):
     assert ctx["jobs"][0].percent == n
     assert ctx["s"].listing()[0]["percent"] == n
+
+
+@when("the scheduler is saved as JSON and restored into a new one")
+def _restore(ctx):
+    rows = json.loads(json.dumps(ctx["s"].snapshot()))  # plain data only
+    ctx["s2"] = Scheduler()
+    ctx["s2"].restore(rows, ctx["now"])
+
+
+@when("the scheduler is saved with one extra damaged row and restored into a new one")
+def _restore_damaged(ctx):
+    rows = json.loads(json.dumps(ctx["s"].snapshot()))
+    rows.append({"id": "x"})  # no owner, spec or state
+    rows.append("not a row")
+    ctx["s2"] = Scheduler()
+    ctx["s2"].restore(rows, ctx["now"])
+
+
+@then(parsers.parse("the new scheduler lists {n:d} jobs"))
+def _lists(ctx, n):
+    assert len(ctx["s2"].listing()) == n
+
+
+@then(parsers.parse('the job that was running is queued again with {n:d} attempt and the reason "{reason}"'))
+def _requeued_restored(ctx, n, reason):
+    job = ctx["s2"].jobs[ctx["jobs"][0].id]
+    assert job.state == "queued" and job.attempts == n and reason in job.reason
+    assert job.worker is None and job.lease is None
+
+
+@then("the job whose input had not arrived is still receiving")
+def _still_receiving(ctx):
+    assert ctx["s2"].jobs[ctx["jobs"][1].id].state == "receiving"
+
+
+@then("the restored job has failed and says it gave up")
+def _restored_failed(ctx):
+    job = ctx["s2"].jobs[ctx["jobs"][0].id]
+    assert job.state == "failed" and "gave up" in job.reason
+
+
+@then("the restored job shows no progress and no percentage")
+def _no_progress(ctx):
+    job = ctx["s2"].jobs[ctx["jobs"][0].id]
+    assert job.progress == "" and job.percent is None
+    assert ctx["s"].jobs[job.id].percent == 37  # it was there before the save
+
+
+@then(parsers.parse('the job has failed with the reason "{reason}"'))
+def _failed_reason(ctx, reason):
+    job = ctx["jobs"][0]
+    assert job.state == "failed" and reason in job.reason

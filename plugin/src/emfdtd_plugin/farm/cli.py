@@ -6,11 +6,12 @@ import argparse
 import asyncio
 import contextlib
 import json
+import signal
 import ssl
 import sys
 from pathlib import Path
 
-from . import client, config, enroll, jobs, pki, policy
+from . import agent, client, config, enroll, jobs, pki, policy
 
 CONSEQUENCE = {
     "client": (
@@ -50,19 +51,39 @@ def _connection():
         ) from None
 
 
-def _load_gates():
+class GatesError(ValueError):
+    pass
+
+
+def read_gates():
     """gates.json in the farm folder: {"worker-name": {"hold": [command...], "release": [command...]}}. The
-    coordinator then holds that GPU's turn for every job it offers the worker (see docs/farm.md)."""
+    coordinator then holds that GPU's turn for every job it offers the worker (see docs/farm.md). Raises
+    GatesError for a file that is not usable; a missing file means no gates."""
     try:
         gates = json.loads((config.home() / "gates.json").read_text())
     except OSError:
         return {}
     except ValueError:
-        raise SystemExit("gates.json is not valid JSON") from None
+        raise GatesError("gates.json is not valid JSON") from None
+    if not isinstance(gates, dict):
+        raise GatesError("gates.json must be an object of worker names")
     for name, gate in gates.items():
-        if not (isinstance(gate.get("hold"), list) and isinstance(gate.get("release"), list)):
-            raise SystemExit(f"gates.json: {name} needs a hold and a release command list")
+        if not (
+            isinstance(gate, dict)
+            and isinstance(gate.get("hold"), list)
+            and isinstance(gate.get("release"), list)
+        ):
+            raise GatesError(f"gates.json: {name} needs a hold and a release command list")
     return gates
+
+
+def _load_gates():
+    """At start-up a broken gates.json stops the coordinator with a message (a running coordinator keeps the
+    last good gates instead: see Coordinator.gates_loader)."""
+    try:
+        return read_gates()
+    except GatesError as e:
+        raise SystemExit(str(e)) from None
 
 
 def _need(role):
@@ -75,6 +96,7 @@ def _need(role):
 def _parser():
     p = argparse.ArgumentParser(prog="emfdtd-farm", description="GPU job farm (off by default).")
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("gui", help="open the agent window (tkinter): status, start/stop, settings, set-up")
     for name in ("enable", "disable"):
         s = sub.add_parser(name, help=name + " a role on this machine")
         s.add_argument("role", choices=config.ROLES)
@@ -113,11 +135,20 @@ def _parser():
     s.add_argument("--lock-command", nargs="+", default=[], help="wraps the Vulkan call (your GPU turn)")
     s.add_argument("--no-lock", action="store_true", help="nobody else uses this GPU (you hold the turn now)")
     s.add_argument(
-        "--save", action="store_true", help="record the devices for --turn-from-coordinator workers"
+        "--save",
+        action="store_true",
+        help="record the devices a worker on this machine offers when it connects (needed once, in every "
+        "turn mode: a worker makes no Vulkan call to connect)",
     )
     s.add_argument("--device", action="append", default=[], help="with --save: the GPUs to record")
+    s.add_argument("--work", help="with --save: the worker's job folder (default: inside the farm folder)")
     s = sub.add_parser("worker", help="worker: offer GPUs and run jobs (connects out; never listens)")
-    s.add_argument("--solver", required=True, help="the emfdtd binary")
+    s.add_argument("--solver", help="the emfdtd binary")
+    s.add_argument(
+        "--from-agent",
+        action="store_true",
+        help="take every setting from `agent configure` (this is how `agent start` runs the worker)",
+    )
     s.add_argument(
         "--device", action="append", default=[], help="UUID prefix or part of the name; repeatable"
     )
@@ -163,6 +194,7 @@ def _parser():
     s.add_argument("--nets")
     s.add_argument("--ground-nets")
     s.add_argument("--label", default="")
+    s.add_argument("--json", action="store_true", help='print {"jobs": [ids]} instead of one id per line')
     s.add_argument("--wait", metavar="DEST", help="wait for the jobs and save their results in DEST")
     sub.add_parser("queue", help="client: my jobs and the farm's devices").add_argument(
         "--json", action="store_true"
@@ -172,6 +204,7 @@ def _parser():
     s = sub.add_parser("results", help="client: download a finished job's results")
     s.add_argument("job")
     s.add_argument("--dest", required=True)
+    agent.add_parsers(sub)
     return p
 
 
@@ -213,6 +246,10 @@ def main(argv=None, stdin=None, out=None):
     out = out or sys.stdout
     stdin = stdin or sys.stdin
     args = _parser().parse_args(argv)
+    if args.cmd == "gui":  # the window runs this tool as child processes; it needs no TLS itself
+        from .gui import main as gui_main
+
+        return gui_main()
 
     def say(text=""):
         print(text, file=out)
@@ -250,8 +287,39 @@ def main(argv=None, stdin=None, out=None):
         config.remember_python()
         say(f"farm {args.role} is on")
         return 0
-    pki.min_tls()  # every other command talks TLS: stop early if this Python cannot do 1.3
-    return _farm_command(args, say)
+    if args.cmd in ("agent", "setup"):  # they report a missing TLS 1.3 themselves, as a failed check
+        return agent.run(args, out, stdin)
+    try:
+        pki.min_tls()  # every other command talks TLS: stop early if this Python cannot do 1.3
+    except pki.PkiError as e:
+        raise SystemExit(f"error: {e}") from None
+    try:
+        return _farm_command(args, say)
+    except pki.PkiError as e:  # a missing identity, no TLS 1.3, no openssl: one plain line, not a traceback
+        raise SystemExit(f"error: {e}") from None
+
+
+def _args_from_agent(args):
+    """The `worker` arguments as `agent configure` saved them."""
+    import types
+
+    cfg = agent.load()
+    if cfg is None:
+        raise SystemExit("no agent configuration: run `emfdtd_farm.py agent configure ...` first")
+    try:
+        cfg = agent.validate(cfg)
+    except agent.AgentError as e:
+        raise SystemExit(f"the agent configuration is not valid: {e}") from None
+    turn = cfg["turn"]
+    ns = types.SimpleNamespace(**vars(args))
+    ns.solver, ns.device = cfg["solver"], cfg["devices"]
+    ns.lock_command = turn["lock_command"] if turn["mode"] == "lock" else []
+    ns.no_lock = turn["mode"] == "none"
+    ns.turn_from_coordinator = turn["mode"] == "coordinator"
+    ns.max_minutes, ns.max_steps = cfg["max_minutes"], cfg["max_steps"]
+    ns.max_input_mb, ns.max_tier = cfg["max_input_mb"], cfg["max_tier"]
+    ns.watchdog, ns.work = cfg["watchdog"], cfg["work"]
+    return ns
 
 
 def _farm_command(args, say):
@@ -326,10 +394,17 @@ def _farm_command(args, say):
         bundle = pki.load_identity("coordinator")
 
         async def go():
-            c = Coordinator(bundle, args.listen, args.port, gates=_load_gates())
+            c = Coordinator(bundle, args.listen, args.port, gates=_load_gates(), gates_loader=read_gates)
             await c.start()
-            say(f"farm coordinator listening on {args.listen}:{c.port} (Ctrl-C to stop)")
-            await asyncio.Event().wait()
+            say(f"farm coordinator listening on {args.listen}:{c.port} (Ctrl-C or SIGTERM to stop)")
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(NotImplementedError, ValueError):  # not on Windows loops
+                    loop.add_signal_handler(sig, stop.set)
+            await stop.wait()
+            say("stopping: giving back any GPU turn")
+            await c.stop()  # releases held turns and closes the listeners
 
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(go())
@@ -356,7 +431,7 @@ def _farm_command(args, say):
                 "",
                 0,
                 args.solver,
-                config.home() / "work",
+                Path(args.work) if args.work else config.home() / "work",
                 [],
                 lock_command=args.lock_command,
                 no_lock=args.no_lock,
@@ -383,6 +458,10 @@ def _farm_command(args, say):
     if cmd == "worker":
         from .worker import Worker
 
+        if args.from_agent:
+            args = _args_from_agent(args)
+        if not args.solver:
+            raise SystemExit("give --solver (the emfdtd binary), or --from-agent")
         if not args.device:
             raise SystemExit(
                 "choose the GPUs to offer with --device (see `emfdtd-farm devices --solver ...`)"
@@ -407,13 +486,30 @@ def _farm_command(args, say):
             pki.load_identity("worker"), host, port, args.solver,
             Path(args.work) if args.work else config.home() / "work", args.device, args.lock_command,
             caps=caps, no_lock=args.no_lock, turn_from_coordinator=args.turn_from_coordinator,
-            watchdog_s=args.watchdog,
+            watchdog_s=args.watchdog, status_file=agent.status_file(),
         )  # fmt: skip
-        say(f"worker connecting out to {host}:{port} (Ctrl-C to stop)")
         try:
-            asyncio.run(w.run_forever())
-        except KeyboardInterrupt:
-            w.stop()
+            w.recorded_devices()  # fail now, with the way to fix it, not as a traceback after connecting
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
+        say(f"worker connecting out to {host}:{port} (Ctrl-C or SIGTERM to stop)")
+
+        async def run_worker():
+            task = asyncio.ensure_future(w.run_forever())
+            loop = asyncio.get_running_loop()
+
+            def stop_now():
+                w.stop()  # ends any solver now
+                task.cancel()
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(NotImplementedError, ValueError):  # not on Windows loops
+                    loop.add_signal_handler(sig, stop_now)
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(run_worker())
+        w.stop()
         return 0
 
     # client commands
@@ -451,7 +547,10 @@ def _farm_command(args, say):
     ids = []
     for sp in specs:
         ids.append(_run(client.submit(bundle, host, port, sp, args.snapshot, args.label, group)))
-        say(ids[-1])
+        if not args.json:
+            say(ids[-1])
+    if args.json:
+        say(json.dumps({"jobs": ids}))
     if args.wait:
         import time
 

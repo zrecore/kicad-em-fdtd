@@ -20,6 +20,9 @@ if args[:1] == ["--list-devices"]:
         "2  Old GPU  uuid 0000000000000000000000000000cafe  discrete  1.0 GiB  vulkan 1.1  driver Old  (below Vulkan 1.2: not usable)"
     )
     sys.exit(0)
+if args[:1] == ["--version"]:
+    print("emfdtd stub 0.0.0")
+    sys.exit(0)
 if args[:1] == ["--list-settings"]:
     print("mesh_preset                    essential  medium  [Mesh] Coarse is fast")
     print("decay_threshold                advanced  0.001  [Run] stop at")

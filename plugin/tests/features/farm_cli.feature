@@ -35,3 +35,9 @@ Feature: The farm command line switches roles on only when the user confirms
     Given a clean farm home
     When the user runs "enable worker --yes" and answers "nothing"
     Then starting the worker with only a solver and a device exits with the turn message
+
+  Scenario: A missing identity is explained in one line, not a traceback
+    Given a clean farm home
+    And the client role is on and a coordinator address is stored but no identity exists
+    When the user runs the command "queue"
+    Then it exits with a one-line message saying there is no client identity

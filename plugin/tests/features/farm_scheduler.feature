@@ -107,3 +107,37 @@ Feature: The scheduler shares devices fairly and never loses or doubles a job
     Then the job shows 37 percent
     When the solver reports "starting the solver"
     Then the job still shows 37 percent
+
+  Scenario: The queue survives a save and a restore as plain data
+    When "client:alice" submits a job and its input arrives
+    And "client:alice" submits a job
+    And offers are made
+    And the scheduler is saved as JSON and restored into a new one
+    Then the new scheduler lists 2 jobs
+    And the job that was running is queued again with 1 attempt and the reason "the coordinator restarted"
+    And the job whose input had not arrived is still receiving
+
+  Scenario: A job that was running with no attempts left fails when restored
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    And the worker "win" is lost
+    And the worker "win" comes back and offers are made
+    And the scheduler is saved as JSON and restored into a new one
+    Then the restored job has failed and says it gave up
+
+  Scenario: A damaged saved row is skipped and the others are kept
+    When "client:alice" submits a job and its input arrives
+    And the scheduler is saved with one extra damaged row and restored into a new one
+    Then the new scheduler lists 1 jobs
+
+  Scenario: Progress text and percentages are not kept across a restart
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    And the solver reports "progress: 41200 steps, about 37%, 312 s"
+    And the scheduler is saved as JSON and restored into a new one
+    Then the restored job shows no progress and no percentage
+
+  Scenario: A submission whose input never arrives fails after the receive timeout
+    When "client:alice" submits a job
+    And 7200 seconds pass without a heartbeat
+    Then the job has failed with the reason "the input never arrived"

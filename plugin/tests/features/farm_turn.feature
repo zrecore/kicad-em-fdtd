@@ -12,10 +12,10 @@ Feature: A worker never uses the GPU outside a turn, and keeps to its own limits
     And a client "alice"
     And a worker "gpu-box" offering "stub gpu a" that wraps every GPU use in a lock command
     When the worker has stayed connected through several heartbeats
-    Then the lock command was used once, to list devices
+    Then the lock command was never used just to connect
     When "alice" submits a job with the setting mesh_preset "medium"
     And the job finishes
-    Then the lock command also wrapped a device check and the solve
+    Then the lock command wrapped exactly one device check and the solve
     And it never wrapped the settings listing and the solver was never asked for a dry run
 
   Scenario: A coordinator-held turn is taken before the offer and released after the job
@@ -88,3 +88,19 @@ Feature: A worker never uses the GPU outside a turn, and keeps to its own limits
     Then the waiting lock command is gone within 3 seconds
     And the solver never starts
     And the job is cancelled
+
+  Scenario: A worker joins the farm at once while someone else holds the GPU's lock
+    Given a farm with a coordinator
+    And a client "alice"
+    And a worker "gpu-box" offering "stub gpu a" whose lock command always waits 8 seconds, started with a 3 second limit to connect
+    Then the lock command has not been called
+    When "alice" submits a job with the setting mesh_preset "medium"
+    And the job finishes
+    Then the lock command wrapped exactly one device check and the solve
+
+  Scenario: A worker with no recorded devices says how to record them
+    Given a farm with a coordinator
+    Then a worker that has no recorded devices refuses to connect and names the command
+
+  Scenario: A call that waits for the lock gets a long allowance, one that does not stays short
+    Then a device listing through a lock command may wait for its turn for hours and one without a lock may not
