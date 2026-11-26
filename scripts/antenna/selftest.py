@@ -129,3 +129,42 @@ import openend  # noqa: E402
 for _w in (1.0, 2.0, 3.06):
     _k, _h, _ = openend.extension_mm(_w, 1.6, 4.4)
     check("open end: the two published models agree within 5 percent (W %.2f mm)" % _w, abs(_k - _h) / _h < 0.05, "%.3f vs %.3f mm" % (_k, _h))
+
+# the reactance slope: an ideal series RLC has dX/df = 4 pi L at resonance and a loaded Q of w0 L / R
+import slope  # noqa: E402
+
+_f0, _R, _L = 2.4e9, 50.0, 4.0e-9
+_C = 1.0 / ((2 * math.pi * _f0) ** 2 * _L)
+_freqs = [2.0e9 + i * 4e6 for i in range(201)]
+_s = []
+for _fq in _freqs:
+    _w = 2 * math.pi * _fq
+    _z = complex(_R, _w * _L - 1.0 / (_w * _C))
+    _s.append((_z - 50.0) / (_z + 50.0))
+_r = slope.analyze(_freqs, _s, window=(2.38e9, 2.42e9), half_width=25e6)
+_truth = 4 * math.pi * _L * 50e6
+check(
+    "slope: a series RLC has dX/df = 4 pi L at its resonance (own window and fixed window)",
+    abs(_r["slope_own"] - _truth) / _truth < 0.02 and abs(_r["slope_fixed"] - _truth) / _truth < 0.02,
+    "%.2f and %.2f against %.2f ohm per 50 MHz" % (_r["slope_own"], _r["slope_fixed"], _truth),
+)
+_q = 2 * math.pi * _f0 * _L / _R
+check("slope: q_eff is w0 L / R", abs(_r["q_eff"] - _q) / _q < 0.02, "%.2f against %.2f" % (_r["q_eff"], _q))
+check("slope: the series resonance is found", abs(_r["series_hz"] - _f0) < 2e6)
+
+import known_answer  # noqa: E402
+
+_w, _l, _ = known_answer.geometry()
+check(
+    "patch cavity model returns its own design frequency",
+    abs(known_answer.patch_resonance(4.5, _w, _l) - 2.45e9) / 2.45e9 < 1e-6,
+)
+check(
+    "lower er raises the patch resonance by about 3.4 percent",
+    0.030 < known_answer.expected_shift(_w, _l) < 0.037,
+    "%+.2f %%" % (100 * known_answer.expected_shift(_w, _l)),
+)
+check(
+    "same coarse cell at er 4.2 needs fewer cells per wavelength",
+    abs(known_answer.cpw_for(4.2, 20) - 20 * math.sqrt(4.2 / 4.5)) < 1e-12,
+)
