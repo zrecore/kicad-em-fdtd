@@ -14,7 +14,8 @@ add_test(NAME cli_json COMMAND ${CMAKE_SOURCE_DIR}/scripts/cli_json_check.sh $<T
 set_tests_properties(cli_json PROPERTIES LABELS cpu)
 add_test(NAME checkpoint_cli COMMAND ${CMAKE_SOURCE_DIR}/scripts/checkpoint_check.sh $<TARGET_FILE:emfdtd>
          ${CMAKE_BINARY_DIR}/test-tmp/checkpoint_e2e)
-set_tests_properties(checkpoint_cli PROPERTIES LABELS cpu)
+# end to end with several solver runs: about 28 minutes under the sanitizers on a CI runner, seconds in release
+set_tests_properties(checkpoint_cli PROPERTIES LABELS cpu_slow)
 add_test(NAME cpu_slow COMMAND tests_cpu "[slow]")
 set_tests_properties(cpu_slow PROPERTIES LABELS cpu_slow)
 

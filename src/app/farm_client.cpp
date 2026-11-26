@@ -654,6 +654,10 @@ Client::~Client() {
 
 void Client::touch() {
   touched_ = nowSeconds();
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    wake_ = true; // poll now, do not sit out the rest of the wait
+  }
   cv_.notify_all();
 }
 
@@ -678,7 +682,8 @@ void Client::loop() {
       pollOnce();
     pumpInvite();
     std::unique_lock<std::mutex> lock(mu_);
-    cv_.wait_for(lock, std::chrono::milliseconds(1500), [this] { return quit_.load(); });
+    cv_.wait_for(lock, std::chrono::milliseconds(1500), [this] { return quit_.load() || wake_; });
+    wake_ = false;
   }
 }
 

@@ -191,6 +191,7 @@ private:
   std::thread thread_;
   std::atomic<bool> quit_{false};
   std::atomic<double> touched_{0};
+  bool wake_ = false; // set under mu_ by touch(): the polling thread wakes at once
   std::atomic<bool> agentChecksOpen_{false}, agentLogOpen_{false};
   Snapshot snap_;
   Action action_;
