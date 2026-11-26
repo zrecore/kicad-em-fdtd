@@ -2,6 +2,8 @@
 
 Adds a **Simulate (EM FDTD)** button to the PCB editor. It exports the open board (read-only), defines the port from the two selected pads (first selected = positive), and starts the solver window (`emfdtd`) on its preview screen. Results go to `<project>/em-fdtd/results/run-<time>/`. The export follows the board outline as drawn on Edge.Cuts (arcs, cutouts, via spans); when the board sits inside a panel, the exporter also finds the board between the slots and breakaway tabs and writes it as `board_proper`, which the window models by default (setting "Board outline").
 
+Two more toolbar buttons: **EM FDTD window** opens the solver window on the preview without a run, and **EM FDTD farm** opens it on the Farm tab (GPU farm: off until you turn it on there; see `docs/farm.md`).
+
 ## Install (macOS, KiCAD 10)
 1. `plugin/tools/install.sh --link` in Terminal (recommended while developing: a symlink, so edits show up after Tools, External Plugins, Refresh Plugins). Or `plugin/tools/install.sh` without `--link`, which copies the plugin to `~/Documents/KiCad/10.0/plugins/org.kicad-em-fdtd.simulate` and writes `solver_path.txt` (the solver binary). With a copy, re-run it after every change. Terminal needs access to the Documents folder (System Settings, Privacy and Security, Files and Folders). A symbolic link does work: the earlier failure was missing toolbar icons, not the link.
 2. Build the solver first: `cmake --preset release && cmake --build --preset release`.

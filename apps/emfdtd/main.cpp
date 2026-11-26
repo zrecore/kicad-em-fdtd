@@ -641,6 +641,8 @@ int main(int argc, char** argv) {
       ui::Ui screen(std::move(env));
       if (!openRunDir.empty() && !screen.openRun(openRunDir))
         std::fprintf(stderr, "emfdtd: %s\n", screen.statusMessage().c_str());
+      if (!shotTab.empty()) // the plugin's Farm button starts the window on that tab
+        screen.selectTab(shotTab);
       ImGui_ImplGlfw_InitForOther(window.handle(), true);
       std::unique_ptr<viz::GpuUi>
           gpuUi; // the UI drawn by the GPU; the CPU rasteriser if that is not possible
@@ -682,11 +684,13 @@ int main(int argc, char** argv) {
               if (screen.setSnapshot(board::parseSnapshot(slurp(snapshotPath)))) {
                 window.focus();
                 const fs::path request = paths.root / "request.txt";
-                if (fs::exists(request)) { // "run" starts the solve, anything else just shows the preview
+                if (fs::exists(request)) { // "run" solves, "farm" opens the Farm tab
                   std::string word;
                   std::ifstream(request) >> word;
                   fs::remove(request, ec);
                   pendingRun = word == "run";
+                  if (word == "farm")
+                    screen.selectTab("Farm");
                 }
               }
             } catch (const std::exception& e) {

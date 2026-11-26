@@ -43,6 +43,24 @@
         "icons/window_dark_24.png",
         "icons/window_dark_48.png"
       ]
+    },
+    {
+      "identifier": "farm",
+      "name": "EM FDTD farm",
+      "description": "Open the solver window on its Farm tab: turn the GPU farm on or off, pair machines, see devices and jobs. Does not start a run. The farm is off until you turn it on.",
+      "show-button": true,
+      "scopes": [
+        "pcb"
+      ],
+      "entrypoint": "action_farm.py",
+      "icons-light": [
+        "icons/farm_light_24.png",
+        "icons/farm_light_48.png"
+      ],
+      "icons-dark": [
+        "icons/farm_dark_24.png",
+        "icons/farm_dark_48.png"
+      ]
     }
   ]
 }

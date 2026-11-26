@@ -29,7 +29,7 @@ def port_from_selection(board, snapshot):
     return geometry.port_between(box_a, box_b, layer)
 
 
-def run(plugin_dir, require_port):
+def run(plugin_dir, require_port, request=None):
     """Simulate: needs two pads and starts the run. Open window: shows the preview; uses two pads if selected,
     else keeps the previous port."""
     kicad = KiCad()
@@ -42,4 +42,6 @@ def run(plugin_dir, require_port):
         )
     project_dir = board.get_project().path  # the folder holding the .kicad_pro
     snapshot["ports"] = [port] if port else launcher.previous_ports(project_dir)
-    launcher.publish(snapshot, project_dir, plugin_dir, request="run" if require_port else "preview")
+    launcher.publish(
+        snapshot, project_dir, plugin_dir, request=request or ("run" if require_port else "preview")
+    )

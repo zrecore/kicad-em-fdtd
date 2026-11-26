@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 
 import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
@@ -202,3 +203,40 @@ def _passes(context):
 @then("validation fails naming the copper thickness")
 def _names_thickness(context):
     assert "copper thickness" in context["error"]
+
+
+def test_farm_request_opens_the_farm_tab_in_a_new_window(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    solver = tmp_path / "emfdtd"
+    solver.write_text("")
+    os.environ["EMFDTD_BIN"] = str(solver)
+    spawned = []
+    launcher.publish({"x": 1}, project, tmp_path, spawn=lambda cmd, **kw: spawned.append(cmd), request="farm")
+    assert spawned[0][-2:] == ["--ui-tab", "Farm"] and "--autorun" not in spawned[0]
+
+
+def test_farm_action_is_declared_with_its_icons_and_entrypoint():
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    action = {a["identifier"]: a for a in json.loads((root / "plugin.json").read_text())["actions"]}["farm"]
+    assert action["show-button"] is True and (root / action["entrypoint"]).is_file()
+    for key in ("icons-light", "icons-dark"):
+        assert len(action[key]) == 2 and all((root / f).is_file() for f in action[key])
+
+
+def test_solver_window_does_not_inherit_kicads_python_variables(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    solver = tmp_path / "emfdtd"
+    solver.write_text("")
+    os.environ["EMFDTD_BIN"] = str(solver)
+    os.environ["PYTHONHOME"] = "/kicad/python"
+    os.environ["PYTHONPATH"] = "/kicad/site"
+    try:
+        seen = []
+        launcher.publish({"x": 1}, project, tmp_path, spawn=lambda cmd, **kw: seen.append(kw["env"]))
+    finally:
+        del os.environ["PYTHONHOME"], os.environ["PYTHONPATH"]
+    assert "PYTHONHOME" not in seen[0] and "PYTHONPATH" not in seen[0] and "PATH" in seen[0]

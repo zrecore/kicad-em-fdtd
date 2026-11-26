@@ -7,6 +7,17 @@ import subprocess
 from pathlib import Path
 
 
+def clean_environment(env=None):
+    """The environment for the solver window. KiCAD starts a plugin with PYTHONHOME/PYTHONPATH of its own
+    bundled Python; left in, they make every other interpreter the window starts (the farm tool, on the
+    plugin's Python 3.12) load KiCAD's standard library and die with "No module named 'encodings'"."""
+    env = dict(os.environ if env is None else env)
+    for name in list(env):
+        if name.startswith("PYTHON") and name not in ("PYTHONUTF8", "PYTHONIOENCODING"):
+            del env[name]
+    return env
+
+
 def solver_running(pid_file):
     """True if pid_file names a live process (the solver writes it while its window is open)."""
     try:
@@ -49,7 +60,8 @@ def publish(snapshot, project_dir, plugin_dir, spawn=subprocess.Popen, request="
     work = Path(project_dir) / "em-fdtd"
     work.mkdir(exist_ok=True)
     snapshot_file = work / "snapshot.json"
-    # request: "preview" shows the new board on the settings screen, "run" also starts the solve. It is
+    # request: "preview" shows the new board on the settings screen, "run" also starts the solve, "farm" opens
+    # the Farm tab (no solve). It is
     # written before the snapshot, which is what an open window watches for.
     (work / "request.txt").write_text(request + "\n")
     snapshot_file.write_text(json.dumps(snapshot))
@@ -59,6 +71,8 @@ def publish(snapshot, project_dir, plugin_dir, spawn=subprocess.Popen, request="
     command = [find_solver(plugin_dir), str(snapshot_file), "--project-dir", str(project_dir), "--ui"]
     if request == "run":
         command.append("--autorun")
+    if request == "farm":
+        command += ["--ui-tab", "Farm"]
     (work / "request.txt").unlink(missing_ok=True)  # a new window gets the request on its command line
-    spawn(command, cwd=work)
+    spawn(command, cwd=work, env=clean_environment())
     return "started"

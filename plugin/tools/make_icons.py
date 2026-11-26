@@ -1,6 +1,7 @@
 """Generate the plugin's toolbar icons with the standard library only. Each action has its own:
   simulate: the viewer's field render (rings from the feed point, blue negative / orange positive) with a
             white "play" badge, meaning run;
+  farm:     three machines linked to a hub, meaning the GPU farm.
   window:   a window frame with a title bar showing the same rings, meaning open the solver window.
 KiCAD draws an IPC plugin's toolbar button only if the action has icons. Sizes 24 and 48 pixels (a 32 pixel
 bitmap renders too large in some setups). The colour constants mirror src/viz/colormap.hpp.
@@ -76,6 +77,23 @@ def colour_at(kind, theme, px, py, big):
             return (255, 255, 255) if tri else (35, 35, 45)
         c = rings(px, py, 0.27 * big, 0.45 * big, 0.30 * big, 0.85 * big)
         return (255, 255, 255) if math.hypot(px - 0.27 * big, py - 0.45 * big) <= 0.075 * big else c
+    if kind == "farm":  # three small machines linked to one hub: the GPU farm
+        nodes = [(0.20, 0.22), (0.80, 0.22), (0.50, 0.84)]
+        hub = (0.50, 0.46)
+        x, y = px / big, py / big
+        for nx, ny in nodes:  # links
+            dx, dy = hub[0] - nx, hub[1] - ny
+            t = max(0.0, min(1.0, ((x - nx) * dx + (y - ny) * dy) / (dx * dx + dy * dy)))
+            if math.hypot(x - (nx + t * dx), y - (ny + t * dy)) <= 0.035:
+                return FRAME[theme]
+        if math.hypot(x - hub[0], y - hub[1]) <= 0.13:
+            return (255, 255, 255) if math.hypot(x - hub[0], y - hub[1]) <= 0.05 else (235, 120, 40)
+        for nx, ny in nodes:
+            if rounded(
+                px, py, (nx - 0.15) * big, (ny - 0.11) * big, (nx + 0.15) * big, (ny + 0.11) * big, 0.04 * big
+            ):
+                return FRAME[theme]
+        return None
     # window: frame with a title bar, rings inside
     if not rounded(px, py, 0.02 * big, 0.10 * big, 0.98 * big, 0.92 * big, 0.14 * big):
         return None
@@ -115,7 +133,7 @@ def main():
     out.mkdir(exist_ok=True)
     for old in out.glob("*.png"):
         old.unlink()
-    for kind in ("simulate", "window"):
+    for kind in ("simulate", "window", "farm"):
         for theme in ("light", "dark"):
             for size in (24, 48):
                 png(out / f"{kind}_{theme}_{size}.png", size, render(kind, theme, size))

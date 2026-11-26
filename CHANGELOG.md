@@ -5,6 +5,12 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (KiCad toolbar button)
+- Plugin action **EM FDTD farm** (`plugin/action_farm.py`, its own icon): opens the solver window on the Farm tab, or switches an open window to it, without starting a run. The farm stays off until turned on there. A new window gets `--ui-tab Farm`; an open one reads `farm` from `request.txt`.
+
+### Fixed
+- `agent stop` on Windows ended every worker only after the 20 s timeout (a console-less process ignores `taskkill /T` without `/F`): it now writes an `agent.stop` file the worker watches. The detached start no longer sets `CREATE_NO_WINDOW`.
+
 ### Added (agent window)
 - `emfdtd-farm gui`: a tkinter window (standard library only, no listening port, nothing in the background unless open) to manage the farm worker agent on a machine that has only the farm bundle: status with Start, Stop and Restart (asks first when a job would be cancelled), the doctor checks, settings (solver, GPU, GPU-turn mode, limits, start-at-login off by default), a step-by-step set-up wizard, and the log. Logic is in `farm/gui/controller.py` (headless, 43 tests); the window is walked by `tests/gui_smoke.py` (`EMFDTD_GUI_TESTS=1`).
 
