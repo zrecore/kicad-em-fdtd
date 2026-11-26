@@ -44,6 +44,11 @@ std::unique_ptr<Engine> makeCpuEngine(fdtd::Solver<float>& solver);
 struct RunResult {
   fdtd::SParam1 s;
   std::size_t steps = 0;
+  // How far the run is, 0 to 1, for a progress display. The run ends when the port voltage has decayed to
+  // `decay` of its peak, so the total step count is not known in advance: 60 % is the pulse being injected
+  // (steps against the pulse length), 40 % the ring-down on a log scale (peak / recent against the stop
+  // level). Never goes backwards. Only an estimate.
+  double progress = 0;
   double dt = 0;
   std::vector<double> portVoltage, portSource; // aggregated, for plots and checks
   // The voltage of every parallel strip of the driven port after each step, [strip][step], and a strip's

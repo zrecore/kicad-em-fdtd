@@ -32,6 +32,27 @@ bool insideShape(const CopperShape& s, double x, double y) {
   return std::none_of(s.holes.begin(), s.holes.end(), [&](const Ring& h) { return insideRing(h, x, y); });
 }
 
+double distanceToRing(const Ring& r, double x, double y) {
+  double best = std::numeric_limits<double>::max();
+  for (std::size_t a = 0, b = r.size() - 1; a < r.size(); b = a++) {
+    const double ex = r[a].x - r[b].x, ey = r[a].y - r[b].y;
+    const double t =
+        std::clamp(((x - r[b].x) * ex + (y - r[b].y) * ey) / std::max(ex * ex + ey * ey, 1e-300), 0.0, 1.0);
+    best = std::min(best, std::hypot(x - (r[b].x + t * ex), y - (r[b].y + t * ey)));
+  }
+  return best;
+}
+
+// Like insideShape, but a point on the shape's edge (within `tol`, metres) counts as inside, on every side.
+// The even-odd ray test decides a point exactly on an edge by rounding, so with grid lines snapped onto a
+// copper edge one wall of a slab could be claimed and the opposite one not. A hole's edge is copper too.
+bool insideShapeOrOn(const CopperShape& s, double x, double y, double tol = 1e-7) {
+  if (!insideRing(s.outer, x, y) && distanceToRing(s.outer, x, y) > tol)
+    return false;
+  return std::none_of(s.holes.begin(), s.holes.end(),
+                      [&](const Ring& h) { return insideRing(h, x, y) && distanceToRing(h, x, y) > tol; });
+}
+
 // n equal cells covering [lo, hi] with cells no larger than `cell`.
 void appendUniform(std::vector<double>& edges, double lo, double hi, double cell) {
   const std::size_t n =
@@ -42,18 +63,26 @@ void appendUniform(std::vector<double>& edges, double lo, double hi, double cell
     edges.push_back(lo + (hi - lo) * static_cast<double>(i) / static_cast<double>(n));
 }
 
-// Air above or below the board: offsets (distance from the board, first 0) out to `length`. With a near cell
-// the first `nearHeight` uses it and the cells then grow by 1.3 up to `cell`, so a thin body next to the
-// board is resolved without refining the whole margin; without one this is appendUniform's even split.
-std::vector<double> airOffsets(double length, double cell, double nearCell, double nearHeight) {
+// Air above or below the board: offsets (distance from the board, first 0) out to `length`. The cells start
+// at `nearCell` (the fine air cell setting) for the first `nearHeight`, or else at `adjacent`, the size of
+// the board cell they touch, and then grow by `growth` per cell up to `cell`: neighbouring cells never differ
+// by more than that ratio (the smooth-mesh rule; a jump from a 0.2 mm board cell to a 2.4 mm air cell read a
+// 50 ohm microstrip's impedance 11 percent low, docs/PLAN.md). growth <= 1 or a coarse board cell gives
+// appendUniform's even split.
+std::vector<double> airOffsets(double length, double cell, double nearCell, double nearHeight,
+                               double adjacent, double growth) {
   std::vector<double> o{0.0};
-  if (!(nearCell > 0 && nearCell < cell)) {
+  const bool near = nearCell > 0 && nearCell < cell;
+  const double start = near ? nearCell : adjacent;
+  growth = growth > 1.0 ? growth : near ? 1.3 : 1.0; // a fine layer always grew by 1.3, even with growth 1
+  if (!(growth > 1.0 && start > 0 && start < cell)) {
     appendUniform(o, 0.0, length, cell);
     return o;
   }
-  double h = nearCell;
+  const double fineHeight = std::max(nearHeight, start); // at least one cell of the starting size
+  double h = start;
   while (o.back() < length - 1e-12) {
-    h = o.back() < nearHeight ? nearCell : std::min(cell, h * 1.3);
+    h = o.back() < fineHeight ? start : std::min(cell, h * growth);
     o.push_back(std::min(o.back() + h, length));
   }
   if (o.size() >= 3 && o.back() - o[o.size() - 2] < 0.5 * (o[o.size() - 2] - o[o.size() - 3])) {
@@ -76,6 +105,11 @@ struct ZStack {
   std::vector<std::size_t> layerCells;
   std::vector<std::size_t> dielectric; // stackup indices of the dielectrics, bottom to top
   std::vector<double> interfaceZ;      // dielectric count + 1 interface heights, bottom to top
+  // Per stackup index, the board z of a copper slab's lower and upper face (equal: a sheet on its interface).
+  // An outer top layer's slab sits above its interface, the outer bottom one's below, an inner one's just
+  // above its interface (inside the dielectric over it), so no dielectric thickness changes.
+  std::vector<double> slabLo, slabHi;
+  std::vector<std::string> noThickness; // copper layers asked for as slabs that have no thickness
 };
 
 ZStack buildZ(const Snapshot& s, const GridPlan& plan) {
@@ -85,26 +119,67 @@ ZStack buildZ(const Snapshot& s, const GridPlan& plan) {
       z.dielectric.push_back(i);
   if (z.dielectric.empty())
     throw std::invalid_argument("stackup has no dielectric layer");
+  auto cellOf = [&](double thickness) { // the cell size appendUniform gives a layer of this thickness
+    const double n = std::max(1.0, std::ceil(thickness / plan.maxDielectricCell - 1e-9));
+    return thickness / n;
+  };
+  const std::size_t n = s.stackup.size();
+  z.slabLo.assign(n, 0.0);
+  z.slabHi.assign(n, 0.0);
+  std::vector<double> slab(n, 0.0); // the thickness each copper layer is modelled with (0: a sheet)
+  for (std::size_t i = 0; i < n; ++i)
+    if (plan.copperSlab && s.stackup[i].copper) {
+      if (s.stackup[i].thickness > 0)
+        slab[i] = s.stackup[i].thickness;
+      else
+        z.noThickness.push_back(s.stackup[i].name);
+    }
+  const bool topCopper = s.stackup.front().copper, bottomCopper = s.stackup.back().copper;
+  const double bottomSlab = bottomCopper ? slab[n - 1] : 0.0, topSlab = topCopper ? slab[0] : 0.0;
   {
-    const auto below = airOffsets(plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight);
+    const auto below = airOffsets(
+        plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight,
+        bottomSlab > 0 ? bottomSlab : cellOf(s.stackup[z.dielectric.front()].thickness), plan.airGrowth);
     for (std::size_t i = below.size(); i-- > 0;)
-      z.edges.push_back(-below[i]);
+      z.edges.push_back(-bottomSlab - below[i]);
+    if (bottomSlab > 0) { // the slab's cell, from its lower face up to the dielectric interface at 0
+      z.edges.push_back(0.0);
+      z.slabLo[n - 1] = -bottomSlab;
+      z.slabHi[n - 1] = 0.0;
+    }
   }
   double top = 0;
   z.interfaceZ.push_back(0.0);
   for (std::size_t d : z.dielectric) {
     const double t = s.stackup[d].thickness;
+    // an inner copper layer under this dielectric takes its first cell
+    const bool innerBelow = d + 1 < n && s.stackup[d + 1].copper && d + 1 != n - 1;
+    const double tb = innerBelow ? std::min(slab[d + 1], 0.5 * t) : 0.0;
     z.layerFirstCell.push_back(z.edges.size() - 1);
     const std::size_t before = z.edges.size();
-    appendUniform(z.edges, top, top + t, plan.maxDielectricCell);
+    if (tb > 0) {
+      z.edges.push_back(top + tb);
+      z.slabLo[d + 1] = top;
+      z.slabHi[d + 1] = top + tb;
+      appendUniform(z.edges, top + tb, top + t, plan.maxDielectricCell);
+    } else {
+      appendUniform(z.edges, top, top + t, plan.maxDielectricCell);
+    }
     z.layerCells.push_back(z.edges.size() - before);
     top += t;
     z.interfaceZ.push_back(top);
   }
   {
-    const auto above = airOffsets(plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight);
+    const auto above =
+        airOffsets(plan.airMargin, plan.airCell, plan.airNearCell, plan.airNearHeight,
+                   topSlab > 0 ? topSlab : cellOf(s.stackup[z.dielectric.back()].thickness), plan.airGrowth);
+    if (topSlab > 0) {
+      z.edges.push_back(top + topSlab);
+      z.slabLo[0] = top;
+      z.slabHi[0] = top + topSlab;
+    }
     for (std::size_t i = 1; i < above.size(); ++i)
-      z.edges.push_back(top + above[i]);
+      z.edges.push_back(top + topSlab + above[i]);
   }
   return z;
 }
@@ -155,6 +230,46 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
         if (sel.includes(c.owner) && c.outer.size() <= 8)
           for (const Point& p : c.outer)
             add(p.x, p.y);
+      // Inside a refinement box, the long straight edges of any copper shape, however many vertices it has
+      // (a traced vendor Gerber merges a radiator into a pour of thousands): a trace a few cells wide is
+      // otherwise sampled by chance and its width is off by up to a cell. Edges closer together than half the
+      // box's cell are one line.
+      for (const RefineBox& b : plan.refine) {
+        const double minLen = std::max(2.0 * b.cell, 0.15e-3), merge = 0.5 * b.cell;
+        std::vector<double> bx, by;
+        for (const CopperShape& c : s.copper) {
+          if (!sel.includes(c.owner) || c.outer.size() <= 8)
+            continue;
+          auto ring = [&](const std::vector<Point>& r) {
+            for (std::size_t i = 0; i < r.size(); ++i) {
+              const Point &a = r[i], &q = r[(i + 1) % r.size()];
+              const double dx = std::abs(q.x - a.x), dy = std::abs(q.y - a.y);
+              if (dx < 1e-9 && dy >= minLen && a.x > b.x0 && a.x < b.x1 && std::max(a.y, q.y) > b.y0 &&
+                  std::min(a.y, q.y) < b.y1)
+                bx.push_back(a.x);
+              if (dy < 1e-9 && dx >= minLen && a.y > b.y0 && a.y < b.y1 && std::max(a.x, q.x) > b.x0 &&
+                  std::min(a.x, q.x) < b.x1)
+                by.push_back(a.y);
+            }
+          };
+          ring(c.outer);
+          for (const std::vector<Point>& h : c.holes)
+            ring(h);
+        }
+        auto cluster = [&](std::vector<double>& v, std::vector<double>& out) {
+          std::sort(v.begin(), v.end());
+          for (std::size_t i = 0; i < v.size();) {
+            std::size_t j = i;
+            double sum = 0;
+            while (j < v.size() && v[j] - v[i] < merge)
+              sum += v[j++];
+            out.push_back(sum / static_cast<double>(j - i));
+            i = j;
+          }
+        };
+        cluster(bx, sx);
+        cluster(by, sy);
+      }
       for (const Component& c : s.components) // a modelled body's corners too: a 0.04 mm gap between two
         if (sel.includes(c.ref) && sel.bodyOf(c.ref).kind != BodyKind::Ignore && c.body.size() <= 12)
           for (const Point& p : c.body)
@@ -164,7 +279,8 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
         add(p.b.x, p.b.y);
       }
     }
-    edges[0] = gradedEdges(minX - plan.airMargin, maxX + plan.airMargin, plan.lateralCell, rx, 1.3, sx);
+    edges[0] = gradedEdges(minX - plan.airMargin, maxX + plan.airMargin, plan.lateralCell, rx,
+                           plan.lateralGrowth, sx);
     edges[1] = gradedEdges(minY - plan.airMargin, maxY + plan.airMargin, plan.lateralCell, ry, 1.3, sy);
   }
   edges[2] = z.edges;
@@ -218,6 +334,21 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     copperNode[i] = nearestEdge(edges[2], zInterface + zShift);
     m.copperPlaneNode[i] = copperNode[i];
   }
+  // The planes a copper layer fills: its interface node for a sheet, the nodes from its slab's lower to its
+  // upper face for a slab.
+  std::vector<std::size_t> slabLoNode(copperNode), slabHiNode(copperNode);
+  bool anySlab = false;
+  std::string slabNote;
+  for (std::size_t i = 0; i < s.stackup.size(); ++i)
+    if (s.stackup[i].copper && z.slabHi[i] > z.slabLo[i]) {
+      slabLoNode[i] = nearestEdge(edges[2], z.slabLo[i] + zShift);
+      slabHiNode[i] = nearestEdge(edges[2], z.slabHi[i] + zShift);
+      anySlab = true;
+      char buf[64];
+      std::snprintf(buf, sizeof buf, "%s%s %g um", slabNote.empty() ? "" : ", ", s.stackup[i].name.c_str(),
+                    (z.slabHi[i] - z.slabLo[i]) * 1e6);
+      slabNote += buf;
+    }
   // Component bodies: the footprint outline extruded away from the board on the component's side. Only air
   // cells whose centre lies inside are changed, so a body never overwrites the board, and a body thinner than
   // half a cell (or beyond the air margin) is reported, not silently dropped.
@@ -359,7 +490,9 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
   std::set<std::string> leftOut, netLeftOut;
   // Which net owns each planar copper edge of each layer: two nets claiming one edge are one conductor in the
   // model, however the board's designer drew them (a track overlapping a pour edge by a micrometre does it).
-  std::map<std::size_t, std::vector<std::uint16_t>> claims;
+  // A gap under one cell leaves no edge claimed twice but two nets' edges meeting at one node, which is as
+  // good as a connection, so each node is claimed too.
+  std::map<std::size_t, std::vector<std::uint16_t>> claims, nodeClaims;
   std::map<std::string, std::uint16_t> netIds;
   std::vector<std::string> netNames{""};
   struct Touch {
@@ -378,9 +511,13 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       continue;
     }
     const std::size_t li = layerIndex(shape.layer);
-    const std::size_t k = copperNode[li];
+    const bool slabLayer = slabHiNode[li] > slabLoNode[li];
+    auto inside = [&](double x, double y) {
+      return slabLayer ? insideShapeOrOn(shape, x, y) : insideShape(shape, x, y);
+    };
     std::uint16_t id = 0;
     std::vector<std::uint16_t>* claim = nullptr;
+    std::vector<std::uint16_t>* nodeClaim = nullptr;
     if (!shape.net.empty() && netNames.size() < 65535) {
       const auto it = netIds.try_emplace(shape.net, static_cast<std::uint16_t>(netNames.size()));
       if (it.second)
@@ -389,9 +526,12 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
       claim = &claims[li];
       if (claim->empty())
         claim->assign(2 * g.nodes(fdtd::X) * g.nodes(fdtd::Y), 0);
+      nodeClaim = &nodeClaims[li];
+      if (nodeClaim->empty())
+        nodeClaim->assign(g.nodes(fdtd::X) * g.nodes(fdtd::Y), 0);
     }
-    auto note = [&](std::size_t slot, double xm, double ym) {
-      std::uint16_t& owner = (*claim)[slot];
+    auto claimSlot = [&](std::vector<std::uint16_t>& slots, std::size_t slot, double xm, double ym) {
+      std::uint16_t& owner = slots[slot];
       if (owner == 0)
         owner = id;
       else if (owner != id) {
@@ -401,26 +541,122 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
           t = {1, shape.layer, xm * 1e3, ym * 1e3};
       }
     };
+    auto note = [&](std::size_t slot, std::size_t node0, std::size_t node1, double xm, double ym) {
+      claimSlot(*claim, slot, xm, ym);
+      claimSlot(*nodeClaim, node0, xm, ym);
+      claimSlot(*nodeClaim, node1, xm, ym);
+    };
     for (std::size_t j = 0; j <= g.cells(fdtd::Y); ++j)
       for (std::size_t i = 0; i < g.cells(fdtd::X); ++i) { // Ex edges: centre of cell i, node j
         const double x = toBoardX(g.edge(fdtd::X, i) + 0.5 * g.cellSize(fdtd::X, i));
         const double y = toBoardY(g.edge(fdtd::Y, j));
-        if (insideShape(shape, x, y)) {
-          m.pecEdges.push_back({fdtd::X, g.nodeIndex(i, j, k)});
+        if (inside(x, y)) {
+          for (std::size_t kk = slabLoNode[li]; kk <= slabHiNode[li]; ++kk)
+            m.pecEdges.push_back({fdtd::X, g.nodeIndex(i, j, kk)});
           if (claim)
-            note(i + g.nodes(fdtd::X) * j, x, y);
+            note(i + g.nodes(fdtd::X) * j, i + g.nodes(fdtd::X) * j, i + 1 + g.nodes(fdtd::X) * j, x, y);
         }
       }
     for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
       for (std::size_t i = 0; i <= g.cells(fdtd::X); ++i) { // Ey edges: node i, centre of cell j
         const double x = toBoardX(g.edge(fdtd::X, i));
         const double y = toBoardY(g.edge(fdtd::Y, j) + 0.5 * g.cellSize(fdtd::Y, j));
-        if (insideShape(shape, x, y)) {
-          m.pecEdges.push_back({fdtd::Y, g.nodeIndex(i, j, k)});
+        if (inside(x, y)) {
+          for (std::size_t kk = slabLoNode[li]; kk <= slabHiNode[li]; ++kk)
+            m.pecEdges.push_back({fdtd::Y, g.nodeIndex(i, j, kk)});
           if (claim)
-            note(g.nodes(fdtd::X) * g.nodes(fdtd::Y) + i + g.nodes(fdtd::X) * j, x, y);
+            note(g.nodes(fdtd::X) * g.nodes(fdtd::Y) + i + g.nodes(fdtd::X) * j, i + g.nodes(fdtd::X) * j,
+                 i + g.nodes(fdtd::X) * (j + 1), x, y);
         }
       }
+    if (slabHiNode[li] > slabLoNode[li]) // the conductor is solid between its faces: Ez is zero inside it
+      for (std::size_t j = 0; j <= g.cells(fdtd::Y); ++j)
+        for (std::size_t i = 0; i <= g.cells(fdtd::X); ++i)
+          if (inside(toBoardX(g.edge(fdtd::X, i)), toBoardY(g.edge(fdtd::Y, j))))
+            for (std::size_t kk = slabLoNode[li]; kk < slabHiNode[li]; ++kk)
+              m.pecEdges.push_back({fdtd::Z, g.nodeIndex(i, j, kk)});
+  }
+  // Gaps between two nets that are only a few cells wide near a port: the field between them is
+  // under-resolved, and a coplanar feed there reads its impedance low (docs/PLAN.md: 3 cells across the gap
+  // 15 percent low, 5 cells 8 percent low). Scanned along x and y over the claimed planar edges, within a few
+  // millimetres of a port, over the nets that are in the model.
+  if (!s.ports.empty() && !claims.empty()) {
+    constexpr std::size_t kMaxGap = 4;   // cells; wider gaps are not reported
+    constexpr double kNearPort = 4.0e-3; // metres: only the neighbourhood of a feed matters
+    struct Gap {
+      std::size_t cells = 0;
+      double mm = 0, xMm = 0, yMm = 0;
+      std::string layer;
+    };
+    std::map<std::pair<std::string, std::string>, Gap> gaps;
+    const std::size_t nx = g.nodes(fdtd::X), ny = g.nodes(fdtd::Y);
+    auto nearPort = [&](double x, double y) {
+      return std::any_of(s.ports.begin(), s.ports.end(), [&](const PortDef& p) {
+        return std::hypot(x - p.a.x, y - p.a.y) < kNearPort || std::hypot(x - p.b.x, y - p.b.y) < kNearPort;
+      });
+    };
+    auto record = [&](std::size_t li, std::uint16_t a, std::uint16_t b, std::size_t cells, double mm,
+                      double x, double y) {
+      auto key = std::minmax(netNames[a], netNames[b]);
+      Gap& gap = gaps[{key.first, key.second}];
+      if (gap.cells == 0 || cells < gap.cells)
+        gap = {cells, mm, x * 1e3, y * 1e3, s.stackup[li].name};
+    };
+    for (const auto& [li, claim] : claims) {
+      for (std::size_t j = 0; j < ny; ++j)
+        for (std::size_t i = 0; i < g.cells(fdtd::X);
+             ++i) { // Ex edges: look along +y for the next claimed edge
+          const std::uint16_t a = claim[i + nx * j];
+          if (a == 0)
+            continue;
+          for (std::size_t jj = j + 1; jj < ny && jj <= j + kMaxGap; ++jj) {
+            const std::uint16_t b = claim[i + nx * jj];
+            if (b == 0)
+              continue;
+            if (b != a) {
+              const double x = toBoardX(g.edge(fdtd::X, i) + 0.5 * g.cellSize(fdtd::X, i));
+              const double y = toBoardY(g.edge(fdtd::Y, j));
+              if (nearPort(x, y))
+                record(li, a, b, jj - j, g.edge(fdtd::Y, jj) - g.edge(fdtd::Y, j), x, y);
+            }
+            break;
+          }
+        }
+      const std::size_t base = nx * ny;
+      for (std::size_t j = 0; j < g.cells(fdtd::Y); ++j)
+        for (std::size_t i = 0; i < nx; ++i) { // Ey edges: look along +x
+          const std::uint16_t a = claim[base + i + nx * j];
+          if (a == 0)
+            continue;
+          for (std::size_t ii = i + 1; ii < nx && ii <= i + kMaxGap; ++ii) {
+            const std::uint16_t b = claim[base + ii + nx * j];
+            if (b == 0)
+              continue;
+            if (b != a) {
+              const double x = toBoardX(g.edge(fdtd::X, i));
+              const double y = toBoardY(g.edge(fdtd::Y, j) + 0.5 * g.cellSize(fdtd::Y, j));
+              if (nearPort(x, y))
+                record(li, a, b, ii - i, g.edge(fdtd::X, ii) - g.edge(fdtd::X, i), x, y);
+            }
+            break;
+          }
+        }
+    }
+    std::vector<std::pair<std::size_t, std::pair<std::string, std::string>>> worst;
+    for (const auto& [nets, gap] : gaps)
+      worst.push_back({gap.cells, nets});
+    std::sort(worst.begin(), worst.end());
+    for (std::size_t n = 0; n < worst.size() && n < 3; ++n) {
+      const Gap& gap = gaps[worst[n].second];
+      m.notes.push_back("the gap between nets '" + worst[n].second.first + "' and '" +
+                        worst[n].second.second + "' on " + gap.layer + " near (" +
+                        std::to_string(gap.xMm).substr(0, 6) + ", " + std::to_string(gap.yMm).substr(0, 6) +
+                        ") mm is " + std::to_string(gap.cells) + " cells wide (" +
+                        std::to_string(gap.mm * 1e3).substr(0, 5) +
+                        " mm) near a port: the field in it is under-resolved and a coplanar feed reads its "
+                        "impedance low (measured: 15 percent at 3 cells, 8 percent at 5); refine the grid "
+                        "there with cells of at most a tenth of the gap (--refine, or Fine cell near ports)");
+    }
   }
   {
     std::vector<std::pair<std::size_t, std::pair<std::string, std::string>>> order;
@@ -494,10 +730,45 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
           for (std::size_t slot : slots) {
             const auto owner = claim[slot];
             if (owner != 0 && netNames[owner] != v.net) {
-              m.notes.push_back("via of net '" + v.net + "' at (" + std::to_string(v.x * 1e3).substr(0, 6) +
-                                ", " + std::to_string(v.y * 1e3).substr(0, 6) +
-                                ") mm lands on copper of net '" + netNames[owner] + "' on " +
-                                s.stackup[li2].name + ": it short-circuits them");
+              // The board's own geometry decides what to call it: copper under the via is a short; copper
+              // beside it, apart on the board, is joined only by a grid too coarse to keep them apart.
+              double foreignDist = 1e300;
+              for (const CopperShape& c : s.copper) {
+                if (c.layer != s.stackup[li2].name || c.net != netNames[owner] || c.outer.size() < 3)
+                  continue;
+                bool in = false;
+                const std::size_t np = c.outer.size();
+                for (std::size_t a = 0, b = np - 1; a < np; b = a++) {
+                  const Point p1 = c.outer[a], p2 = c.outer[b];
+                  if ((p1.y > v.y) != (p2.y > v.y) &&
+                      v.x < (p2.x - p1.x) * (v.y - p1.y) / (p2.y - p1.y) + p1.x)
+                    in = !in;
+                  const double ex = p2.x - p1.x, ey = p2.y - p1.y;
+                  const double t = std::clamp(
+                      ((v.x - p1.x) * ex + (v.y - p1.y) * ey) / std::max(ex * ex + ey * ey, 1e-30), 0.0, 1.0);
+                  foreignDist =
+                      std::min(foreignDist, std::hypot(v.x - (p1.x + t * ex), v.y - (p1.y + t * ey)));
+                }
+                if (in)
+                  foreignDist = 0;
+              }
+              const double gap = foreignDist - 0.5 * v.diameter;
+              char where[64];
+              std::snprintf(where, sizeof where, "(%.2f, %.2f)", v.x * 1e3, v.y * 1e3);
+              std::string text = "via of net '" + v.net + "' at " + where + " mm lands on copper of net '" +
+                                 netNames[owner] + "' on " + s.stackup[li2].name;
+              if (gap > 1e-6) {
+                char buf[200];
+                std::snprintf(buf, sizeof buf,
+                              ": on the board they are %.2f mm apart; only the grid joins them (its cells "
+                              "are wider than "
+                              "that gap), so refine there (--refine) or treat the model as shorted",
+                              gap * 1e3);
+                text += buf;
+              } else {
+                text += ": it short-circuits them";
+              }
+              m.notes.push_back(text);
               goto nextVia;
             }
           }
@@ -755,7 +1026,18 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     if (!unfitted.empty())
       m.notes.push_back("do not populate, left open between the pads: " + unfitted);
   }
-  m.notes.push_back("copper is modelled as zero-thickness PEC sheets; dielectric thickness is used as given");
+  if (anySlab) {
+    m.notes.push_back(
+        "copper is modelled as slabs of its finished thickness (" + slabNote +
+        "): z cells of that size, so a smaller time step; a layer without a thickness stays a sheet");
+  } else {
+    m.notes.push_back(
+        "copper is modelled as zero-thickness PEC sheets; dielectric thickness is used as given");
+  }
+  for (const std::string& name : z.noThickness)
+    m.notes.push_back(
+        "copper layer " + name +
+        " has no thickness in the snapshot or the settings, so it is a sheet in the slab model");
   // Port paths: follow the conductor from each port's two terminals (docs/PLAN.md, plugin lessons 2).
   if (!m.ports.empty()) {
     const std::size_t nx = g.nodes(fdtd::X), ny = g.nodes(fdtd::Y), nodes = nx * ny * g.nodes(fdtd::Z);

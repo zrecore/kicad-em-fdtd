@@ -57,6 +57,8 @@ def validate_snapshot(snap):
             if not layer["thickness"] > 0 or not layer["epsilon_r"] >= 1:
                 raise SnapshotError(f"stackup layer '{layer['name']}': need thickness > 0 and epsilon_r >= 1")
         else:
+            if layer.get("thickness", 0) < 0:
+                raise SnapshotError(f"stackup layer '{layer['name']}': copper thickness must not be negative")
             names.add(layer["name"])
     if not any(layer["kind"] == "dielectric" for layer in snap["stackup"]):
         raise SnapshotError("stackup has no dielectric layer")

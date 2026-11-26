@@ -1,0 +1,29 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "fdtd_params.h"
+// One red-black over-relaxation half-sweep of the 2D cross-section solve (src/fdtd/line2d.hpp): every free
+// node of one colour moves to phi + omega (sum(g phi_neighbour) / sum(g) - phi). A node's neighbours all
+// have the other colour, so the nodes of one colour are independent and the in-place update does not race;
+// the host dispatches colour 0 then colour 1 with a barrier between. The kernel knows only the link
+// conductances, not permittivities or cell sizes, so a graded grid needs no change here.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer GX { float gx[]; }; // link to +x (0 on the last column)
+layout(std430, binding = 1) readonly buffer GY { float gy[]; }; // link to +y (0 on the last row)
+layout(std430, binding = 2) readonly buffer Held { uint held[]; }; // 1: phi is held
+layout(std430, binding = 3) buffer Phi { float phi[]; };
+layout(push_constant) uniform PC { Line2dParams q; };
+
+void main() {
+  uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  uint n = q.nx * q.ny;
+  for (uint k = gl_GlobalInvocationID.x; k < n; k += stride) {
+    uint i = k % q.nx, j = k / q.nx;
+    if (((i + j) & 1u) != q.colour || held[k] != 0u) continue;
+    float num = 0.0, den = 0.0;
+    if (i > 0u) { float g = gx[k - 1u]; num += g * phi[k - 1u]; den += g; }
+    if (i + 1u < q.nx) { float g = gx[k]; num += g * phi[k + 1u]; den += g; }
+    if (j > 0u) { float g = gy[k - q.nx]; num += g * phi[k - q.nx]; den += g; }
+    if (j + 1u < q.ny) { float g = gy[k]; num += g * phi[k + q.nx]; den += g; }
+    if (den > 0.0) phi[k] += q.omega * (num / den - phi[k]);
+  }
+}

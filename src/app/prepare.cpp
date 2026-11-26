@@ -20,6 +20,44 @@ BoardFacts boardFacts(const board::Snapshot& s) {
   return f;
 }
 
+std::string applyCopperThickness(const Settings& settings, board::Snapshot& snapshot) {
+  // Copper thickness: what the user typed, else what the board file says, else the profile's. The model keeps
+  // copper as a sheet; the feed-line estimate (board::checkFeed) uses the thickness.
+  std::size_t firstCu = snapshot.stackup.size(), lastCu = 0;
+  for (std::size_t i = 0; i < snapshot.stackup.size(); ++i)
+    if (snapshot.stackup[i].copper) {
+      firstCu = std::min(firstCu, i);
+      lastCu = i;
+    }
+  std::string copperNote;
+  for (std::size_t i = 0; i < snapshot.stackup.size(); ++i) {
+    board::Layer& l = snapshot.stackup[i];
+    if (!l.copper)
+      continue;
+    const bool outerLayer = i == firstCu || i == lastCu;
+    const char* key = outerLayer ? "copper_outer_um" : "copper_inner_um";
+    const double typed = settings.number(key) * 1e-6;
+    const bool user = settings.source(key) == Source::User;
+    if (typed > 0 && (user || l.thickness == 0))
+      l.thickness = typed;
+    if (l.thickness > 0) {
+      char buf[96];
+      std::snprintf(buf, sizeof buf, "%s%s %g um%s", copperNote.empty() ? "" : ", ", l.name.c_str(),
+                    l.thickness * 1e6, user && typed > 0 ? " (yours)" : "");
+      copperNote += buf;
+    }
+  }
+  if (copperNote.empty())
+    return {};
+  return "copper thickness " + copperNote +
+         (settings.text("copper_model") == "slab"
+              ? ": the model fills cells of that thickness (copper model: slab), and so does the feed-line "
+                "impedance estimate"
+              : ": the model uses zero-thickness sheets (copper model: sheet); the feed-line impedance "
+                "estimate "
+                "uses the thickness");
+}
+
 std::vector<std::string> applyPcbSettings(const Settings& settings, board::Snapshot& snapshot) {
   std::vector<std::string> notes;
   if (snapshot.hasBoardProper) {
@@ -88,11 +126,8 @@ std::vector<std::string> applyPcbSettings(const Settings& settings, board::Snaps
     if (!changes.empty())
       notes.push_back("dielectric " + n + " (" + dielectrics[i]->name + "): " + changes);
   }
-  const double outer = settings.number("copper_outer_um"), inner = settings.number("copper_inner_um");
-  if (outer > 0 || inner > 0)
-    notes.push_back("copper thickness " + std::to_string(static_cast<int>(outer)) + " um outer, " +
-                    std::to_string(static_cast<int>(inner)) +
-                    " um inner is recorded only: the model uses zero-thickness copper sheets");
+  if (const std::string n = applyCopperThickness(settings, snapshot); !n.empty())
+    notes.push_back(n);
   return notes;
 }
 
@@ -109,6 +144,8 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
   std::vector<board::RefineBox> refine =
       board::refineAroundPorts(snapshot, plan.fineCell, 2 * plan.coarseCell);
   refine.insert(refine.end(), extraRefine.begin(), extraRefine.end());
+  refine.insert(refine.end(), selection.refine.begin(),
+                selection.refine.end()); // the user's switched-on boxes
   // The absorbing layer sits outside the free space, so the margin is not eaten by it.
   const board::GridPlan grid{.lateralCell = plan.coarseCell,
                              .maxDielectricCell = plan.dielectricCell,
@@ -118,7 +155,10 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
                              .refine = refine,
                              .snapToGeometry = true,
                              .airNearCell = plan.airNearCell,
-                             .airNearHeight = plan.airNearHeight};
+                             .airNearHeight = plan.airNearHeight,
+                             .airGrowth = plan.airGrowth,
+                             .copperSlab = plan.copperSlab,
+                             .lateralGrowth = plan.lateralGrowth};
   board::Selection withBodies = selection;
   if (withBodies.defaultBody.kind == board::BodyKind::Ignore) { // the settings give the default treatment
     const std::string mode = settings.text("component_bodies");

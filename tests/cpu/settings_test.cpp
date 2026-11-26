@@ -351,12 +351,12 @@ SCENARIO("The slice and 3D view panels are settings that follow the theme by def
 }
 
 namespace {
-board::Snapshot stackupBoard(int copperLayers) {
-  std::string st = R"({"name":"F.Cu","kind":"copper"})";
+board::Snapshot stackupBoard(int copperLayers, const std::string& copperExtra = "") {
+  std::string st = R"({"name":"F.Cu","kind":"copper")" + copperExtra + "}";
   for (int i = 1; i < copperLayers; ++i)
     st += R"(,{"name":"d)" + std::to_string(i) +
           R"(","kind":"dielectric","thickness":0.0005,"epsilon_r":4.2,"loss_tangent":0.015},{"name":"c)" +
-          std::to_string(i) + R"(","kind":"copper"})";
+          std::to_string(i) + R"(","kind":"copper")" + copperExtra + "}";
   return board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t"},
       "outline":[[0,0],[0.03,0],[0.03,0.03],[0,0.03]],"stackup":[)" +
                               st + R"(],"copper":[],"vias":[],"components":[],"ports":[]})");
@@ -395,7 +395,7 @@ SCENARIO("PCB properties are editable settings with fab profiles as defaults") {
       const auto notes = app::applyPcbSettings(s, b);
       REQUIRE(b.stackup[1].thickness == Approx(0.1999e-3));
       REQUIRE(b.stackup[3].thickness == Approx(0.9906e-3));
-      REQUIRE(b.stackup[3].epsilonR == Approx(3.69)); // FR408HR core, from the Isola datasheet
+      REQUIRE(b.stackup[3].epsilonR == Approx(3.87)); // FR408HR core, from OSH Park's own stackup diagram
       const std::string all = [&] {
         std::string t;
         for (const auto& n : notes)
@@ -506,6 +506,8 @@ SCENARIO("The model selection is saved next to the board and restored exactly") 
     sel.parts["R5"].fitDnp = true;
     sel.bodies["U2"] = {board::BodyKind::Metal, 1.0};
     sel.defaultBody = {board::BodyKind::Dielectric, 6.5};
+    sel.refinement["gap|F.Cu|FEED|GND|10.0|10.0"] = {true, 0.04};
+    sel.refinement["gap|F.Cu|A|B|3.5|4.5"] = {false, 0.0};
     const auto dir = std::filesystem::path(FDTD_TEST_TMP) / "selection-store";
     std::filesystem::create_directories(dir);
     const auto file = dir / "em-fdtd" / "selection.json";
@@ -524,6 +526,9 @@ SCENARIO("The model selection is saved next to the board and restored exactly") 
         REQUIRE(back.bodies.at("U2").kind == board::BodyKind::Metal);
         REQUIRE(back.defaultBody.kind == board::BodyKind::Dielectric);
         REQUIRE(back.defaultBody.epsilonR == 6.5);
+        REQUIRE(back.refinement.at("gap|F.Cu|FEED|GND|10.0|10.0").enabled);
+        REQUIRE(back.refinement.at("gap|F.Cu|FEED|GND|10.0|10.0").cellMm == 0.04);
+        REQUIRE_FALSE(back.refinement.at("gap|F.Cu|A|B|3.5|4.5").enabled);
       }
     }
     WHEN("the file does not exist") {
@@ -619,6 +624,80 @@ SCENARIO("A board drawn in a panel is modelled without the frame unless the user
         REQUIRE(b.outline[1].x == Catch::Approx(0.03));
         REQUIRE(b.copper.size() == 2);
       }
+    }
+  }
+}
+
+SCENARIO("Copper thickness comes from the board, the profile or the user, in that order of trust") {
+  GIVEN("a 4-layer board whose snapshot gives 17.5 um on every copper layer") {
+    app::Settings s(catalog());
+    THEN("the snapshot's value is read and kept when nothing overrides it") {
+      auto b = stackupBoard(4, R"(,"thickness":0.0000175)");
+      REQUIRE(b.stackup[0].thickness == Approx(17.5e-6));
+      app::applyPcbSettings(s, b);
+      REQUIRE(b.stackup[0].thickness == Approx(17.5e-6));
+      REQUIRE(b.stackup[2].thickness == Approx(17.5e-6));
+    }
+    THEN("a value the user types replaces it on the outer layers only") {
+      s.set("copper_outer_um", 70.0);
+      auto b = stackupBoard(4, R"(,"thickness":0.0000175)");
+      const auto notes = app::applyPcbSettings(s, b);
+      REQUIRE(b.stackup[0].thickness == Approx(70e-6));
+      REQUIRE(b.stackup[6].thickness == Approx(70e-6)); // the last copper layer is outer too
+      REQUIRE(b.stackup[2].thickness == Approx(17.5e-6));
+      std::string all;
+      for (const auto& n : notes)
+        all += n + "\n";
+      REQUIRE_THAT(all, ContainsSubstring("feed-line"));
+    }
+  }
+  GIVEN("a snapshot with no copper thickness and the OSH Park 4-layer profile") {
+    app::Settings s(catalog());
+    s.set("pcb_profile", std::string("oshpark_4layer"));
+    THEN("the profile's thickness fills the unknown ones") {
+      auto b = stackupBoard(4);
+      REQUIRE(b.stackup[0].thickness == 0);
+      app::applyPcbSettings(s, b);
+      REQUIRE(b.stackup[0].thickness > 0);
+      REQUIRE(b.stackup[0].thickness == Approx(s.number("copper_outer_um") * 1e-6));
+      REQUIRE(b.stackup[2].thickness == Approx(s.number("copper_inner_um") * 1e-6));
+    }
+  }
+  GIVEN("a snapshot whose copper thickness is negative") {
+    THEN("reading fails naming the layer") {
+      REQUIRE_THROWS_WITH(stackupBoard(2, R"(,"thickness":-1e-5)"), ContainsSubstring("F.Cu"));
+    }
+  }
+}
+
+SCENARIO("The copper model is a setting that keeps sheets unless the user asks for slabs") {
+  GIVEN("the default settings") {
+    app::Settings s(catalog());
+    THEN("copper is a sheet, and the plan says so") {
+      REQUIRE(s.text("copper_model") == "sheet");
+      const auto choices = s.choices("copper_model");
+      REQUIRE(std::find(choices.begin(), choices.end(), "slab") != choices.end());
+      REQUIRE_FALSE(app::makePlan(s, 4.4, 0.8e-3).copperSlab);
+    }
+    AND_THEN("a typo is refused, and slab reaches the plan") {
+      REQUIRE_THROWS(s.set("copper_model", std::string("thick")));
+      s.set("copper_model", std::string("slab"));
+      REQUIRE(app::makePlan(s, 4.4, 0.8e-3).copperSlab);
+    }
+    AND_THEN("it is found by searching for 'copper thickness'") {
+      REQUIRE(contains(s.visible({}, "slab"), "copper_model"));
+    }
+  }
+  GIVEN("a board whose copper has a thickness and the slab model chosen") {
+    app::Settings s(catalog());
+    s.set("copper_model", std::string("slab"));
+    auto b = stackupBoard(2, R"(,"thickness":0.000035)");
+    THEN("the prepared model is built with slabs") {
+      const app::Prepared p = app::prepare(b, s, board::Selection{});
+      bool slab = false;
+      for (const auto& n : p.model.notes)
+        slab = slab || n.find("slabs of its finished thickness") != std::string::npos;
+      REQUIRE(slab);
     }
   }
 }

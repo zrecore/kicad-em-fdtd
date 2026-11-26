@@ -15,8 +15,10 @@ using Ring = std::vector<Point>;
 
 struct Layer { // stackup entry, top to bottom
   std::string name;
-  bool copper = false; // copper layers are zero-thickness PEC sheets on the dielectric interfaces
-  double thickness = 0, epsilonR = 1, lossTangent = 0; // dielectric only
+  bool copper = false; // the model treats copper layers as zero-thickness PEC sheets on the interfaces
+  // thickness: a dielectric's (> 0); a copper layer's finished thickness, 0 when unknown. Only the feed-line
+  // impedance estimate uses the copper value; the solver model keeps sheets.
+  double thickness = 0, epsilonR = 1, lossTangent = 0; // epsilonR and lossTangent: dielectric only
 };
 
 struct CopperShape {             // one filled polygon of copper (a pad, a track outline, a zone fill)

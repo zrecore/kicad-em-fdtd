@@ -1,6 +1,7 @@
 // GPU FDTD backend: same scheme, storage layout and operation order as the CPU reference.
 // Built from a fdtd::Solver<float> so coefficients, spacing tables and initial fields are shared, not redone.
 #pragma once
+#include <array>
 #include <complex>
 #include <memory>
 #include <vector>
@@ -48,13 +49,17 @@ private:
     std::size_t channels = 0;
     std::vector<double> frequencies;
     std::unique_ptr<vkcore::Buffer> list, acc, trig;
+    mutable bool stale = true; // acc changed on the device since the last download (staged buffers)
   };
   vkcore::Context& ctx_;
   std::vector<std::unique_ptr<PhasorList>> lists_;
   std::unique_ptr<vkcore::ComputePipeline> accumPipeline_; // created with the first list
   std::size_t nodeCount_;
   std::size_t paletteMaterials_ = 0;
-  std::uint32_t stepsPerSubmit_ = 1;                     // sized so one submit stays near 25 ms
+  std::uint32_t stepsPerSubmit_ = 1; // sized so one submit stays near 25 ms
+  // Host view of field c current as of this step count (staged buffers): the fields stay in VRAM and come
+  // back only when field() asks for a component that moved.
+  mutable std::array<std::uint64_t, 6> fieldSynced_{~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
   std::vector<std::unique_ptr<vkcore::Buffer>> buffers_; // ex ey ez hx hy hz mat tables palette
   std::vector<vkcore::Buffer*> bound_;
   std::unique_ptr<vkcore::ComputePipeline> pipeline_;

@@ -228,6 +228,70 @@ SCENARIO("The GPU phasor accumulator matches a double-precision DFT of the same 
   }
 }
 
+SCENARIO("The GPU phasor accumulator keeps its precision over many samples", "[gpu][phasor]") {
+  GIVEN("a static Ez value and a sample list of one channel at one frequency") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 24; ++i)
+        e.push_back(x += 1e-3);
+    }
+    fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+    seedPulse(cpu, 12, 12, 11);
+    fdtd_vk::GpuSolver gpu(ctx, cpu);
+    const std::vector<fdtd_vk::PhasorChannel> channels{
+        {fdtd::Kind::E, fdtd::Z, static_cast<std::uint32_t>(cpu.grid().nodeIndex(12, 12, 11))}};
+    const std::size_t list = gpu.addPhasorList(channels, {4e9});
+
+    WHEN("it adds the same sample 20000 times without stepping") {
+      constexpr int kSamples = 20000;
+      const double weight = 1e-3;
+      for (int n = 0; n < kSamples; ++n)
+        gpu.accumulate(list, weight);
+      THEN("the sum is within 1e-5 of n times the weighted sample (a plain fp32 sum is off by about 1e-4)") {
+        const double expected = kSamples * static_cast<double>(static_cast<float>(weight));
+        const double got = gpu.phasor(list, 0, 0).real();
+        INFO("expected " << expected << ", got " << got);
+        REQUIRE(std::abs(got - expected) / expected < 1e-5);
+      }
+    }
+  }
+}
+
+SCENARIO("The GPU phasor accumulator does not lose small samples added to a large sum", "[gpu][phasor]") {
+  GIVEN("a static Ez value and a sample list of one channel at one frequency") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 24; ++i)
+        e.push_back(x += 1e-3);
+    }
+    fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+    seedPulse(cpu, 12, 12, 11);
+    fdtd_vk::GpuSolver gpu(ctx, cpu);
+    const std::vector<fdtd_vk::PhasorChannel> channels{
+        {fdtd::Kind::E, fdtd::Z, static_cast<std::uint32_t>(cpu.grid().nodeIndex(12, 12, 11))}};
+    const std::size_t list = gpu.addPhasorList(channels, {4e9});
+
+    WHEN("it adds one sample of 1e8, then 30000 samples of 1, without stepping") {
+      constexpr int kSmall = 30000;
+      gpu.accumulate(list, 1e8);
+      for (int n = 0; n < kSmall; ++n)
+        gpu.accumulate(list, 1.0);
+      THEN("the sum is within 1e-6 of 1e8 + 30000 (a plain fp32 sum stays at 1e8, whose spacing is 8)") {
+        const double expected = 1e8 + kSmall;
+        const double got = gpu.phasor(list, 0, 0).real();
+        INFO("expected " << expected << ", got " << got);
+        REQUIRE(std::abs(got - expected) / expected < 1e-6);
+      }
+    }
+  }
+}
+
 SCENARIO("The GPU and CPU engines report the same phasors", "[gpu][phasor]") {
   GIVEN("the same pulsed cavity run on both engines, accumulating E and H channels every 10 steps") {
     vkcore::Context ctx({.validation = kValidation});
@@ -338,6 +402,63 @@ SCENARIO("The GPU accumulator really is compensated: 20 000 small terms added to
       }
       AND_THEN("the validation layer reported no errors") {
         REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}
+
+SCENARIO("Staged device memory (discrete-GPU path) gives the same result as the unified path",
+         "[gpu][staged]") {
+  GIVEN("the same CPML box with a pulsed port and a phasor list, run on a unified and on a staged context") {
+    vkcore::Context unified({.validation = kValidation});
+    vkcore::Context staged({.validation = kValidation, .stagedBuffers = true});
+    REQUIRE_FALSE(staged.unifiedMemory());
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 28; ++i)
+        e.push_back(x += 1e-3 * std::pow(1.02, i));
+    }
+    fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+    cpu.enableCpml({.cells = 4});
+    cpu.addLumpedPort({14, 14, 13, fdtd::Z, 50.0, [](double t) {
+                         const double tau = 2e-11, u = (t - 4 * tau) / tau;
+                         return -u * std::exp(-u * u);
+                       }});
+    fdtd_vk::GpuSolver a(unified, cpu), b(staged, cpu);
+    const std::vector<fdtd::PhasorChannel> channels = {
+        {fdtd::Kind::E, fdtd::Z, static_cast<std::uint32_t>(cpu.grid().nodeIndex(14, 14, 13))},
+        {fdtd::Kind::H, fdtd::X, static_cast<std::uint32_t>(cpu.grid().nodeIndex(10, 12, 12))}};
+    const std::vector<double> freqs = {2.0e9, 3.1e9};
+    const auto la = a.addPhasorList(channels, freqs), lb = b.addPhasorList(channels, freqs);
+
+    WHEN("both advance 150 steps (more than two submits), sampling the phasors every 5 steps") {
+      for (int n = 0; n < 150; n += 5) {
+        a.step(5);
+        b.step(5);
+        a.accumulate(la, 5 * cpu.dt());
+        b.accumulate(lb, 5 * cpu.dt());
+      }
+      THEN("every field value is identical (same kernels, same arithmetic)") {
+        for (auto kind : {fdtd::Kind::E, fdtd::Kind::H})
+          for (fdtd::Axis ax : {fdtd::X, fdtd::Y, fdtd::Z}) {
+            const auto x = a.field(kind, ax), y = b.field(kind, ax);
+            REQUIRE(std::equal(x.begin(), x.end(), y.begin(), y.end()));
+          }
+      }
+      AND_THEN("the logged port voltage and the phasors are identical") {
+        REQUIRE(a.portVoltage(0) == b.portVoltage(0));
+        for (std::size_t k = 0; k < freqs.size(); ++k)
+          for (std::size_t c = 0; c < channels.size(); ++c)
+            REQUIRE(a.phasor(la, k, c) == b.phasor(lb, k, c));
+      }
+      AND_THEN("the fields moved (the comparison is not of two zero arrays) and no validation errors") {
+        double peak = 0;
+        for (float v : b.field(fdtd::Kind::E, fdtd::Z))
+          peak = std::max(peak, std::abs(double(v)));
+        REQUIRE(peak > 0);
+        REQUIRE(staged.validationErrors() == 0);
       }
     }
   }

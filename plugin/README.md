@@ -17,3 +17,5 @@ Adds a **Simulate (EM FDTD)** button to the PCB editor. It exports the open boar
 
 ## Tests
 `cd plugin && .venv/bin/python -m pytest` (geometry and snapshot checks, no KiCAD needed); the exporter and the action itself are exercised against a running KiCAD.
+
+The venv must be built on a Python with TLS 1.3 (here Homebrew `python@3.12`; the Xcode Python is linked to LibreSSL and has none): the job farm in `src/emfdtd_plugin/farm/` requires TLS 1.3 and its tests fail, not skip, without it. They also need the `openssl` command (the coordinator's certificate tool). The plugin itself stays Python 3.9 compatible (ruff lints for 3.9). The farm and its command line (`tools/emfdtd_farm.py`) are optional and off by default: see `docs/farm.md`.

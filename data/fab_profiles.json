@@ -52,7 +52,7 @@
       ]
     },
     "oshpark_4layer": {
-      "source": "https://docs.oshpark.com/services/ read 2026-11-19",
+      "source": "https://docs.oshpark.com/services/ read 2026-11-19; https://docs.oshpark.com/services/four-layer re-read 2026-11-23: stackup table lists the outer layers as 1 oz copper clad+plated, 1.7 mil (43.2 um), the inner layers as 0.5 oz copper clad, 0.68 mil (17.5 um); rows sum to 61.9 mil against a stated 63 mil nominal; the page has a changelog line (28-JAN-2026) about a temporary alternate stackup for some 4-layer orders that is not described in the page body, so a real board may differ",
       "name": "OSH Park 4-layer, ENIG, FR408HR",
       "dielectrics": [
         {
@@ -69,11 +69,11 @@
         {
           "name": "core",
           "thickness_mm": 0.9906,
-          "epsilon_r": 3.69,
+          "epsilon_r": 3.87,
           "loss_tangent": 0.0091,
           "material": "FR408HR",
           "assumed": [],
-          "source": "https://docs.oshpark.com/services/four-layer/ (39 mil FR408HR core; the page gives no core Dk); Dk and Df from the Isola FR408HR datasheet rev C (linked from https://docs.oshpark.com/services/four-layer/): Dk 3.72/3.69/3.68/3.64/3.65 and Df 0.0072/0.0091/0.0092/0.0098/0.0095 at 100 MHz/1/2/5/10 GHz (1 GHz values used)"
+          "source": "https://docs.oshpark.com/resources/four-layer-stackup.png (OSH Park's stackup diagram, read 2026-11-23): core FR408HR 39.0 mil, Dk 3.87, Df 0.009; the page text of https://docs.oshpark.com/services/four-layer gives no core Dk, and the Isola FR408HR datasheet rev C gives 3.69 at 1 GHz (used until 2026-11-23; the fab's own figure is used now)"
         },
         {
           "name": "prepreg 2113",
@@ -90,7 +90,7 @@
       "layers": 4,
       "substrate": "fr408",
       "board_thickness_mm": 1.6,
-      "copper_outer_um": 35,
+      "copper_outer_um": 43.2,
       "copper_inner_um": 17.5,
       "finish": "ENIG",
       "min_track_mm": 0.127,

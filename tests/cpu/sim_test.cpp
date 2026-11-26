@@ -1,4 +1,5 @@
 // End-to-end scenarios: snapshot -> voxelizer -> solver -> S11. Analytic references in each THEN.
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -34,7 +35,17 @@ SCENARIO("A port driving a known resistive load reports the analytic reflection 
     opt.points = 7;
     opt.cpmlCells = 6;
     WHEN("the structure is run until the port voltage has decayed") {
+      std::vector<double> progress;
+      opt.onProgress = [&](const sim::RunResult& p) { progress.push_back(p.progress); };
       const auto r = sim::runOnePort(model, opt, sim::makeCpuEngine);
+      AND_THEN("the progress estimate never goes backwards, moves from the first steps, and ends at 1") {
+        REQUIRE(progress.size() > 4);
+        REQUIRE(std::is_sorted(progress.begin(), progress.end()));
+        REQUIRE(progress.front() > 0.0);
+        REQUIRE(progress[progress.size() / 4] > progress.front());
+        REQUIRE(progress[progress.size() / 2] < 1.0);
+        REQUIRE(r.progress == 1.0);
+      }
       THEN("|S11 - 1/3| is below 0.02 across the band") {
         for (const auto& s : r.s.s11)
           REQUIRE(std::abs(s - 1.0 / 3.0) < 0.02);

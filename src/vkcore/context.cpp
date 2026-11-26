@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
@@ -53,41 +54,84 @@ VkDeviceSize deviceLocalBytes(VkPhysicalDevice d) {
   return best;
 }
 
-// Default rule: Vulkan >= 1.2, prefer discrete, then the most device-local memory. Never "first listed".
-VkPhysicalDevice pickDevice(VkInstance inst, const ContextOptions& opt) {
+DeviceInfo describe(VkPhysicalDevice d) {
+  DeviceInfo info;
+  VkPhysicalDeviceProperties p;
+  vkGetPhysicalDeviceProperties(d, &p);
+  info.name = p.deviceName;
+  info.vendorId = p.vendorID;
+  info.deviceId = p.deviceID;
+  info.apiVersion = p.apiVersion;
+  info.discrete = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+  info.deviceLocalBytes = deviceLocalBytes(d);
+  if (p.apiVersion >= VK_API_VERSION_1_2) { // device id and driver properties are core in 1.1 and 1.2
+    VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    id.pNext = &drv;
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &id;
+    vkGetPhysicalDeviceProperties2(d, &p2);
+    char hex[3];
+    for (unsigned char b : id.deviceUUID) {
+      std::snprintf(hex, sizeof hex, "%02x", b);
+      info.uuid += hex;
+    }
+    info.driver = std::string(drv.driverName) + " " + drv.driverInfo;
+  }
+  return info;
+}
+
+std::vector<VkPhysicalDevice> physicalDevices(VkInstance inst) {
   std::uint32_t n = 0;
   vkEnumeratePhysicalDevices(inst, &n, nullptr);
   std::vector<VkPhysicalDevice> devices(n);
   vkEnumeratePhysicalDevices(inst, &n, devices.data());
+  return devices;
+}
 
-  VkPhysicalDevice best = VK_NULL_HANDLE;
-  bool bestDiscrete = false;
-  VkDeviceSize bestMem = 0;
-  for (VkPhysicalDevice d : devices) {
-    VkPhysicalDeviceProperties p;
-    vkGetPhysicalDeviceProperties(d, &p);
-    if (opt.vendorId != 0) {
-      if (p.vendorID == opt.vendorId && (opt.deviceId == 0 || p.deviceID == opt.deviceId))
-        return d;
-      continue;
-    }
-    if (p.apiVersion < VK_API_VERSION_1_2)
-      continue;
-    const bool discrete = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-    const VkDeviceSize mem = deviceLocalBytes(d);
-    if (best == VK_NULL_HANDLE || (discrete && !bestDiscrete) ||
-        (discrete == bestDiscrete && mem > bestMem)) {
-      best = d;
-      bestDiscrete = discrete;
-      bestMem = mem;
-    }
+// Rule when the user names nothing: see defaultDevice (Vulkan >= 1.2, discrete, newest, most memory).
+VkPhysicalDevice pickDevice(VkInstance inst, const ContextOptions& opt) {
+  const std::vector<VkPhysicalDevice> devices = physicalDevices(inst);
+  std::vector<DeviceInfo> infos;
+  for (VkPhysicalDevice d : devices)
+    infos.push_back(describe(d));
+  if (!opt.device.empty())
+    return devices[selectDevice(infos, opt.device)];
+  if (opt.vendorId != 0) {
+    for (std::size_t i = 0; i < devices.size(); ++i)
+      if (infos[i].vendorId == opt.vendorId && (opt.deviceId == 0 || infos[i].deviceId == opt.deviceId))
+        return devices[i];
+    throw std::runtime_error("no Vulkan device with the requested vendor and device id");
   }
-  if (best == VK_NULL_HANDLE)
-    throw std::runtime_error("no suitable Vulkan device");
-  return best;
+  return devices[defaultDevice(infos)];
 }
 
 } // namespace
+
+std::vector<DeviceInfo> listDevices() {
+  const auto exts = instanceExtensions();
+  std::vector<const char*> instExt;
+  VkInstanceCreateFlags flags = 0;
+  if (hasName(exts, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+              [](const VkExtensionProperties& p) { return p.extensionName; })) {
+    instExt.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+  }
+  VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+  app.apiVersion = VK_API_VERSION_1_2;
+  VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+  ici.flags = flags;
+  ici.pApplicationInfo = &app;
+  ici.enabledExtensionCount = static_cast<std::uint32_t>(instExt.size());
+  ici.ppEnabledExtensionNames = instExt.data();
+  VkInstance inst = VK_NULL_HANDLE;
+  VK_CHECK(vkCreateInstance(&ici, nullptr, &inst));
+  std::vector<DeviceInfo> out;
+  for (VkPhysicalDevice d : physicalDevices(inst))
+    out.push_back(describe(d));
+  vkDestroyInstance(inst, nullptr);
+  return out;
+}
 
 Context::Context(const ContextOptions& options) {
   const auto exts = instanceExtensions();
@@ -151,6 +195,24 @@ Context::Context(const ContextOptions& options) {
   physical_ = pickDevice(instance_, options);
   vkGetPhysicalDeviceProperties(physical_, &props_);
   deviceLocalBytes_ = vkcore::deviceLocalBytes(physical_);
+  info_ = describe(physical_);
+  {
+    // Unified: a memory type that is device-local, host-visible and coherent in a heap that is a large part
+    // of the device memory (a discrete GPU without resizable BAR only has a 256 MB window of that kind).
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(physical_, &mp);
+    constexpr VkMemoryPropertyFlags kWant = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    unified_ = false;
+    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+      if ((mp.memoryTypes[i].propertyFlags & kWant) == kWant &&
+          mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size >= deviceLocalBytes_ / 2)
+        unified_ = true;
+    const char* forced = std::getenv("EMFDTD_STAGED_BUFFERS");
+    if (options.stagedBuffers || (forced && forced[0] == '1'))
+      unified_ = false;
+  }
   if (props_.apiVersion >= VK_API_VERSION_1_2) { // float controls are core in 1.2
     VkPhysicalDeviceFloatControlsProperties fc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES};
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -207,6 +269,10 @@ Context::Context(const ContextOptions& options) {
 }
 
 Context::~Context() {
+  if (copyFence_)
+    vkDestroyFence(device_, copyFence_, nullptr);
+  if (copyPool_)
+    vkDestroyCommandPool(device_, copyPool_, nullptr);
   if (device_)
     vkDestroyDevice(device_, nullptr);
   if (messenger_) {
@@ -216,6 +282,46 @@ Context::~Context() {
   }
   if (instance_)
     vkDestroyInstance(instance_, nullptr);
+}
+
+void Context::copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize srcOffset, VkDeviceSize dstOffset,
+                         VkDeviceSize size) {
+  if (!copyPool_) {
+    VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpi.queueFamilyIndex = queueFamily_;
+    VK_CHECK(vkCreateCommandPool(device_, &cpi, nullptr, &copyPool_));
+    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbai.commandPool = copyPool_;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(device_, &cbai, &copyCmd_));
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VK_CHECK(vkCreateFence(device_, &fci, nullptr, &copyFence_));
+  }
+  VK_CHECK(vkResetCommandBuffer(copyCmd_, 0));
+  VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  VK_CHECK(vkBeginCommandBuffer(copyCmd_, &bi));
+  const VkBufferCopy region{srcOffset, dstOffset, size};
+  vkCmdCopyBuffer(copyCmd_, src, dst, 1, &region);
+  // Make the copy visible to later shader work and to the host (the next submit also waits on the fence).
+  const VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                    VK_ACCESS_HOST_READ_BIT};
+  vkCmdPipelineBarrier(copyCmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0,
+                       nullptr, 0, nullptr);
+  VK_CHECK(vkEndCommandBuffer(copyCmd_));
+  VK_CHECK(vkResetFences(device_, 1, &copyFence_));
+  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &copyCmd_;
+  VK_CHECK(vkQueueSubmit(queue_, 1, &si, copyFence_));
+  if (vkWaitForFences(device_, 1, &copyFence_, VK_TRUE, 60'000'000'000ull) != VK_SUCCESS) {
+    std::fprintf(stderr, "vkcore: copy fence wait failed or timed out; context is poisoned, aborting\n");
+    std::abort();
+  }
 }
 
 VkMemoryPropertyFlags Context::memoryTypeFlags(std::uint32_t index) const {

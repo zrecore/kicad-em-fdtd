@@ -18,6 +18,9 @@ BoardFacts boardFacts(const board::Snapshot& s);
 // board's own. A fab profile built for another number of copper layers is not applied (and says so); values
 // the user typed always are.
 std::vector<std::string> applyPcbSettings(const Settings& settings, board::Snapshot& snapshot);
+// Only the copper thickness part of it (what the user typed, else the board's, else the profile's); returns
+// the note, empty when no copper layer has a thickness. The feed-line estimate needs just this.
+std::string applyCopperThickness(const Settings& settings, board::Snapshot& snapshot);
 
 struct Prepared {
   RunPlan plan;

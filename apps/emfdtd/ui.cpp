@@ -120,7 +120,11 @@ void noteText(std::string text, viz::access::Role role = viz::access::Role::Labe
   gTree->add(std::move(n));
 }
 
+#if defined(__GNUC__) || defined(__clang__)
 std::string strf(const char* format, ...) __attribute__((format(printf, 1, 2)));
+#else
+std::string strf(const char* format, ...);
+#endif
 std::string strf(const char* format, ...) {
   char buf[512];
   va_list args;
@@ -450,6 +454,8 @@ Ui::~Ui() {
     worker_.join();
   if (sweepWorker_.joinable())
     sweepWorker_.join();
+  if (feedWorker_.joinable())
+    feedWorker_.join();
   ImGui::DestroyContext(ctx_);
 }
 
@@ -1280,6 +1286,7 @@ void Ui::loadSelectionOnce() {
     if (env_.selection.bodies.empty())
       env_.selection.bodies = st.bodies;
     extraGroundNets_ = st.extraGroundNets;
+    refineChoices_ = st.refinement;
     if (antennaRef_.empty())
       antennaRef_ = st.antennaRef;
     pickedNets_ = env_.selection.netFilter ? env_.selection.pickedNets : st.pickedNets;
@@ -1298,10 +1305,128 @@ void Ui::saveSelection() {
   st.bodies = env_.selection.bodies;
   st.defaultBody = env_.selection.defaultBody;
   st.antennaRef = antennaRef_;
+  st.refinement = refineChoices_;
   try {
     app::saveSelection(env_.paths.selectionFile, st);
   } catch (const std::exception& e) {
     message_ = std::string("Could not save the model selection: ") + e.what();
+  }
+}
+
+// Suggested refinement: the boxes the user switched on, plus the ones typed on the command line, go into the
+// selection that every prepare and sweep reads.
+void Ui::applyRefinement() {
+  if (!typedRefineKept_) {
+    typedRefine_ = env_.selection.refine;
+    typedRefineKept_ = true;
+  }
+  env_.selection.refine = typedRefine_;
+  for (const board::RefineSuggestion& g : refineSuggestions_) {
+    const auto it = refineChoices_.find(g.id);
+    if (it == refineChoices_.end() || !it->second.enabled)
+      continue;
+    board::RefineBox box = g.box;
+    if (it->second.cellMm > 0)
+      box.cell = it->second.cellMm * 1e-3;
+    env_.selection.refine.push_back(box);
+  }
+}
+
+// Finds the suggestions again when the board or the net selection changed, and applies the saved choices.
+void Ui::ensureRefinement() {
+  loadSelectionOnce();
+  std::string nets;
+  for (const std::string& n : pickedNets_)
+    nets += n + ",";
+  const std::string key = strf("%zu|%zu|%s", snapshot_.copper.size(), snapshot_.ports.size(), nets.c_str());
+  if (key == refineKey_)
+    return;
+  refineKey_ = key;
+  board::Snapshot s = snapshot_;
+  if (env_.settings.text("board_outline") != "whole")
+    board::restrictToBoardProper(s);
+  refineSuggestions_ = board::suggestRefinement(s, env_.selection);
+  applyRefinement();
+  if (std::any_of(refineSuggestions_.begin(), refineSuggestions_.end(),
+                  [&](const board::RefineSuggestion& g) {
+                    const auto it = refineChoices_.find(g.id);
+                    return it != refineChoices_.end() && it->second.enabled;
+                  })) {
+    dirty_ = true; // a saved choice changes the model
+    lastEdit_ = now_;
+  }
+}
+
+// Fine cells in narrow gaps: each suggestion is a box with its reason; switching it on adds cells (the
+// estimate above updates), and the cell is editable. Off by default: the default mesh is unchanged.
+void Ui::drawRefinement() {
+  ensureRefinement();
+  if (openRefineOnce_ || refineScrollFrames_ > 0) // a screenshot request: open it and bring it into view
+    ImGui::SetNextItemOpen(true);
+  if (!ImGui::CollapsingHeader("Fine cells in narrow gaps (optional)"))
+    return;
+  if (refineScrollFrames_ > 0) {
+    ImGui::SetScrollHereY(0.0f);
+    --refineScrollFrames_;
+  }
+  openRefineOnce_ = false;
+  wrapped(
+      "Where two nets' copper is only a small gap apart close to a port (a coplanar feed's gap to its "
+      "ground, a feed to a pour), the field in the gap needs several cells across it, and the mesh presets "
+      "do not give them: three cells across such a gap read the line's impedance 15 percent low, five "
+      "cells 8 percent low. Each suggestion below is off until you switch it on; switching it on adds "
+      "cells and time, which the estimate above shows.");
+  if (refineSuggestions_.empty()) {
+    wrapped("No narrow gap between two nets was found near a port.");
+    return;
+  }
+  bool changed = false;
+  for (const board::RefineSuggestion& g : refineSuggestions_) {
+    ImGui::PushID(g.id.c_str());
+    app::RefineChoice& choice = refineChoices_[g.id];
+    bool on = choice.enabled;
+    if (checkbox(g.reason.c_str(), &on)) {
+      choice.enabled = on;
+      changed = true;
+    }
+    if (choice.enabled) {
+      std::string& text = refineText_[g.id];
+      if (text.empty())
+        text = strf("%.3g", choice.cellMm > 0 ? choice.cellMm : g.cellMm);
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%s", text.c_str());
+      ImGui::SetNextItemWidth(fitW(px(110)));
+      const bool edited = ImGui::InputText("##cell", buf, sizeof buf);
+      note(
+          viz::access::Role::TextInput,
+          strf("Cell size for the gap between %s and %s (mm)", g.netA.c_str(), g.netB.c_str()), text,
+          "Cell size inside the box in millimetres. Smaller is more accurate and slower; the gap should have "
+          "five or more cells across it.");
+      ImGui::SameLine();
+      ImGui::TextColored(ImColor(pal.dim), "mm cell");
+      if (edited) {
+        text = buf;
+        char* end = nullptr;
+        const double v = std::strtod(buf, &end);
+        if (end != buf && v > 0) {
+          choice.cellMm = std::clamp(
+              v, 0.01, g.gapMm); // below 0.01 mm the gap measurement stops; above the gap is no refinement
+          changed = true;
+        }
+      }
+      const double cell = choice.cellMm > 0 ? choice.cellMm : g.cellMm;
+      ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
+      wrapped(strf("%.1f cells across the %.2f mm gap; box %.1f x %.1f mm.", g.gapMm / cell, g.gapMm,
+                   (g.box.x1 - g.box.x0) * 1e3, (g.box.y1 - g.box.y0) * 1e3));
+      ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+  }
+  if (changed) {
+    applyRefinement();
+    dirty_ = true;
+    lastEdit_ = now_;
+    saveSelection();
   }
 }
 
@@ -1674,6 +1799,7 @@ void Ui::drawPreviewTab(float w, float h) {
       wrapped("- " + n);
   }
   drawModelSelection();
+  drawRefinement();
   drawProbePanel();
   drawSweepPanel();
 }
@@ -2413,16 +2539,14 @@ void Ui::drawAntennaTab(float, float) {
     wrapped("The export holds no footprints, so there is no antenna part to check.");
     return;
   }
-  // the antenna part: the user's pick (kept in the sidecar), else the first part a rule recognises
+  // the antenna part: the user's pick (kept in the sidecar), else the first part a rule recognises, else the
+  // only part that looks like an antenna (ANT1, AE1, a value saying antenna or IFA)
   if (!antennaRef_.empty() && std::none_of(comps.begin(), comps.end(),
                                            [&](const board::Component& c) { return c.ref == antennaRef_; }))
     antennaRef_.clear(); // the saved part is not on this board
   if (antennaRef_.empty())
-    for (const auto& c : comps)
-      if (board::ruleFor(antennaRules_, c)) {
-        antennaRef_ = c.ref;
-        break;
-      }
+    if (const board::Component* d = board::defaultAntennaPart(comps, antennaRules_))
+      antennaRef_ = d->ref;
   auto label = [&](const board::Component& c) { return c.ref + "  " + c.value; };
   std::string current = "choose the antenna part";
   for (const auto& c : comps)
@@ -2433,12 +2557,14 @@ void Ui::drawAntennaTab(float, float) {
   std::string beforePick = antennaRef_;
   const bool open = ImGui::BeginCombo("##antpart", current.c_str());
   note(viz::access::Role::ComboBox, "Antenna part", current,
-       "The footprint the checks are made around. Parts whose value matches a known antenna are picked "
-       "automatically.");
+       "The footprint the checks are made around. A part a stored rule recognises, or the only part named "
+       "like "
+       "an antenna (ANT, AE, a value saying antenna or IFA), is picked automatically; such parts are listed "
+       "first, then the rest in order.");
   if (open) {
-    for (const auto& c : comps)
-      if (selectable(label(c), c.ref == antennaRef_))
-        antennaRef_ = c.ref;
+    for (const board::Component* c : board::antennaPickOrder(comps))
+      if (selectable(label(*c), c->ref == antennaRef_))
+        antennaRef_ = c->ref;
     ImGui::EndCombo();
   }
   if (antennaRef_ != beforePick)
@@ -2478,21 +2604,68 @@ void Ui::drawAntennaTab(float, float) {
   const std::string placeSetting = env_.settings.text("antenna_keepout_placement");
   const bool corner = placeSetting == "corner" ||
                       (placeSetting == "rule" && antennaRule_ && antennaRule_->placement == "corner");
+  const double portOhm = env_.settings.number("port_impedance_ohm");
   const std::string key =
-      strf("%s|%g|%g|%g|%g|%d|%s|%zu", antennaRef_.c_str(), along, depth, testL, testW, corner ? 1 : 0,
-           env_.settings.text("board_outline").c_str(), snapshot_.copper.size());
-  if (key != antennaKey_) {
-    antennaKey_ = key;
+      strf("%s|%g|%g|%g|%g|%d|%s|%zu|%g", antennaRef_.c_str(), along, depth, testL, testW, corner ? 1 : 0,
+           env_.settings.text("board_outline").c_str(), snapshot_.copper.size(), portOhm);
+  const std::string copperKey =
+      strf("%s|%g|%g", env_.settings.text("pcb_profile").c_str(), env_.settings.number("copper_outer_um"),
+           env_.settings.number("copper_inner_um"));
+  if (key + copperKey != antennaKey_) {
+    antennaKey_ = key + copperKey;
     board::Snapshot s = snapshot_;
+    app::applyCopperThickness(env_.settings, s);
     if (env_.settings.text("board_outline") != "whole")
       board::restrictToBoardProper(s);
     antennaReport_ = board::checkAntenna(s, *part, along, depth, board::guessGroundNets(s), testL, testW,
                                          corner ? board::Placement::Corner : board::Placement::Edge);
+    feedReport_ = board::checkFeed(s, *part, board::guessGroundNets(s), portOhm);
   }
+  auto drawFeed = [&] {
+    ImGui::Spacing();
+    ImGui::TextColored(ImColor(pal.accent), "Feed line");
+    noteText("Feed line");
+    if (feedReport_.ok) {
+      const bool near50 = std::fabs(feedReport_.z0Ohm - portOhm) <= 0.1 * portOhm;
+      coloured(ImColor(near50 ? pal.good : pal.warn), feedReport_.findings.front());
+      ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
+      for (std::size_t i = 1; i < feedReport_.findings.size(); ++i)
+        wrapped(feedReport_.findings[i]);
+      ImGui::PopStyleColor();
+    } else {
+      wrapped("Not read: " + feedReport_.why);
+    }
+    if (!feedReport_.ok)
+      return;
+    // The field solve of the same line, with the copper's thickness: started once per distinct line.
+    const std::string solveKey = strf("%g|%g|%g|%g|%g|%d%d", feedReport_.widthMm, feedReport_.gapMm,
+                                      feedReport_.heightMm, feedReport_.epsR, feedReport_.copperMm,
+                                      feedReport_.coplanar ? 1 : 0, feedReport_.oneSided ? 1 : 0);
+    {
+      std::lock_guard<std::mutex> lock(feedMutex_);
+      if (!feedSolveRunning_ && solveKey != feedSolveKey_)
+        startFeedSolve(feedReport_, solveKey);
+    }
+    if (headless_ && feedWorker_.joinable())
+      feedWorker_.join(); // a still image waits for the answer
+    std::lock_guard<std::mutex> lock(feedMutex_);
+    ImGui::Spacing();
+    if (feedSolveRunning_) {
+      wrapped("Field solve of this line, with the copper's thickness: computing...");
+    } else if (feedSolve_.ok) {
+      const bool near50 = std::fabs(feedSolve_.z0Ohm - portOhm) <= 0.1 * portOhm;
+      coloured(ImColor(near50 ? pal.good : pal.warn), feedSolve_.findings.front());
+      wrapped("The closed form above is the quick estimate; this one solves the field in the line's "
+              "cross-section.");
+    } else if (!feedSolve_.why.empty()) {
+      wrapped("Field solve of this line not available: " + feedSolve_.why);
+    }
+  };
   const board::AntennaReport& r = antennaReport_;
   ImGui::Separator();
   if (!r.ok) {
     coloured(ImColor(pal.warn), "Not checked: " + r.why);
+    drawFeed(); // the feed line does not depend on the keepout
     return;
   }
   wrapped(
@@ -2515,6 +2688,7 @@ void Ui::drawAntennaTab(float, float) {
   wrapped(strf("Stackup: %.2f mm of dielectric in all; %.3f mm between the part's layer and the next copper "
                "layer.",
                r.totalThicknessMm, r.toNextPlaneMm));
+  drawFeed();
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::TextColored(ImColor(pal.accent), "Keepout and test board");
@@ -2525,11 +2699,243 @@ void Ui::drawAntennaTab(float, float) {
   drawSetting("antenna_testboard_length_mm");
   drawSetting("antenna_testboard_width_mm");
   ImGui::PushStyleColor(ImGuiCol_Text, pal.dim);
-  wrapped("Not checked yet: the feed line's impedance for this stackup, the matching network, nearby metal, "
-          "and the simulated antenna. A chip antenna's resonance depends on the ground it sits on, so the "
+  wrapped("Not checked yet: the matching network, nearby metal, and the simulated antenna. A chip antenna's "
+          "resonance depends on the ground it sits on, so the "
           "vendor's figures hold only for the vendor's layout; a measurement at the feed separates antenna "
           "faults from radio faults.");
   ImGui::PopStyleColor();
+}
+
+// ---- Farm tab
+// ---------------------------------------------------------------------------------------------- Jobs on
+// other machines' GPUs (docs/farm.md). Everything comes from the farm tool's JSON; the window never touches
+// the network. Each row is words first (state, worker, attempt); the bar is an estimate and says so.
+
+namespace {
+const char* roleSentence(const std::string& role) {
+  if (role == "coordinator")
+    return "Coordinator: this machine keeps the queue and the farm's private certificate authority and "
+           "listens "
+           "on one LAN address for the devices you enrol.";
+  if (role == "worker")
+    return "Worker: this machine runs jobs on its own GPU for a coordinator you enrol it with. It connects "
+           "out "
+           "and never listens.";
+  return "Client: you send jobs to the farm and fetch their results.";
+}
+
+const char* consequenceSentence(const std::string& role) {
+  if (role == "coordinator")
+    return "Turning this on lets this machine create invitations, keep a private certificate authority in "
+           "its "
+           "farm folder and listen on one LAN address that you choose when you run it. Nothing starts until "
+           "you do.";
+  if (role == "worker")
+    return "Turning this on lets this machine connect out to a coordinator you enrol it with and run the "
+           "solver on its GPU for that coordinator's jobs. It opens no port.";
+  return "Turning this on lets this machine upload board snapshots to a coordinator you enrol it with and "
+         "fetch results from it.";
+}
+
+std::string firstLines(const std::string& text, int n) {
+  std::string out;
+  int lines = 0;
+  for (std::size_t i = 0; i < text.size() && lines < n; ++i) {
+    out += text[i];
+    if (text[i] == '\n')
+      ++lines;
+  }
+  while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
+    out.pop_back();
+  return out;
+}
+
+std::string stateWords(const farm::Job& j) {
+  std::string s = j.state;
+  if (!j.worker.empty() && (j.state == "running" || j.state == "done"))
+    s += " on " + j.worker;
+  if (j.attempts > 1)
+    s += ", attempt " + std::to_string(j.attempts);
+  return s;
+}
+} // namespace
+
+void Ui::drawFarmTab(float, float) {
+  if (!farm_)
+    farm_ = std::make_unique<farm::Client>();
+  farm_->touch();
+  const farm::Snapshot s = farm_->latest();
+  const farm::Client::Action act = farm_->action();
+
+  ImGui::BeginChild("##farm", ImVec2(0, 0), false);
+  wrapped(
+      "Job farm: send simulations to GPUs on other machines on your network. It is off until you turn a role "
+      "on, and its settings belong to this computer, not to your board.");
+
+  if (!s.haveStatus) {
+    coloured(ImVec4(ImColor(pal.warn)), s.statusError.empty()
+                                            ? "Reading the farm state..."
+                                            : "The farm tool did not answer: " + s.statusError);
+    ImGui::EndChild();
+    return;
+  }
+
+  // ---- roles
+  ImGui::SeparatorText("Roles");
+  noteText("Roles", viz::access::Role::Group);
+  for (const char* role : {"coordinator", "worker", "client"}) {
+    bool on = std::string(role) == "coordinator" ? s.coordinator
+              : std::string(role) == "worker"    ? s.worker
+                                                 : s.client;
+    std::string label = std::string(role) + "##farmrole";
+    label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(label[0])));
+    ImGui::PushID(role);
+    if (checkbox(label.c_str(), &on)) {
+      if (on)
+        farmPendingEnable_ = role; // turning on takes a confirmation that says what it allows
+      else
+        farm_->run({"disable", role}, std::string("Turn off ") + role);
+    }
+    wrapped(roleSentence(role));
+    if (farmPendingEnable_ == role) {
+      coloured(ImVec4(ImColor(pal.warn)), consequenceSentence(role));
+      if (button("Turn on##confirm")) {
+        farm_->run({"enable", role, "--yes"}, std::string("Turn on ") + role);
+        farmPendingEnable_.clear();
+      }
+      ImGui::SameLine();
+      if (button("Keep it off##keep"))
+        farmPendingEnable_.clear();
+    }
+    ImGui::PopID();
+  }
+  if (act.running) {
+    wrapped("Working: " + act.label + "...");
+  } else if (!act.label.empty()) {
+    coloured(ImVec4(ImColor(act.code == 0 ? pal.good : pal.bad)),
+             act.label + (act.code == 0 ? ": done. " : ": failed. ") + firstLines(act.text, 3));
+  }
+
+  // ---- devices and jobs (client role)
+  if (s.client) {
+    ImGui::SeparatorText("Devices");
+    noteText("Devices", viz::access::Role::Group);
+    if (!s.haveQueue) {
+      coloured(ImVec4(ImColor(pal.warn)),
+               s.queueError.empty() ? "Reading the queue..." : "The queue is not available: " + s.queueError);
+    } else {
+      if (s.devices.empty())
+        wrapped("No devices have joined the farm yet.");
+      for (const auto& d : s.devices)
+        wrapped(d.worker + ": " + d.name + ", " + d.state +
+                (d.mcellsPerS > 0 ? strf(", %.0f Mcells/s", d.mcellsPerS) : std::string()));
+      ImGui::SeparatorText("My jobs");
+      noteText("My jobs", viz::access::Role::Group);
+      if (s.jobs.empty())
+        wrapped("No jobs yet. Submit one with: emfdtd_farm.py submit BOARD.json ...");
+      for (const auto& j : s.jobs) {
+        ImGui::PushID(j.id.c_str());
+        wrapped((j.label.empty() ? j.id.substr(0, 8) : j.label) + ": " + stateWords(j));
+        if (j.state == "running" || j.state == "queued") {
+          const bool known = j.percent >= 0;
+          const float frac = known ? static_cast<float>(j.percent) / 100.0f : 0.0f;
+          const std::string text =
+              known ? strf("about %d %%", j.percent) : (j.state == "queued" ? "waiting" : "working");
+          ImGui::ProgressBar(frac, ImVec2(fitW(px(260)), 0), text.c_str());
+          note(viz::access::Role::ProgressBar,
+               "Progress of " + (j.label.empty() ? j.id.substr(0, 8) : j.label), text);
+          if (!j.phase.empty())
+            wrapped(j.phase);
+          if (ImGui::Button("Cancel"))
+            farm_->run({"cancel", j.id}, "Cancel " + j.label);
+          note(viz::access::Role::Button, "Cancel " + (j.label.empty() ? j.id.substr(0, 8) : j.label));
+        } else if (j.state == "failed" || j.state == "cancelled") {
+          if (!j.reason.empty())
+            coloured(ImVec4(ImColor(pal.bad)), j.reason);
+        } else if (j.state == "done") {
+          wrapped("Fetch the results with: emfdtd_farm.py results " + j.id + " --dest FOLDER");
+        }
+        ImGui::PopID();
+      }
+    }
+  }
+
+  // ---- add a device, and the members (coordinator role)
+  if (s.coordinator) {
+    ImGui::SeparatorText("Add a device");
+    noteText("Add a device", viz::access::Role::Group);
+    wrapped(
+        "An invitation lets one new device join: it shows a one-time code and this machine's fingerprint. "
+        "Type both on the new device. It is valid for ten minutes and works once.");
+    ImGui::TextUnformatted("Name of the new device (letters, digits, - _ .)");
+    noteText("Name of the new device (letters, digits, - _ .)");
+    ImGui::SetNextItemWidth(fitW(px(360)));
+    ImGui::InputText("##farmname", farmName_, sizeof farmName_);
+    note(viz::access::Role::TextInput, "Name of the new device", farmName_);
+    ImGui::TextUnformatted("This machine's LAN address, for example 192.168.1.20");
+    noteText("This machine's LAN address, for example 192.168.1.20");
+    ImGui::SetNextItemWidth(fitW(px(360)));
+    ImGui::InputText("##farmlisten", farmListen_, sizeof farmListen_);
+    note(viz::access::Role::TextInput, "This machine's LAN address", farmListen_);
+    checkbox("The new device is for a person who submits jobs (a client)##farminvrole",
+             &farmInviteForClient_);
+    const farm::Client::Invite inv = farm_->invite();
+    if (!inv.running) {
+      if (button("Create invitation") && farmName_[0] && farmListen_[0])
+        farm_->startInvite(farmName_, farmInviteForClient_ ? "client" : "worker", farmListen_);
+    } else {
+      wrapped("Invitation for " + inv.role + " '" + inv.name + "'");
+      if (!inv.code.empty())
+        wrapped("Code: " + inv.code);
+      if (!inv.fingerprint.empty())
+        wrapped("This machine's fingerprint: " + inv.fingerprint);
+      if (!inv.listening.empty())
+        wrapped("Listening on " + inv.listening + " until it is used.");
+      if (button("Stop inviting"))
+        farm_->stopInvite();
+    }
+    if (!inv.running && !inv.name.empty())
+      wrapped(inv.exitCode == 0 ? "The invitation has ended. If the device enrolled, it is in the list below."
+                                : "The invitation could not start: " + inv.last);
+
+    ImGui::SeparatorText("Members");
+    noteText("Members", viz::access::Role::Group);
+    if (!s.haveMembers) {
+      coloured(ImVec4(ImColor(pal.warn)), s.membersError.empty()
+                                              ? "Reading the members..."
+                                              : "The member list is not available: " + s.membersError);
+    } else {
+      if (s.members.empty())
+        wrapped("No devices have been enrolled yet.");
+      for (const auto& m : s.members) {
+        ImGui::PushID(m.key.c_str());
+        wrapped(m.key + (m.revoked ? " (revoked)" : "") + " may: " + (m.may.empty() ? "nothing" : m.may) +
+                ". Fingerprint " + m.fingerprint.substr(0, 16));
+        if (!m.revoked && m.may.size() > 0) {
+          if (farmPendingRevoke_ == m.key) {
+            coloured(ImVec4(ImColor(pal.warn)),
+                     "Revoking removes this device for good: its certificate stops working at once.");
+            if (ImGui::Button("Revoke for good")) {
+              const auto colon = m.key.find(':');
+              farm_->run({"revoke", m.key.substr(0, colon), m.key.substr(colon + 1)}, "Revoke " + m.key);
+              farmPendingRevoke_.clear();
+            }
+            note(viz::access::Role::Button, "Revoke " + m.key + " for good");
+            ImGui::SameLine();
+            if (ImGui::Button("Keep it"))
+              farmPendingRevoke_.clear();
+            note(viz::access::Role::Button, "Keep " + m.key);
+          } else {
+            if (ImGui::Button("Revoke"))
+              farmPendingRevoke_ = m.key;
+            note(viz::access::Role::Button, "Revoke " + m.key);
+          }
+        }
+        ImGui::PopID();
+      }
+    }
+  }
+  ImGui::EndChild();
 }
 
 void Ui::drawProbesTab(float w, float h) {
@@ -3413,6 +3819,24 @@ void Ui::drawStatusBar() {
 // ---- frame -----------------------------------------------------------------------------------------------
 
 // The Vulkan context the viewer's renderers share (not the solver's: its queue is used by the solver thread).
+// Called with feedMutex_ held. Starts the solve on a thread of its own and returns at once. It runs on the
+// CPU: on the graded grid the solve takes well under a second, which the GPU's fixed costs (buffers, batched
+// sweeps, read-back) do not beat (measured 0.07 s against 0.38 s); the GPU solver stays for large uniform
+// grids (fdtd_vk/gpu_line2d.hpp).
+void Ui::startFeedSolve(const board::FeedReport& report, const std::string& key) {
+  if (feedWorker_.joinable())
+    feedWorker_.join(); // the previous one has finished (feedSolveRunning_ is false)
+  feedSolveKey_ = key;
+  feedSolveRunning_ = true;
+  feedSolve_ = {};
+  feedWorker_ = std::thread([this, report] {
+    board::FeedSolve result = board::solveFeed(report);
+    std::lock_guard<std::mutex> lock(feedMutex_);
+    feedSolve_ = std::move(result);
+    feedSolveRunning_ = false;
+  });
+}
+
 vkcore::Context* Ui::renderContext() {
   if (!backend_.gpu ||
       (headless_ && !adaptive_)) // stills stay on the CPU reference; the benchmark uses the GPU
@@ -3593,6 +4017,10 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     }
     if (tabItem("3D volume", nullptr, pendingTab_ == "3D volume" ? ImGuiTabItemFlags_SetSelected : 0)) {
       drawVolumeTab(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+      ImGui::EndTabItem();
+    }
+    if (tabItem("Farm", nullptr, pendingTab_ == "Farm" ? ImGuiTabItemFlags_SetSelected : 0)) {
+      drawFarmTab(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();

@@ -163,6 +163,9 @@ struct RunPlan {
   double portImpedanceOhm;
   double coarseCell, fineCell, dielectricCell, airMargin; // metres
   double airNearCell, airNearHeight;                      // metres, 0: off
+  double airGrowth;                                       // air cell growth ratio next to the board, 1: even
+  double lateralGrowth;    // lateral cell growth ratio away from refinement boxes
+  bool copperSlab = false; // copper layers with a thickness fill cells of it
   std::size_t pmlCells, maxSteps, sampleEvery;
   double courant, decay;
   std::string backend;        // auto, gpu or cpu

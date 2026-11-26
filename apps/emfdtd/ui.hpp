@@ -16,13 +16,17 @@
 #include <thread>
 #include <vector>
 
+#include "app/farm_client.hpp"
 #include "app/paths.hpp"
 #include "app/prepare.hpp"
 #include "app/probes.hpp"
 #include "app/run_store.hpp"
+#include "app/selection_store.hpp"
 #include "app/settings.hpp"
 #include "app/sweep.hpp"
 #include "board/antenna.hpp"
+#include "board/feed_solve.hpp"
+#include "board/refine_suggest.hpp"
 #include "board/snapshot.hpp"
 #include "fdtd/ntff.hpp"
 #include "fdtd/surface_current.hpp"
@@ -136,6 +140,7 @@ public:
     if (has("nofield"))
       showFieldSlice_ = showField3d_ = false;
     openModelOnce_ = has("model");
+    openRefineOnce_ = has("refine");
     openRunPopup_ = has("openrun");
     showPowerSlice_ = has("power");
     showIso_ = has("iso");
@@ -143,6 +148,7 @@ public:
     pinAfterRun_ = has("pin");
     s11View_ = has("smith") ? 1 : has("impedance") ? 2 : has("sweep") ? 3 : 0;
     modelScrollFrames_ = openModelOnce_ ? 4 : 0;
+    refineScrollFrames_ = openRefineOnce_ ? 4 : 0;
     if (has("current"))
       showCurrentSlice_ = showCurrent3d_ = true;
   }
@@ -168,6 +174,15 @@ private:
   bool antennaRulesLoaded_ = false;
   std::string antennaRef_, antennaKey_, antennaRulesError_;
   board::AntennaReport antennaReport_;
+  board::FeedReport feedReport_;
+  // The field solve of the feed line (board/feed_solve.hpp) runs off the draw thread, on the CPU, once per
+  // distinct line; the draw reads the result under the mutex.
+  void startFeedSolve(const board::FeedReport& report, const std::string& key);
+  std::thread feedWorker_;
+  std::mutex feedMutex_;
+  std::string feedSolveKey_;
+  bool feedSolveRunning_ = false;
+  board::FeedSolve feedSolve_;
   const board::AntennaRule* antennaRule_ = nullptr;
   void drawOpenRun();
   bool openRunPopup_ = false;
@@ -179,6 +194,7 @@ private:
   void drawPreviewTab(float w, float h);
   void drawS11Tab(float w, float h);
   void drawProbesTab(float w, float h);
+  void drawFarmTab(float w, float h);
   void drawProbePanel();
   void refreshIsosurface();
   void drawSweepOverlay(float w, float h);
@@ -313,6 +329,18 @@ private:
   int modelScrollFrames_ = 0;
   std::map<std::string, std::array<std::string, 3>> partText_;
   void drawModelSelection();
+  // Suggested fine-cell boxes for narrow gaps near a port (board/refine_suggest.hpp), the user's choice for
+  // each (saved in the sidecar file), and the boxes the user typed on the command line.
+  std::vector<board::RefineSuggestion> refineSuggestions_;
+  std::map<std::string, app::RefineChoice> refineChoices_;
+  std::map<std::string, std::string> refineText_;
+  std::vector<board::RefineBox> typedRefine_;
+  std::string refineKey_;
+  bool typedRefineKept_ = false, openRefineOnce_ = false;
+  int refineScrollFrames_ = 0;
+  void drawRefinement();
+  void ensureRefinement();
+  void applyRefinement();
   void applyNets();
   void ensureGround();
   void loadSelectionOnce();
@@ -365,6 +393,13 @@ private:
   double phase_ = 0, scaleFactor_ = 1, lastFrame_ = 0;
   bool paused_ = false, jumped_ = false;
   std::string pendingTab_;
+  // Farm tab (docs/ux.md "Farm screen"): created when the tab is first shown, so a window that never shows it
+  // runs nothing.
+  std::unique_ptr<farm::Client> farm_;
+  std::string farmPendingEnable_, farmPendingRevoke_;
+  char farmName_[64] = "";
+  char farmListen_[64] = "";
+  bool farmInviteForClient_ = false;
   viz::access::Tree access_;
   bool accessWanted_ = false;
   struct PendingClick {

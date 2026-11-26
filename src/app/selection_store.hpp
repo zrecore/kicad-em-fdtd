@@ -10,6 +10,12 @@
 
 namespace app {
 
+// What the user chose for one suggested refinement box (board/refine_suggest.hpp), keyed by its stable id.
+struct RefineChoice {
+  bool enabled = false;
+  double cellMm = 0; // 0: the suggestion's own cell
+};
+
 struct StoredSelection {
   std::set<std::string> pickedNets;
   std::set<std::string> extraGroundNets;
@@ -17,6 +23,7 @@ struct StoredSelection {
   std::map<std::string, board::BodyTreatment> bodies;
   board::BodyTreatment defaultBody;
   std::string antennaRef; // the footprint the Antenna tab checks (empty: the first one a rule recognises)
+  std::map<std::string, RefineChoice> refinement;
 };
 
 void saveSelection(const std::filesystem::path& file, const StoredSelection& s);

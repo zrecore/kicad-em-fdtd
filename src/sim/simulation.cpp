@@ -129,10 +129,6 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
       recent = std::max(recent, std::abs(r.portVoltage.back()));
     }
     r.steps += kChunk;
-    if (opt.onProgress)
-      opt.onProgress(r);
-    if (opt.shouldStop && opt.shouldStop())
-      break;
     chunkMax.push_back(recent);
     peak = std::max(peak, recent);
     // decay is judged over the last ~200 steps (an oscillating signal passes through zero within a chunk)
@@ -140,8 +136,20 @@ RunResult runOnePort(const board::Model& model, const RunOptions& opt, const Eng
     recent = *std::max_element(chunkMax.end() -
                                    static_cast<std::ptrdiff_t>(std::min(windowChunks, chunkMax.size())),
                                chunkMax.end());
-    if (r.steps > pulseSteps && recent < opt.decay * peak)
+    // The pulse is still being injected for pulseSteps (most of a long run), then the signal rings down to
+    // the stop level: 60 % for the first, 40 % for the decay (log scale), so the bar moves from the start.
+    double estimate = 0.6 * std::min(1.0, static_cast<double>(r.steps) / static_cast<double>(pulseSteps));
+    if (r.steps > pulseSteps && peak > 0 && recent > 0 && opt.decay > 0 && opt.decay < 1)
+      estimate = 0.6 + 0.4 * std::clamp(std::log(peak / recent) / std::log(1.0 / opt.decay), 0.0, 1.0);
+    r.progress = std::max(r.progress, std::min(estimate, 0.99));
+    if (opt.onProgress)
+      opt.onProgress(r);
+    if (opt.shouldStop && opt.shouldStop())
       break;
+    if (r.steps > pulseSteps && recent < opt.decay * peak) {
+      r.progress = 1.0;
+      break;
+    }
   }
   if (opt.onFinish)
     opt.onFinish(*engine);

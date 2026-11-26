@@ -284,6 +284,19 @@ void Settings::build() {
       "Thickness of the layer that uses the fine air cell; the cells then grow to the coarse size. Set it to "
       "the tallest body.",
       "Mesh", "mm", Tier::Advanced, 0, 50, {"body", "height", "vertical", "z", "air"});
+  num("lateral_growth_ratio", "Mesh growth away from refined areas",
+      "How fast the cells along the board grow from a refined box (the antenna, a port) out to the coarse "
+      "size: each cell is at most this much larger than the one before. Smaller is smoother and slower. "
+      "Measured on the TI antenna board: 1.1 gave 0.2 percent scatter in the resonance between 0.2 and 0.1 "
+      "mm "
+      "cells, 1.3 about 1.3 percent.",
+      "Mesh", "", Tier::Advanced, 1, 2, {"grading", "smooth", "lateral", "ratio", "refine"});
+  num("mesh_growth_ratio", "Mesh growth next to the board",
+      "How fast the air cells above and below the board grow from the board's own cell size up to the coarse "
+      "size: each cell is at most this much larger than the one before. 1.3 keeps neighbouring cells smooth "
+      "(a hard jump reads a planar line's impedance about 11 percent low); 1 splits the air evenly, as "
+      "earlier versions did.",
+      "Mesh", "", Tier::Advanced, 1, 2, {"grading", "smooth", "air", "vertical", "z", "ratio"});
   num("dielectric_cells_min", "Cells across each dielectric layer",
       "Minimum vertical cells through each board layer.", "Mesh", "", Tier::Advanced, 1, 20,
       {"layer", "thickness", "vertical", "z"});
@@ -418,13 +431,24 @@ void Settings::build() {
       "heights). Assumed: set it to the tallest relevant part, such as a shield can or connector.",
       "PCB", "mm", Tier::Essential, 0.05, 30, {"component", "package", "height", "tall", "shield"});
   num("copper_outer_um", "Outer copper thickness",
-      "Finished copper on the outer layers. Recorded in the run summary; the solver models copper as a "
-      "zero-thickness sheet for now. 0 keeps the board's value.",
+      "Finished copper on the outer layers. Used by the feed-line impedance estimate in the Antenna tab "
+      "(copper's thickness lowers a coplanar line's impedance by 6 to 9 percent); the solver models copper "
+      "as "
+      "a zero-thickness sheet. 0 keeps the board's value.",
       "PCB", "um", Tier::Advanced, 0, 500, {"pcb", "oz", "weight", "copper", "foil"});
   num("copper_inner_um", "Inner copper thickness",
-      "Copper on the inner layers (boards with 4 or more layers). Recorded in the run summary; not modelled "
-      "yet. 0 keeps the board's value.",
+      "Copper on the inner layers (boards with 4 or more layers). Used by the feed-line impedance estimate "
+      "only; the solver models copper as a sheet. 0 keeps the board's value.",
       "PCB", "um", Tier::Advanced, 0, 500, {"pcb", "oz", "weight", "copper", "foil"});
+  choice(
+      "copper_model", "Copper model",
+      "sheet (default): copper is a zero-thickness conducting sheet on its dielectric interface, as in every "
+      "earlier version. slab: a copper layer that has a thickness (from the board, the fab profile or the "
+      "copper thickness settings above) fills grid cells of that thickness, which lowers a trace's "
+      "effective permittivity by about 1 percent for 35 um copper and raises its resonance by about the same "
+      "(docs/PLAN.md). The cells are as thin as the copper, so the time step falls and a run takes longer; "
+      "a layer without a thickness stays a sheet.",
+      "PCB", Tier::Advanced, {"copper", "thickness", "slab", "sheet", "foil", "oz", "weight"});
   choice(
       "save_fields", "Keep field data of each run",
       "on (default): a finished run keeps its field data (the 3D and slice views, the surface current, power "
@@ -493,6 +517,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return 0.0;
   if (key == "dielectric_cells_min")
     return 3.0;
+  if (key == "mesh_growth_ratio" || key == "lateral_growth_ratio")
+    return 1.3;
   if (key == "pml_cells")
     return static_cast<double>(run.cpmlCells);
   if (key == "courant")
@@ -512,6 +538,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return catalog_.uiColours().at(key.substr(7));
   if (key == "field_component")
     return std::string("ez");
+  if (key == "copper_model")
+    return std::string("sheet");
   if (key == "animation_frequencies")
     return 13.0;
   if (key == "volume_resolution")
@@ -640,6 +668,8 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
     return {"follow", "100%", "125%", "150%", "200%", "250%"};
   if (key == "field_component")
     return {"ez", "ex", "ey"};
+  if (key == "copper_model")
+    return {"sheet", "slab"};
   return {};
 }
 
@@ -834,6 +864,9 @@ RunPlan makePlan(const Settings& s, double maxEpsilonR, double minDielectricThic
   p.airMargin = s.number("boundary_distance_wavelengths") * fdtd::units::kSpeedOfLight / centre;
   p.airNearCell = s.number("air_near_cell_mm") * 1e-3;
   p.airNearHeight = s.number("air_near_height_mm") * 1e-3;
+  p.airGrowth = s.number("mesh_growth_ratio");
+  p.lateralGrowth = s.number("lateral_growth_ratio");
+  p.copperSlab = s.text("copper_model") == "slab";
   p.pmlCells = static_cast<std::size_t>(s.number("pml_cells"));
   p.maxSteps = static_cast<std::size_t>(s.number("max_steps"));
   p.sampleEvery = static_cast<std::size_t>(s.number("sample_every"));

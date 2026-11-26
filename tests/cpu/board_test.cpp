@@ -30,8 +30,10 @@ std::string fixture(int version = 1, const std::string& ports = "", const std::s
          body + R"(]})";
 }
 
+// airGrowth 1: most scenarios below count nodes in an even air layout; the graded default has its own
+// scenario
 const board::GridPlan kPlan{
-    .lateralCell = 1e-3, .maxDielectricCell = 0.4e-3, .airMargin = 2e-3, .airCell = 1e-3};
+    .lateralCell = 1e-3, .maxDielectricCell = 0.4e-3, .airMargin = 2e-3, .airCell = 1e-3, .airGrowth = 1.0};
 constexpr double kF0 = 2.44e9;
 
 std::size_t edgesInPlane(const board::Model& m, std::size_t zNode) {
@@ -322,6 +324,45 @@ SCENARIO("A fine layer of air next to the board resolves a body thinner than the
                 Approx(0.0008 + 2 * kPlan.airMargin).margin(1e-9)); // 0.8 mm board plus both margins
         for (std::size_t k = 0; k < nz; ++k)
           REQUIRE(g.cellSize(fdtd::Z, k) <= kPlan.airCell + 1e-12);
+      }
+    }
+  }
+}
+
+SCENARIO("The air next to the board grows from the board's own cell, by no more than the growth ratio") {
+  GIVEN("a board with 0.4 mm cells and a coarse air cell of 1 mm") {
+    const auto snap = board::parseSnapshot(fixture(1, "", ""));
+    auto largestStep = [](const board::Model& m) {
+      const auto& g = m.grid;
+      double worst = 1.0;
+      for (std::size_t k = 0; k + 1 < g.cells(fdtd::Z); ++k) {
+        const double a = g.cellSize(fdtd::Z, k), b = g.cellSize(fdtd::Z, k + 1);
+        worst = std::max(worst, std::max(a / b, b / a));
+      }
+      return worst;
+    };
+    WHEN("the plan uses the default growth ratio") {
+      board::GridPlan plan = kPlan;
+      plan.airGrowth = 1.3;
+      const auto model = board::voxelize(snap, board::Selection{}, plan, kF0);
+      THEN("no two neighbouring z cells differ by more than a factor 2 (the smooth-mesh rule)") {
+        REQUIRE(largestStep(model) <= 2.0);
+      }
+      AND_THEN("the air still spans the same margin and no cell exceeds the coarse air cell") {
+        const auto& g = model.grid;
+        const std::size_t nz = g.cells(fdtd::Z);
+        REQUIRE(g.edge(fdtd::Z, nz) - g.edge(fdtd::Z, 0) ==
+                Approx(0.0008 + 2 * kPlan.airMargin).margin(1e-9));
+        for (std::size_t k = 0; k < nz; ++k)
+          REQUIRE(g.cellSize(fdtd::Z, k) <= kPlan.airCell + 1e-12);
+      }
+    }
+    WHEN("the growth ratio is 1, the earlier even split of the air") {
+      board::GridPlan plan = kPlan;
+      plan.airGrowth = 1.0;
+      const auto model = board::voxelize(snap, board::Selection{}, plan, kF0);
+      THEN("the first air cell is the coarse cell, 2.5 times the board's cell") {
+        REQUIRE(largestStep(model) == Approx(2.5).margin(1e-9));
       }
     }
   }
@@ -658,6 +699,43 @@ SCENARIO("Grid lines snap to the corners of a modelled body, so a 0.04 mm strip 
   }
 }
 
+SCENARIO("Grid lines snap to the long edges of a traced shape inside a refinement box") {
+  GIVEN("a 0.25 mm trace, off the 0.1 mm grid, drawn with more than eight vertices as a vendor Gerber trace "
+        "is") {
+    std::string text = fixture();
+    const std::string patch = "[[0.0036,0.0036],[0.0064,0.0036],[0.0064,0.0064],[0.0036,0.0064]]";
+    const std::string trace =
+        "[[0.0050137,0.003],[0.0052637,0.003],[0.0052637,0.0045],[0.0052637,0.005],[0.0052637,0.0055],"
+        "[0.0052637,0.007],[0.0050137,0.007],[0.0050137,0.0055],[0.0050137,0.005],[0.0050137,0.0045]]";
+    text.replace(text.find(patch), patch.size(), trace);
+    const auto snap = board::parseSnapshot(text);
+    board::GridPlan plan = kPlan;
+    plan.refine = {{0.004, 0.002, 0.006, 0.008, 0.1e-3}};
+    auto widthInCells = [&](bool snapped) {
+      plan.snapToGeometry = snapped;
+      const auto model = board::voxelize(snap, board::Selection{}, plan, kF0);
+      double lo = -1, hi = -1;
+      for (std::size_t i = 0; i < model.grid.nodes(fdtd::X); ++i) {
+        const double x = model.grid.edge(fdtd::X, i) + model.originX;
+        if (std::abs(x - 0.0050137) < 1e-9)
+          lo = x;
+        if (std::abs(x - 0.0052637) < 1e-9)
+          hi = x;
+      }
+      return std::pair{lo, hi};
+    };
+    THEN("with snapping both long edges are grid lines, so the trace is exactly 0.25 mm wide") {
+      const auto [lo, hi] = widthInCells(true);
+      REQUIRE(lo > 0);
+      REQUIRE(hi > 0);
+    }
+    AND_THEN("without snapping they are not (the cell edges fall where the uniform grid puts them)") {
+      const auto [lo, hi] = widthInCells(false);
+      REQUIRE((lo < 0 || hi < 0));
+    }
+  }
+}
+
 SCENARIO("A via can span only some of the copper layers, as a blind or micro via does") {
   GIVEN("a three-layer board with a via drilled from the top layer to the first inner layer only") {
     auto text = [](const std::string& via) {
@@ -776,11 +854,53 @@ SCENARIO("Copper of two nets that touch is reported, copper of one net is not") 
       REQUIRE_FALSE(anyNote(m, "touch"));
     }
   }
+  GIVEN("a feed track and a ground pour with a gap of 0.3 mm, under the 1 mm cell") {
+    const auto m =
+        board::voxelize(board::parseSnapshot(twoShapes("RF", "GND", 0.0053)), board::Selection{}, kPlan, kF0);
+    THEN("the notes say the nets touch in the grid, though no edge is claimed twice") {
+      REQUIRE(anyNote(m, "RF", "GND"));
+    }
+  }
   GIVEN("overlapping shapes of the same net") {
     const auto m = board::voxelize(board::parseSnapshot(twoShapes("GND", "GND", 0.0045)), board::Selection{},
                                    kPlan, kF0);
     THEN("nothing is reported") {
       REQUIRE_FALSE(anyNote(m, "touch"));
+    }
+  }
+}
+
+SCENARIO("A gap between two nets that is only a few cells wide near a port is reported") {
+  // a feed pad (net FEED) and a ground pour (net GND) with a gap between them, an in-plane port across the
+  // gap
+  auto gapBoard = [](double gapMm) {
+    const double bx0 = 5.0 + gapMm;
+    return R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.02,0],[0.02,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"F.Cu","owner":"","net":"FEED","polygon":[[0.002,0.002],[0.005,0.002],[0.005,0.008],[0.002,0.008]]},
+                {"layer":"F.Cu","owner":"","net":"GND","polygon":[[)" +
+           std::to_string(bx0 * 1e-3) + R"(,0.002],[0.018,0.002],[0.018,0.008],[)" +
+           std::to_string(bx0 * 1e-3) +
+           R"(,0.008]]}],
+      "vias":[],"components":[],
+      "ports":[{"name":"P1","layer":"F.Cu","a":[0.0045,0.005],"b":[)" +
+           std::to_string((bx0 + 0.5) * 1e-3) + R"(,0.005],"width":0.0005,"impedance":50}]})";
+  };
+  GIVEN("copper of two nets 2 mm apart on a 1 mm grid, with a port across the gap") {
+    const auto m = board::voxelize(board::parseSnapshot(gapBoard(2.0)), board::Selection{}, kPlan, kF0);
+    THEN("the notes say the gap is a few cells wide, name both nets and say what to do") {
+      REQUIRE(anyNote(m, "FEED", "GND"));
+      REQUIRE(anyNote(m, "cells wide"));
+      REQUIRE(anyNote(m, "refine"));
+    }
+  }
+  GIVEN("the same two nets 7 mm apart") {
+    const auto m = board::voxelize(board::parseSnapshot(gapBoard(7.0)), board::Selection{}, kPlan, kF0);
+    THEN("nothing is reported about the gap") {
+      REQUIRE_FALSE(anyNote(m, "cells wide"));
     }
   }
 }
@@ -918,6 +1038,27 @@ SCENARIO("A via that lands on copper of another net is reported") {
   }
 }
 
+SCENARIO("A via that is only joined to another net by the grid is not called a short circuit") {
+  // a ground via 0.5 mm clear of an RF strip's edge on a 1 mm grid: legal on the board, joined in the model
+  const std::string text =
+      R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t","kicad_version":"10"},
+      "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0008,"epsilon_r":4.4,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"F.Cu","owner":"","net":"RF","polygon":[[0.002,0.0054],[0.006,0.0054],[0.006,0.0064],[0.002,0.0064]]}],
+      "vias":[{"x":0.004,"y":0.0046,"diameter":0.0006,"drill":0.0003,"net":"GND","owner":""}],"components":[]})";
+  GIVEN("that board on a grid whose cell is wider than the gap") {
+    const auto m = board::voxelize(board::parseSnapshot(text), board::Selection{}, kPlan, kF0);
+    THEN("the note says the grid joins them, gives the real gap, and does not say short-circuit") {
+      REQUIRE(anyNote(m, "via of net 'GND'", "RF"));
+      REQUIRE(anyNote(m, "via of net 'GND'", "the grid"));
+      REQUIRE(anyNote(m, "via of net 'GND'", "0.50 mm"));
+      REQUIRE_FALSE(anyNote(m, "short-circuits"));
+    }
+  }
+}
+
 SCENARIO("A via is checked against the copper of every layer it crosses, not only its end layers") {
   GIVEN("a through via on a three-copper-layer board whose middle layer has a strip of another net there") {
     const std::string text =
@@ -934,6 +1075,117 @@ SCENARIO("A via is checked against the copper of every layer it crosses, not onl
     const auto m = board::voxelize(board::parseSnapshot(text), board::Selection{}, kPlan, kF0);
     THEN("the notes say it short-circuits the RF strip on In1.Cu") {
       REQUIRE(anyNote(m, "via of net 'GND'", "In1.Cu"));
+    }
+  }
+}
+
+namespace {
+// The fixture with a finished copper thickness on both layers.
+std::string thickFixture(double thicknessM) {
+  std::string text = fixture();
+  const std::string t = ",\"thickness\":" + std::to_string(thicknessM);
+  for (const char* layer : {"F.Cu", "B.Cu"}) {
+    const std::string from = std::string("{\"name\":\"") + layer + "\",\"kind\":\"copper\"";
+    text.replace(text.find(from), from.size(), from + t);
+  }
+  return text;
+}
+std::size_t edgesOf(const board::Model& m, fdtd::Axis component, std::size_t zNode) {
+  const auto& g = m.grid;
+  std::size_t n = 0;
+  for (const auto& e : m.pecEdges)
+    n += e.axis == component && (e.node / (g.nodes(fdtd::X) * g.nodes(fdtd::Y))) == zNode;
+  return n;
+}
+} // namespace
+
+SCENARIO("Copper of a given thickness is a slab of cells when asked and a sheet otherwise") {
+  const double t = 35e-6;
+  GIVEN("the fixture with 35 um of copper on both layers") {
+    const board::Snapshot snap = board::parseSnapshot(thickFixture(t));
+    const board::Snapshot bare = board::parseSnapshot(fixture());
+    board::GridPlan sheetPlan = kPlan, slabPlan = kPlan;
+    slabPlan.copperSlab = true;
+    WHEN("the default (sheet) model is built") {
+      const auto withT = board::voxelize(snap, board::Selection{}, sheetPlan, kF0);
+      const auto without = board::voxelize(bare, board::Selection{}, sheetPlan, kF0);
+      THEN("the thickness changes nothing: same grid, same PEC edges, same note") {
+        REQUIRE(withT.grid.cellCount() == without.grid.cellCount());
+        REQUIRE(withT.pecEdges.size() == without.pecEdges.size());
+        REQUIRE(anyNote(withT, "zero-thickness PEC sheets"));
+      }
+    }
+    WHEN("the slab model is built") {
+      const auto m = board::voxelize(snap, board::Selection{}, slabPlan, kF0);
+      const auto sheet = board::voxelize(snap, board::Selection{}, sheetPlan, kF0);
+      const std::size_t top = m.copperPlaneNode[0], bottom = m.copperPlaneNode[2];
+      const auto& g = m.grid;
+      THEN("the top copper fills one z cell of its own thickness above its dielectric interface") {
+        REQUIRE(g.edge(fdtd::Z, top + 1) - g.edge(fdtd::Z, top) == Approx(t).margin(1e-9));
+      }
+      AND_THEN("the bottom copper fills one z cell below its interface") {
+        REQUIRE(g.edge(fdtd::Z, bottom) - g.edge(fdtd::Z, bottom - 1) == Approx(t).margin(1e-9));
+      }
+      AND_THEN("the pad is PEC in both planes of its slab and PEC along z between them, nowhere else") {
+        const std::size_t padEx = edgesOf(sheet, fdtd::X, sheet.copperPlaneNode[0]);
+        REQUIRE(padEx > 0);
+        REQUIRE(edgesOf(m, fdtd::X, top) == padEx);
+        REQUIRE(edgesOf(m, fdtd::X, top + 1) == padEx);
+        REQUIRE(edgesOf(sheet, fdtd::Z, sheet.copperPlaneNode[0]) == 0);
+        REQUIRE(edgesOf(m, fdtd::Z, top) > 0);
+        REQUIRE(edgesOf(m, fdtd::Z, top + 1) == 0);
+      }
+      AND_THEN("the ground plane gets the same: PEC in the planes of its slab (below its interface)") {
+        const std::size_t gndEx = edgesOf(sheet, fdtd::X, sheet.copperPlaneNode[2]);
+        REQUIRE(gndEx > 0);
+        REQUIRE(edgesOf(m, fdtd::X, bottom - 1) == gndEx);
+        REQUIRE(edgesOf(m, fdtd::Z, bottom - 1) > 0);
+      }
+      AND_THEN("the note says copper is slabs of its finished thickness") {
+        REQUIRE(anyNote(m, "slab"));
+        REQUIRE_FALSE(anyNote(m, "zero-thickness PEC sheets"));
+      }
+    }
+    WHEN("the slab model is asked for but a layer has no thickness") {
+      const auto m = board::voxelize(bare, board::Selection{}, slabPlan, kF0);
+      const auto sheet = board::voxelize(bare, board::Selection{}, kPlan, kF0);
+      THEN("that layer stays a sheet, and the note says which") {
+        REQUIRE(m.pecEdges.size() == sheet.pecEdges.size());
+        REQUIRE(anyNote(m, "no thickness"));
+      }
+    }
+  }
+}
+
+SCENARIO("A slab's walls are solid on both sides when grid lines fall exactly on its edges") {
+  GIVEN("the pad with grid lines snapped onto its corners (x 3.6 and 6.4 mm), 35 um of copper, slab model") {
+    const board::Snapshot snap = board::parseSnapshot(thickFixture(35e-6));
+    board::GridPlan plan = kPlan;
+    plan.copperSlab = true;
+    plan.snapToGeometry = true;
+    const auto m = board::voxelize(snap, board::Selection{}, plan, kF0);
+    const auto& g = m.grid;
+    const std::size_t top = m.copperPlaneNode[0];
+    auto columns = [&](fdtd::Axis axis, std::size_t plane) {
+      std::vector<double> xs;
+      for (const auto& e : m.pecEdges)
+        if (e.axis == axis && e.node / (g.nodes(fdtd::X) * g.nodes(fdtd::Y)) == plane)
+          xs.push_back((g.edge(fdtd::X, e.node % g.nodes(fdtd::X)) + m.originX) * 1e3);
+      std::sort(xs.begin(), xs.end());
+      xs.erase(std::unique(xs.begin(), xs.end(), [](double a, double b) { return std::abs(a - b) < 1e-6; }),
+               xs.end());
+      return xs;
+    };
+    THEN("Ez and Ey are PEC on the column at each edge of the pad, left and right alike") {
+      for (const auto& [axis, plane] :
+           {std::pair{fdtd::Z, top}, std::pair{fdtd::Y, top}, std::pair{fdtd::Y, top + 1}}) {
+        const auto xs = columns(axis, plane);
+        REQUIRE_FALSE(xs.empty());
+        INFO("axis " << static_cast<int>(axis) << " plane " << plane << " first " << xs.front() << " last "
+                     << xs.back());
+        REQUIRE(xs.front() == Approx(3.6).margin(1e-6));
+        REQUIRE(xs.back() == Approx(6.4).margin(1e-6));
+      }
     }
   }
 }

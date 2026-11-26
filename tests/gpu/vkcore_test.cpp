@@ -53,3 +53,56 @@ SCENARIO("The default device rule never picks an unsuitable device", "[gpu]") {
     }
   }
 }
+
+SCENARIO("A device selector chooses the GPU a run uses", "[gpu][device]") {
+  GIVEN("the Vulkan devices the loader reports") {
+    const auto devices = vkcore::listDevices();
+    REQUIRE_FALSE(devices.empty());
+    std::size_t firstUsable = devices.size();
+    for (std::size_t i = 0; i < devices.size() && firstUsable == devices.size(); ++i)
+      if (vkcore::usable(devices[i]))
+        firstUsable = i;
+    REQUIRE(firstUsable < devices.size());
+
+    WHEN("the UUID of a usable device is given as the selector") {
+      THEN("the context runs on that device") {
+        const auto& want = devices[firstUsable];
+        REQUIRE(want.uuid.size() == 32);
+        vkcore::Context ctx({.device = want.uuid});
+        REQUIRE(std::string(ctx.properties().deviceName) == want.name);
+        REQUIRE(ctx.properties().deviceID == want.deviceId);
+      }
+    }
+    WHEN("the selector names no device") {
+      THEN("the context is refused instead of falling back to another GPU") {
+        REQUIRE_THROWS(vkcore::Context({.device = "ffffffff"}));
+        REQUIRE_THROWS(vkcore::Context({.device = "99"}));
+      }
+    }
+  }
+}
+
+SCENARIO("A device-resident buffer works on the staged path too", "[gpu][staged]") {
+  GIVEN("a context forced onto staged buffers and the fill kernel") {
+    vkcore::Context ctx({.validation = kValidation, .stagedBuffers = true});
+    constexpr std::uint32_t n = 1u << 16;
+    vkcore::Buffer buf(ctx, n * sizeof(float), vkcore::Residency::Device);
+    REQUIRE(buf.staged());
+    vkcore::ComputePipeline fill(ctx, std::string(FDTD_SHADER_DIR) + "/hello.comp.spv", 1,
+                                 sizeof(std::uint32_t));
+    std::fill(buf.as<float>().begin(), buf.as<float>().end(), -1.0f);
+    buf.upload();
+    WHEN("the kernel fills the VRAM copy and the host reads it back") {
+      vkcore::Buffer* bufs[] = {&buf};
+      fill.run(bufs, &n, (n + 63) / 64);
+      THEN("the host view still holds the old data until download()") {
+        REQUIRE(buf.as<float>()[5] == -1.0f);
+        buf.download();
+        std::size_t bad = 0;
+        for (std::uint32_t i = 0; i < n; ++i)
+          bad += buf.as<float>()[i] != 2.0f * i + 1.0f;
+        REQUIRE(bad == 0);
+      }
+    }
+  }
+}

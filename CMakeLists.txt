@@ -18,20 +18,33 @@ option(FDTD_WARNINGS_AS_ERRORS "-Werror" OFF)
 
 # One place for compile flags: every target links fdtd_options.
 add_library(fdtd_options INTERFACE)
-target_compile_options(fdtd_options INTERFACE -Wall -Wextra -Wshadow
-  # Vulkan create-info structs are initialised as {sType}; the other fields are intentionally zero.
-  -Wno-missing-field-initializers)
-if(FDTD_WARNINGS_AS_ERRORS)
-  target_compile_options(fdtd_options INTERFACE -Werror)
-endif()
-if(FDTD_SANITIZE)
-  target_compile_options(fdtd_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
-  target_link_options(fdtd_options INTERFACE -fsanitize=address,undefined)
+if(MSVC)
+  # cl takes /W3 (-Wall is extremely noisy on it) and needs these for portable source: UTF-8 sources,
+  # strict conformance, M_PI from <cmath>, no min/max macros from <windows.h>.
+  target_compile_options(fdtd_options INTERFACE /W3 /utf-8 /permissive-)
+  target_compile_definitions(fdtd_options INTERFACE _USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  if(FDTD_WARNINGS_AS_ERRORS)
+    target_compile_options(fdtd_options INTERFACE /WX)
+  endif()
+  if(FDTD_SANITIZE)
+    target_compile_options(fdtd_options INTERFACE /fsanitize=address)
+  endif()
+else()
+  target_compile_options(fdtd_options INTERFACE -Wall -Wextra -Wshadow
+    # Vulkan create-info structs are initialised as {sType}; the other fields are intentionally zero.
+    -Wno-missing-field-initializers)
+  if(FDTD_WARNINGS_AS_ERRORS)
+    target_compile_options(fdtd_options INTERFACE -Werror)
+  endif()
+  if(FDTD_SANITIZE)
+    target_compile_options(fdtd_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(fdtd_options INTERFACE -fsanitize=address,undefined)
+  endif()
 endif()
 
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 include(cmake/Spirv.cmake)
-add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp shaders/phasor_accum.comp shaders/slice_render.comp shaders/volume_field.comp shaders/volume_render.comp)
+add_spirv_shaders(shaders shaders/hello.comp shaders/copy.comp shaders/fdtd_step.comp shaders/phasor_accum.comp shaders/slice_render.comp shaders/volume_field.comp shaders/volume_render.comp shaders/line2d_rb.comp)
 
 # Anything that loads a SPIR-V file links this to learn where they are.
 add_library(fdtd_shaders INTERFACE)

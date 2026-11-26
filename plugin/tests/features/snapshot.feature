@@ -50,3 +50,13 @@ Feature: Board geometry becomes a snapshot the solver can read
     Given a project folder with a solver window running
     When a run is requested for a new export
     Then the open window is asked to run through the request file
+
+  Scenario: A copper layer may carry its finished thickness
+    Given a snapshot whose copper layer has thickness 35 um
+    When it is validated
+    Then validation passes
+
+  Scenario: A negative copper thickness is refused
+    Given a snapshot whose copper layer has thickness -1 um
+    When it is validated
+    Then validation fails naming the copper thickness

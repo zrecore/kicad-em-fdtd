@@ -51,7 +51,10 @@ def read_stackup(board, defaults, notes):
     for layer in board.get_stackup().layers:
         kind = board_pb2.BoardStackupLayerType.Name(layer.type)
         if kind == "BSLT_COPPER":
-            out.append({"name": layer_name(layer.layer), "kind": "copper"})
+            entry = {"name": layer_name(layer.layer), "kind": "copper"}
+            if layer.thickness:  # the stackup's finished copper; 0 when the board leaves it unset
+                entry["thickness"] = nm_to_m(layer.thickness)
+            out.append(entry)
         elif kind == "BSLT_DIELECTRIC":
             for i, sub in enumerate(layer.dielectric.layers if layer.dielectric else []):
                 eps, tan_d = sub.epsilon_r, sub.loss_tangent

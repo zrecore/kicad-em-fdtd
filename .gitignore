@@ -5,6 +5,8 @@ out/
 *-backups/
 __pycache__/
 boards/w3008-testboard/
+boards/nrf52840-w3008/
+boards/nrf52840-ifa/
 imgui.ini
 
 # macOS

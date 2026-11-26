@@ -11,8 +11,14 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 
 #include "app/paths.hpp"
 #include "app/phasor_feed.hpp"
@@ -22,6 +28,7 @@
 #include "board/geometry_override.hpp"
 #include "board/netwalk.hpp"
 #include "board/parts.hpp"
+#include "board/refine_suggest.hpp"
 #include "board/snapshot.hpp"
 #include "board/voxelize.hpp"
 #include "core/resources.hpp"
@@ -71,6 +78,12 @@ void usage() {
       "  --body-label REF=TEXT    note printed with that body (for example how well it matches a datasheet)\n"
       "  --body REF=ignore|metal|dielectric:EPS[:TAND]  a part's body treatment (repeatable)\n"
       "  --refine X0 Y0 X1 Y1 MM  extra fine-cell box in board coordinates (mm); repeatable\n"
+      "  --refine-gaps CELLS      refine every narrow gap between two nets near a port to CELLS cells across "
+      "it\n"
+      "                           (a dry run lists the suggestions that are not applied)\n"
+      "  --device SEL             GPU to use: index or UUID prefix from --list-devices (also env "
+      "EMFDTD_DEVICE)\n"
+      "  --list-devices           (first argument) list the Vulkan devices with UUID and driver, then exit\n"
       "  --cpu | --gpu            force a backend (default: setting 'backend', auto = GPU if present)\n"
       "  --view                   open a window and animate the field while the solve runs\n"
       "  --frames N               write N animation frames into the run folder\n"
@@ -186,8 +199,31 @@ void runViewer(const fdtd::Grid& g, const viz::Plane& plane, const viz::PhasorAc
 
 } // namespace
 
+void listDevices() {
+  const auto devices = vkcore::listDevices();
+  std::size_t usableIndex = 0;
+  for (const auto& d : devices) {
+    const bool ok = vkcore::usable(d);
+    std::printf("%s  %s  uuid %s  %s  %.1f GiB  vulkan %u.%u  driver %s%s\n",
+                ok ? std::to_string(usableIndex++).c_str() : "-", d.name.c_str(),
+                d.uuid.empty() ? "unknown" : d.uuid.c_str(), d.discrete ? "discrete" : "integrated/other",
+                static_cast<double>(d.deviceLocalBytes) / (1024.0 * 1024.0 * 1024.0),
+                VK_API_VERSION_MAJOR(d.apiVersion), VK_API_VERSION_MINOR(d.apiVersion),
+                d.driver.empty() ? "unknown" : d.driver.c_str(),
+                ok ? "" : "  (below Vulkan 1.2: not usable)");
+  }
+  if (devices.empty())
+    std::printf("no Vulkan devices found\n");
+}
+
 int main(int argc, char** argv) {
-  std::setvbuf(stdout, nullptr, _IOLBF, 0); // progress lines should appear even if the run is killed
+  // Progress lines should appear even if the run is killed. The MSVC runtime rejects a zero buffer size with
+  // _IOLBF (it aborts) and treats _IOLBF as full buffering, so there stdout is unbuffered.
+#ifdef _WIN32
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
   try {
     if (argc < 2) {
       usage();
@@ -195,6 +231,10 @@ int main(int argc, char** argv) {
     }
     if (std::string(argv[1]) == "--version") {
       std::printf("emfdtd %s\n", FDTD_VERSION);
+      return 0;
+    }
+    if (std::string(argv[1]) == "--list-devices") {
+      listDevices();
       return 0;
     }
     const app::Catalog catalog =
@@ -209,6 +249,7 @@ int main(int argc, char** argv) {
     std::string profileArg;
     std::vector<std::pair<std::string, std::string>> sets;
     std::vector<board::RefineBox> refine;
+    double refineGaps = 0; // cells across each narrow gap near a port; 0: only list the suggestions
     board::Selection selection;
     std::set<std::string> pickedNets, extraGround;
     app::SweepSpec sweepSpec;
@@ -228,6 +269,9 @@ int main(int argc, char** argv) {
     int legendsFlag = -1; // -1 default, 0 collapsed, 1 expanded
     std::uint32_t shotW = 1280, shotH = 800;
     std::string backendFlag, openRunDir;
+    // Which GPU (index or UUID prefix from --list-devices). Machine-specific, so a flag and an environment
+    // variable, not a setting. A named device that cannot be used is an error, never a silent CPU fallback.
+    std::string deviceSel = std::getenv("EMFDTD_DEVICE") ? std::getenv("EMFDTD_DEVICE") : "";
     int pruneKeep = -1;
     for (int i = 2; i < argc; ++i) {
       const std::string a = argv[i];
@@ -338,12 +382,18 @@ int main(int argc, char** argv) {
         if (eq == std::string::npos)
           throw std::runtime_error("--body-label needs REF=TEXT, got '" + kv + "'");
         selection.bodies[kv.substr(0, eq)].label = kv.substr(eq + 1);
+      } else if (a == "--refine-gaps") {
+        refineGaps = std::atof(next());
+        if (refineGaps < 2)
+          throw std::runtime_error("--refine-gaps needs a number of cells across the gap, at least 2");
       } else if (a == "--refine") {
         double v[5];
         for (double& x : v)
           x = std::atof(next()) * 1e-3;
         refine.push_back({v[0], v[1], v[2], v[3], v[4]});
-      } else if (a == "--cpu" || a == "--gpu")
+      } else if (a == "--device")
+        deviceSel = next();
+      else if (a == "--cpu" || a == "--gpu")
         backendFlag = a.substr(2);
       else if (a == "--view")
         view = true;
@@ -441,15 +491,31 @@ int main(int argc, char** argv) {
       for (const std::string& n : selection.netNotes)
         std::fprintf(stderr, "%s\n", n.c_str());
     }
+    selection.refine.insert(selection.refine.end(), refine.begin(), refine.end()); // the typed boxes
+    refine.clear();
+    std::vector<std::string> refineNotes; // suggestions that are listed but not applied
+    {
+      const auto suggestions = board::suggestRefinement(snap, selection, refineGaps > 0 ? refineGaps : 6.0);
+      for (const auto& g : suggestions) {
+        if (refineGaps > 0 && !(uiMode || !shotFile.empty())) {
+          selection.refine.push_back(g.box);
+          geomNotes.push_back("refinement (--refine-gaps " + std::to_string(static_cast<int>(refineGaps)) +
+                              "): " + g.reason);
+        } else {
+          refineNotes.push_back("refinement suggestion, not applied: " + g.reason +
+                                " (apply with --refine-gaps 6, or switch it on in the window)");
+        }
+      }
+    }
     if (uiMode || !shotFile.empty()) {
       std::shared_ptr<vkcore::Context> ctxHolder;
       auto chooseBackend = [&](const std::string& requested) {
         ui::Backend b;
         if (requested != "cpu" && !ctxHolder) {
           try {
-            ctxHolder = std::make_shared<vkcore::Context>();
+            ctxHolder = std::make_shared<vkcore::Context>(vkcore::ContextOptions{.device = deviceSel});
           } catch (const std::exception&) {
-            if (requested == "gpu")
+            if (requested == "gpu" || !deviceSel.empty())
               throw;
           }
         }
@@ -514,8 +580,12 @@ int main(int argc, char** argv) {
         }
         if (!shotTab.empty())
           screen.selectTab(shotTab);
-        for (int n = 0; n < 16; ++n) // frames for the camera to settle (auto-fit eases towards the activity)
+        for (int n = 0; n < 16;
+             ++n) { // frames for the camera to settle (auto-fit eases towards the activity)
           screen.frame(100.0 + 0.1 * n, shotW, shotH, rgba);
+          if (shotTab == "Farm") // its data comes from the farm tool in the background: give it time
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        }
         if (exportAfterRun) {
           screen.exportVolume();
           std::printf("%s\n", screen.statusMessage().c_str());
@@ -613,7 +683,8 @@ int main(int argc, char** argv) {
                 }
               }
             } catch (const std::exception& e) {
-              std::fprintf(stderr, "emfdtd: could not reload %s: %s\n", snapshotPath.c_str(), e.what());
+              std::fprintf(stderr, "emfdtd: could not reload %s: %s\n", snapshotPath.string().c_str(),
+                           e.what());
             }
           }
         }
@@ -653,7 +724,7 @@ int main(int argc, char** argv) {
       fs::remove(pidFile, ec);
       return 0;
     }
-    auto prepared = app::prepare(snap, settings, selection, refine);
+    auto prepared = app::prepare(snap, settings, selection);
     prepared.model.notes.insert(prepared.model.notes.end(), geomNotes.begin(), geomNotes.end());
     const auto& g = prepared.model.grid;
     const auto& plan = prepared.plan;
@@ -662,9 +733,9 @@ int main(int argc, char** argv) {
     bool gpu = plan.backend != "cpu";
     if (gpu) {
       try {
-        ctx = std::make_unique<vkcore::Context>();
+        ctx = std::make_unique<vkcore::Context>(vkcore::ContextOptions{.device = deviceSel});
       } catch (const std::exception& e) {
-        if (plan.backend == "gpu")
+        if (plan.backend == "gpu" || !deviceSel.empty())
           throw;
         std::printf("no usable GPU (%s); using the CPU reference\n", e.what());
         gpu = false;
@@ -688,6 +759,8 @@ int main(int argc, char** argv) {
     for (const auto& key : settings.modifiedKeys())
       std::printf("changed from default: %s\n", key.c_str());
     for (const auto& n : prepared.model.notes)
+      std::printf("note: %s\n", n.c_str());
+    for (const auto& n : refineNotes)
       std::printf("note: %s\n", n.c_str());
     if (dryRun)
       return 0;
@@ -783,6 +856,17 @@ int main(int argc, char** argv) {
     sim::RunResult r;
     std::exception_ptr failure;
     const auto t0 = std::chrono::steady_clock::now();
+    // A progress line every few seconds, for people watching a log and for the job farm (which turns it into
+    // a progress bar). The percentage is how far the signal has decayed toward the stop level: an estimate.
+    auto lastProgress = t0;
+    opt.onProgress = [&](const sim::RunResult& rr) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - lastProgress < std::chrono::seconds(5))
+        return;
+      lastProgress = now;
+      std::printf("progress: %zu steps, about %d%%, %.0f s\n", rr.steps,
+                  static_cast<int>(rr.progress * 100.0), std::chrono::duration<double>(now - t0).count());
+    };
     auto work = [&] {
       try {
         r = sim::runOnePort(model, opt, factory);

@@ -64,7 +64,11 @@ Snapshot parseSnapshot(std::string_view textIn) {
       Layer layer;
       layer.name = require(l, "name").get<std::string>();
       layer.copper = require(l, "kind").get<std::string>() == "copper";
-      if (!layer.copper) {
+      if (layer.copper) {
+        layer.thickness = l.value("thickness", 0.0); // 0: unknown
+        if (!(layer.thickness >= 0))
+          throw SnapshotError("stackup layer '" + layer.name + "': copper thickness must not be negative");
+      } else {
         layer.thickness = require(l, "thickness").get<double>();
         layer.epsilonR = require(l, "epsilon_r").get<double>();
         layer.lossTangent = l.value("loss_tangent", 0.0);

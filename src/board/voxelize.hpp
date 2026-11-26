@@ -27,6 +27,10 @@ struct BodyTreatment {
   std::string label; // how well the model matches a datasheet, printed in the run notes; empty: assumed
 };
 
+struct RefineBox { // board coordinates, metres: cells of size `cell` inside the box, graded outward
+  double x0, y0, x1, y1, cell;
+};
+
 struct Selection {
   bool all = true;
   std::set<std::string> owners; // used when all == false
@@ -38,16 +42,13 @@ struct Selection {
   std::set<std::string> nets;                 // the nets kept: the walk's plus ground
   std::set<std::string> pickedNets;           // what the user picked (the walk starts here)
   std::vector<std::string> netNotes;          // why each part and net is in, for the run summary
+  std::vector<RefineBox> refine; // extra fine-cell boxes the user switched on (suggestions or typed)
   bool netIncluded(const std::string& net) const { return !netFilter || nets.count(net) > 0; }
   bool includes(const std::string& owner) const { return owner.empty() || all || owners.count(owner) > 0; }
   BodyTreatment bodyOf(const std::string& ref) const {
     const auto it = bodies.find(ref);
     return it == bodies.end() ? defaultBody : it->second;
   }
-};
-
-struct RefineBox { // board coordinates, metres: cells of size `cell` inside the box, graded outward
-  double x0, y0, x1, y1, cell;
 };
 
 struct GridPlan {                     // metres
@@ -59,6 +60,9 @@ struct GridPlan {                     // metres
   bool snapToGeometry = false;        // put grid lines on copper, outline and port edges (accuracy)
   double airNearCell = 0;             // z cell size in the air next to the board (0: airCell throughout)
   double airNearHeight = 0;           // that fine layer's thickness, then cells grow by 1.3 up to airCell
+  double airGrowth = 1.3; // air cells grow from the adjacent board cell by this ratio up to airCell (1: even)
+  bool copperSlab = false;    // copper layers with a thickness fill z cells of that thickness, not a sheet
+  double lateralGrowth = 1.3; // lateral cells grow by at most this ratio from a refinement box outward
 };
 
 // A refinement box around every port, `pad` larger on each side, with cells of size `cell`.

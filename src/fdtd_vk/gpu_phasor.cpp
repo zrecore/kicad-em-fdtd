@@ -15,7 +15,8 @@ std::size_t GpuSolver::addPhasorList(std::vector<PhasorChannel> channels, std::v
   l->channels = channels.size();
   l->frequencies = std::move(frequenciesHz);
   const std::size_t n = l->frequencies.size();
-  l->list = std::make_unique<vkcore::Buffer>(ctx_, channels.size() * 2 * sizeof(std::uint32_t));
+  l->list = std::make_unique<vkcore::Buffer>(ctx_, channels.size() * 2 * sizeof(std::uint32_t),
+                                             vkcore::Residency::Device);
   auto words = l->list->as<std::uint32_t>();
   for (std::size_t c = 0; c < channels.size(); ++c) {
     if (channels[c].node >= nodeCount_)
@@ -24,10 +25,13 @@ std::size_t GpuSolver::addPhasorList(std::vector<PhasorChannel> channels, std::v
         static_cast<std::uint32_t>((channels[c].kind == fdtd::Kind::E ? 0 : 3) + channels[c].component);
     words[2 * c + 1] = channels[c].node;
   }
+  l->list->upload();
   // re, im and their Kahan compensations, each N * channels floats
-  l->acc = std::make_unique<vkcore::Buffer>(ctx_, 4 * n * channels.size() * sizeof(float));
+  l->acc = std::make_unique<vkcore::Buffer>(ctx_, 4 * n * channels.size() * sizeof(float),
+                                            vkcore::Residency::Device);
   std::fill(l->acc->as<float>().begin(), l->acc->as<float>().end(), 0.0f);
-  l->trig = std::make_unique<vkcore::Buffer>(ctx_, 2 * n * 2 * sizeof(float));
+  l->acc->upload();
+  l->trig = std::make_unique<vkcore::Buffer>(ctx_, 2 * n * 2 * sizeof(float), vkcore::Residency::Device);
   if (!accumPipeline_)
     accumPipeline_ = std::make_unique<vkcore::ComputePipeline>(
         ctx_, core::resourceDir("shaders", FDTD_SHADER_DIR) + "/phasor_accum.comp.spv", 9,
@@ -47,6 +51,8 @@ void GpuSolver::accumulate(std::size_t list, double weight) {
       trig[2 * (kind * n + k)] = static_cast<float>(std::cos(w) * weight);
       trig[2 * (kind * n + k) + 1] = static_cast<float>(std::sin(w) * weight);
     }
+  l.trig->upload();
+  l.stale = true;
   std::vector<vkcore::Buffer*> bound;
   for (int i = 0; i < 6; ++i)
     bound.push_back(buffers_[i].get());
@@ -63,6 +69,10 @@ std::complex<double> GpuSolver::phasor(std::size_t list, std::size_t frequency, 
   const std::size_t n = l.frequencies.size(), at = frequency * l.channels + channel;
   if (frequency >= n || channel >= l.channels)
     throw std::out_of_range("phasor index");
+  if (l.stale) {
+    l.acc->download();
+    l.stale = false;
+  }
   const auto acc = l.acc->as<float>();
   return {acc[at], acc[n * l.channels + at]};
 }
@@ -76,6 +86,10 @@ void GpuSolver::copyPhasors(std::size_t list, std::span<float> re, std::span<flo
   const std::size_t total = l.frequencies.size() * l.channels;
   if (re.size() != total || im.size() != total)
     throw std::invalid_argument("phasor copy: wrong size");
+  if (l.stale) {
+    l.acc->download();
+    l.stale = false;
+  }
   const auto acc = l.acc->as<float>();
   std::copy(acc.begin(), acc.begin() + static_cast<std::ptrdiff_t>(total), re.begin());
   std::copy(acc.begin() + static_cast<std::ptrdiff_t>(total),

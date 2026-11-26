@@ -62,6 +62,12 @@ struct VolParams {
   float aspect, pad1, pad2, pad3;
 };
 
+// 2D cross-section solve, one red-black half-sweep (shaders/line2d_rb.comp).
+struct Line2dParams {
+  u32 nx, ny, colour;
+  float omega;
+};
+
 // Slice renderer (shaders/slice_render.comp).
 #define SLICE_LIGHT 1u
 #define SLICE_MASK 2u
@@ -76,6 +82,7 @@ struct SliceParams {
 static_assert(sizeof(SliceParams) == 80, "storage buffer layout must match the shader");
 static_assert(sizeof(VolParams) == 224, "storage buffer layout must match the shader");
 static_assert(sizeof(StepParams) == 104, "push constant layout must match the shader");
+static_assert(sizeof(Line2dParams) == 16, "push constant layout must match the shader");
 static_assert(sizeof(AccumParams) == 8, "push constant layout must match the shader");
 } // namespace fdtd_gpu
 #endif

@@ -2,6 +2,7 @@
 // run (the same running DFT as everything else), for near-field checks and hot-spot hunting. Docs/PLAN.md,
 // Next steps 11h.
 #pragma once
+#include <complex>
 #include <cstdint>
 #include <string>
 #include <vector>

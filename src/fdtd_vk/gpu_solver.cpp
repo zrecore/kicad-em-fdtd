@@ -27,9 +27,13 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
     : ctx_(ctx), nodeCount_(init.grid().nodeCount()), ports_(init.ports()), dt_(init.dt()) {
   const fdtd::Grid& g = init.grid();
   const std::size_t fieldBytes = nodeCount_ * sizeof(float);
+  // The simulation state is device-resident: in VRAM on a discrete GPU (a staging copy brings the initial
+  // data in and the few read-backs out), the plain host-visible buffer on unified memory.
+  const auto resident = vkcore::Residency::Device;
   for (int i = 0; i < 6; ++i)
-    buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, fieldBytes));
-  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, fieldBytes)); // 6: packed material indices
+    buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, fieldBytes, resident));
+  buffers_.push_back(
+      std::make_unique<vkcore::Buffer>(ctx, fieldBytes, resident)); // 6: packed material indices
 
   // 7: tables: 1/cell and 1/dual sizes, then (with CPML) b and a at cells (H) and at nodes (E), per axis.
   // Keep one submit near 25 ms (macOS GPU watchdog) at the measured ~2000 Mcells/s: steps = 5e7 / nodes.
@@ -39,7 +43,7 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
   std::size_t tableFloats = 0;
   for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z})
     tableFloats += g.cells(a) + g.nodes(a) + (pml ? 2 * (g.cells(a) + g.nodes(a)) : 0);
-  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, tableFloats * sizeof(float)));
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, tableFloats * sizeof(float), resident));
 
   for (fdtd::Axis a : {fdtd::X, fdtd::Y, fdtd::Z}) {
     upload<float>(*buffers_[a], 0, init.field(fdtd::Kind::E, a));
@@ -107,7 +111,8 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
     }
   }
 
-  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, kMaxPalette * 2 * sizeof(float))); // 8: palette
+  buffers_.push_back(
+      std::make_unique<vkcore::Buffer>(ctx, kMaxPalette * 2 * sizeof(float), resident)); // 8: palette
   std::copy(&paletteData[0][0], &paletteData[0][0] + 2 * paletteData.size(),
             buffers_[8]->as<float>().begin());
 
@@ -120,7 +125,7 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
       psiFloats += 4 * 2 * pml * g.nodes(u) * g.nodes(v); // (H + E) * 2 terms * 2*pml layers
     }
   }
-  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, psiFloats * sizeof(float)));
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, psiFloats * sizeof(float), resident));
   std::fill(buffers_[9]->as<float>().begin(), buffers_[9]->as<float>().end(), 0.0f);
 
   // 10: ports: counter header, port table, then the per-submit waveform and E log.
@@ -128,7 +133,7 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
   base.portCount = static_cast<std::uint32_t>(portCount);
   base.maxSteps = kMaxStepsPerSubmit;
   const std::size_t portWords = 4 + 8 * portCount + 2 * kMaxStepsPerSubmit * portCount;
-  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, portWords * sizeof(float)));
+  buffers_.push_back(std::make_unique<vkcore::Buffer>(ctx, portWords * sizeof(float), resident));
   auto words = buffers_[10]->as<float>();
   std::fill(words.begin(), words.end(), 0.0f);
   for (std::size_t p = 0; p < portCount; ++p) {
@@ -169,8 +174,10 @@ GpuSolver::GpuSolver(vkcore::Context& ctx, const fdtd::Solver<float>& init)
   for (const auto& s : sequence_)
     pushes_.push_back(&s);
 
-  for (auto& b : buffers_)
+  for (auto& b : buffers_) {
+    b->upload(); // staged buffers: the initial state goes to VRAM once
     bound_.push_back(b.get());
+  }
   pipeline_ = std::make_unique<vkcore::ComputePipeline>(
       ctx, core::resourceDir("shaders", FDTD_SHADER_DIR) + "/fdtd_step.comp.spv", 11,
       sizeof(fdtd_gpu::StepParams));
@@ -192,10 +199,13 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
           portVs_[p].push_back(vs);
         }
     }
+    if (portCount)
+      buffers_[10]->upload(); // counter header and source waveform (a few kB)
     const auto t = pipeline_->runSequence(bound_, pushes_, kGroups, chunk);
     total.gpuMs += t.gpuMs;
     total.wallMs += t.wallMs;
     if (portCount) {
+      buffers_[10]->download(); // the E log of this submit
       const float* log = &words[4 + 8 * portCount + kMaxStepsPerSubmit * portCount];
       for (std::uint32_t s = 0; s < chunk; ++s)
         for (std::size_t p = 0; p < portCount; ++p)
@@ -209,6 +219,10 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
 
 std::span<const float> GpuSolver::field(fdtd::Kind kind, fdtd::Axis component) const {
   const std::size_t index = (kind == fdtd::Kind::E ? 0 : 3) + component;
+  if (fieldSynced_[index] != stepsDone_) { // staged buffers: bring the field back once per step count
+    buffers_[index]->download();
+    fieldSynced_[index] = stepsDone_;
+  }
   return buffers_[index]->as<float>().first(nodeCount_);
 }
 

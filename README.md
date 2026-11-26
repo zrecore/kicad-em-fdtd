@@ -4,7 +4,7 @@
 
 Real-time 3D electromagnetic wave simulator for KiCAD boards: an FDTD solver of Maxwell's equations (Vulkan GPU, MoltenVK on macOS, plus a CPU reference) with an animated field viewer, packaged as a cross-platform (macOS, Windows, Linux) KiCAD IPC plugin.
 
-Status: working prototype on macOS (Apple silicon, KiCAD 10). A board snapshot goes through the voxelizer to the solver (CPML absorbing boundary, lumped ports) and comes out as S11 (Touchstone) plus an animated field view. The KiCAD plugin entry point exists but is untested inside KiCAD. Windows and Linux builds come later. See [docs/PLAN.md](docs/PLAN.md) for decisions and measurements and [docs/ux.md](docs/ux.md) for the interface.
+Status: working prototype on macOS (Apple silicon, KiCAD 10). A board snapshot goes through the voxelizer to the solver (CPML absorbing boundary, lumped ports) and comes out as S11 (Touchstone) plus an animated field view. The KiCAD plugin entry point exists but is untested inside KiCAD. An optional GPU farm (off by default, [docs/farm.md](docs/farm.md)) sends jobs to GPUs on other machines on your network. The solver builds with Visual Studio on Windows; other Windows and Linux work comes later. See [docs/PLAN.md](docs/PLAN.md) for decisions and measurements and [docs/ux.md](docs/ux.md) for the interface.
 
 ## Build and run
 

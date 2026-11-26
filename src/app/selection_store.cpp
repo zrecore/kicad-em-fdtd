@@ -67,6 +67,9 @@ void saveSelection(const std::filesystem::path& file, const StoredSelection& s) 
                         {"loss_tangent", b.lossTangent},
                         {"label", b.label}};
   j["default_body"] = {{"kind", bodyName(s.defaultBody.kind)}, {"epsilon_r", s.defaultBody.epsilonR}};
+  j["refinement"] = Json::object();
+  for (const auto& [id, c] : s.refinement)
+    j["refinement"][id] = {{"enabled", c.enabled}, {"cell_mm", c.cellMm}};
   std::filesystem::create_directories(file.parent_path());
   const auto tmp = std::filesystem::path(file).concat(".tmp"); // write whole or not at all
   {
@@ -106,6 +109,9 @@ StoredSelection loadSelection(const std::filesystem::path& file) {
         t.c = p.at("c_farad").get<double>();
       s.parts[ref] = t;
     }
+    const Json refinement = j.value("refinement", Json::object()); // named: items() of a temporary dangles
+    for (const auto& [id, c] : refinement.items())
+      s.refinement[id] = {c.value("enabled", false), c.value("cell_mm", 0.0)};
     const Json bodies = j.value("bodies", Json::object());
     for (const auto& [ref, b] : bodies.items())
       s.bodies[ref] = {bodyFrom(b.value("kind", "ignore")), b.value("epsilon_r", 4.0),

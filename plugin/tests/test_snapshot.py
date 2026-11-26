@@ -187,3 +187,18 @@ def _autorun(context):
 @then("the open window is asked to run through the request file")
 def _request_file(context):
     assert (context["project"] / "em-fdtd" / "request.txt").read_text().strip() == "run"
+
+
+@given(parsers.parse("a snapshot whose copper layer has thickness {um:g} um"))
+def _copper_thickness(context, um):
+    context["snap"] = _snap([dict(CU, thickness=um * 1e-6), DIEL], [])
+
+
+@then("validation passes")
+def _passes(context):
+    assert context["error"] is None
+
+
+@then("validation fails naming the copper thickness")
+def _names_thickness(context):
+    assert "copper thickness" in context["error"]
