@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -90,6 +92,7 @@ bool parseQueue(const std::string& json, Snapshot& out, std::string& error) {
       job.attempts = static_cast<int>(num(r, "attempts"));
       job.percent =
           r.contains("percent") && r["percent"].is_number() ? static_cast<int>(num(r, "percent")) : -1;
+      job.started = r.contains("started") && r["started"].is_number() ? num(r, "started") : 0.0;
       jobs.push_back(std::move(job));
     }
     out.devices = std::move(devices);
@@ -135,6 +138,178 @@ int percentFromProgressLine(const std::string& line) {
   if (!std::regex_search(line, m, re))
     return -1;
   return std::min(100, std::stoi(m[1].str()));
+}
+
+std::string siValue(double v) {
+  struct P {
+    double scale;
+    const char* tag;
+  };
+  static const P prefixes[] = {{1e9, "G"},  {1e6, "M"},  {1e3, "k"},  {1.0, ""},
+                               {1e-3, "m"}, {1e-6, "u"}, {1e-9, "n"}, {1e-12, "p"}};
+  if (v == 0)
+    return "0";
+  const double mag = std::fabs(v);
+  const P* use = &prefixes[sizeof prefixes / sizeof prefixes[0] - 1];
+  for (const P& p : prefixes)
+    if (mag >= p.scale * 0.999999) {
+      use = &p;
+      break;
+    }
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "%.6g", v / use->scale);
+  return std::string(buf) + use->tag;
+}
+
+std::string partTreatmentText(const board::PartTreatment& t) {
+  std::vector<std::string> toks;
+  using S = board::PartTreatment::State;
+  if (t.state == S::Open)
+    toks.push_back("open");
+  if (t.state == S::Short)
+    toks.push_back("short");
+  if (t.fitDnp)
+    toks.push_back("fit");
+  if (t.state == S::Values) {
+    if (t.r)
+      toks.push_back("r" + siValue(*t.r));
+    if (t.l)
+      toks.push_back("l" + siValue(*t.l));
+    if (t.c)
+      toks.push_back("c" + siValue(*t.c));
+  }
+  std::string out;
+  for (const auto& k : toks)
+    out += (out.empty() ? "" : ",") + k;
+  return out;
+}
+
+std::string bodyTreatmentText(const board::BodyTreatment& t) {
+  if (t.kind == board::BodyKind::Metal)
+    return "metal";
+  if (t.kind == board::BodyKind::Ignore)
+    return "ignore";
+  char buf[64];
+  if (t.lossTangent > 0)
+    std::snprintf(buf, sizeof buf, "dielectric:%g:%g", t.epsilonR, t.lossTangent);
+  else
+    std::snprintf(buf, sizeof buf, "dielectric:%g", t.epsilonR);
+  return buf;
+}
+
+std::string farmBlockedReason(const board::Selection& s) {
+  if (!s.all && !s.netFilter)
+    return "The farm carries net selections, part treatments and refine boxes, not a hand-picked component "
+           "list: select by nets, or run on this GPU.";
+  return {};
+}
+
+std::vector<std::string> submitArgs(const RunRequest& r) {
+  std::vector<std::string> a = {"submit", r.snapshot};
+  if (!r.profile.empty())
+    a.insert(a.end(), {"--profile", r.variant.empty() ? r.profile : r.profile + ":" + r.variant});
+  for (const auto& [k, v] : r.sets)
+    a.insert(a.end(), {"--set", k + "=" + v});
+  for (const auto& b : r.refineMm) {
+    a.push_back("--refine");
+    for (double x : b) {
+      char buf[48];
+      std::snprintf(buf, sizeof buf, "%g", x);
+      a.push_back(buf);
+    }
+  }
+  for (const auto& [ref, t] : r.parts)
+    a.insert(a.end(), {"--part", ref + "=" + t});
+  for (const auto& [ref, t] : r.bodies)
+    a.insert(a.end(), {"--body", ref + "=" + t});
+  if (!r.nets.empty()) {
+    std::string joined;
+    for (const auto& n : r.nets)
+      joined += (joined.empty() ? "" : ",") + n;
+    a.insert(a.end(), {"--nets", joined});
+  }
+  if (!r.label.empty())
+    a.insert(a.end(), {"--label", r.label});
+  a.push_back("--json");
+  return a;
+}
+
+bool parseSubmitIds(const std::string& json, std::vector<std::string>& ids, std::string& error) {
+  try {
+    ids.clear();
+    const auto parsed = nlohmann::json::parse(json); // kept alive while its array is walked
+    for (const auto& j : parsed.at("jobs"))
+      ids.push_back(j.get<std::string>());
+    if (ids.empty()) {
+      error = "no job was created";
+      return false;
+    }
+    return true;
+  } catch (const std::exception& ex) {
+    error = std::string("the submit answer was not understood: ") + ex.what();
+    return false;
+  }
+}
+
+std::string runningFor(double startedEpoch, double nowEpoch) {
+  if (startedEpoch <= 0 || nowEpoch < startedEpoch)
+    return {};
+  const long s = static_cast<long>(nowEpoch - startedEpoch);
+  if (s < 90)
+    return "running " + std::to_string(s) + " s";
+  const long min = s / 60;
+  if (min < 60)
+    return "running " + std::to_string(min) + " min";
+  return "running " + std::to_string(min / 60) + " h " + std::to_string(min % 60) + " min";
+}
+
+std::string fetchFolderName(const std::string& jobId) {
+  return "run-farm-" + jobId.substr(0, 8);
+}
+
+bool clientEnabled() {
+  try {
+    std::ifstream in(fs::path(farmHome()) / "farm.json");
+    if (!in)
+      return false;
+    const auto j = nlohmann::json::parse(in);
+    return j.contains("enabled") && j["enabled"].value("client", false);
+  } catch (...) {
+    return false;
+  }
+}
+
+std::string loadRunOn() {
+  try {
+    std::ifstream in(fs::path(farmHome()) / "window.json");
+    if (in) {
+      const auto j = nlohmann::json::parse(in);
+      if (j.value("run_on", "gpu") == "farm")
+        return "farm";
+    }
+  } catch (...) {
+  }
+  return "gpu";
+}
+
+void saveRunOn(const std::string& value) {
+  try {
+    const fs::path dir = farmHome();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    nlohmann::json j = nlohmann::json::object();
+    {
+      std::ifstream in(dir / "window.json");
+      if (in) {
+        auto parsed = nlohmann::json::parse(in, nullptr, false);
+        if (parsed.is_object())
+          j = std::move(parsed);
+      }
+    }
+    j["run_on"] = value == "farm" ? "farm" : "gpu";
+    std::ofstream(dir / "window.json") << j.dump(2);
+  } catch (...) {
+  }
 }
 
 std::string phaseWords(const std::string& line) {
@@ -313,7 +488,11 @@ Output runCapture(const std::vector<std::string>&, double) {
 // ---- the client
 // --------------------------------------------------------------------------------------------
 
-Client::Client() : thread_([this] { loop(); }) {}
+Client::Client() {
+  // Started here, after every member exists: a thread started from the initialiser list could read quit_ and
+  // touched_ before they were constructed (they are declared after thread_), and on a slow machine it did.
+  thread_ = std::thread([this] { loop(); });
+}
 
 Client::~Client() {
   quit_ = true;

@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
     std::string layersFlag;
     int legendsFlag = -1; // -1 default, 0 collapsed, 1 expanded
     std::uint32_t shotW = 1280, shotH = 800;
-    std::string backendFlag, openRunDir;
+    std::string backendFlag, openRunDir, farmResultDir;
     // Which GPU (index or UUID prefix from --list-devices). Machine-specific, so a flag and an environment
     // variable, not a setting. A named device that cannot be used is an error, never a silent CPU fallback.
     std::string deviceSel = std::getenv("EMFDTD_DEVICE") ? std::getenv("EMFDTD_DEVICE") : "";
@@ -420,6 +420,8 @@ int main(int argc, char** argv) {
       else if (a ==
                "--open-run") // show a saved run (its folder) without solving; needs --ui or --ui-screenshot
         openRunDir = next();
+      else if (a == "--ui-farm-result") // show the S11 of a fetched farm job (screenshots)
+        farmResultDir = next();
       else if (a == "--prune-runs") // delete the field data of all but the newest N saved runs, then exit
         pruneKeep = std::atoi(next());
       else if (a == "--ui-a11y-dump")
@@ -578,6 +580,8 @@ int main(int argc, char** argv) {
           for (int n = 0; n < 4; ++n)
             screen.frame(50.0 + 0.1 * n, shotW, shotH, rgba);
         }
+        if (!farmResultDir.empty())
+          screen.openFarmResult(farmResultDir);
         if (!shotTab.empty())
           screen.selectTab(shotTab);
         for (int n = 0; n < 16;
@@ -595,8 +599,11 @@ int main(int argc, char** argv) {
           screen.frame(120.0, shotW, shotH, rgba);
           screen.frame(120.1, shotW, shotH, rgba);
           screen.releaseMouse();
-          for (int n = 0; n < 4; ++n)
+          for (int n = 0; n < 4; ++n) {
             screen.frame(120.2 + 0.1 * n, shotW, shotH, rgba);
+            if (shotTab == "Farm") // a button there may start the farm tool: give it time to answer
+              std::this_thread::sleep_for(std::chrono::milliseconds(400));
+          }
         }
         int a11yProblems = 0;
         if (!a11yDump.empty()) { // what a screen reader is told, and which controls have no name

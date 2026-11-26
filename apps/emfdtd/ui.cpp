@@ -641,6 +641,7 @@ void Ui::setupViewer() {
 void Ui::start() {
   if (screen_ != Screen::Preview)
     return;
+  farmResult_ = false;
   lastEdit_ = -1;
   dirty_ = true;
   refreshPrepared(now_ + 1);
@@ -2760,9 +2761,124 @@ std::string stateWords(const farm::Job& j) {
 }
 } // namespace
 
-void Ui::drawFarmTab(float, float) {
+void Ui::ensureFarm() {
   if (!farm_)
     farm_ = std::make_unique<farm::Client>();
+}
+
+// Called every frame: finishes a farm submit or fetch that was started from any screen.
+void Ui::pollFarm() {
+  if (!farm_ || (!farmSubmitPending_ && farmFetching_.empty()))
+    return;
+  const farm::Client::Action act = farm_->action();
+  if (act.running)
+    return;
+  if (farmSubmitPending_ && act.label == "Run on the farm") {
+    farmSubmitPending_ = false;
+    std::vector<std::string> ids;
+    std::string error;
+    std::string last;
+    {
+      std::istringstream in(act.text);
+      for (std::string line; std::getline(in, line);)
+        if (!line.empty() && line[0] == '{')
+          last = line;
+    }
+    if (act.code == 0 && farm::parseSubmitIds(last, ids, error)) {
+      farmNote_ = "Sent to the farm as job " + ids.front().substr(0, 8) +
+                  (ids.size() > 1 ? " and others" : "") + ". Its progress is in the Farm tab.";
+      pendingTab_ = "Farm";
+    } else {
+      farmNote_ = "The farm did not take the run: " + (act.text.empty() ? error : firstLines(act.text, 3));
+    }
+    message_ = farmNote_;
+  } else if (!farmFetching_.empty() && act.label == "Fetch results") {
+    const std::string id = farmFetching_;
+    farmFetching_.clear();
+    if (act.code == 0) {
+      farmFetched_[id] = (env_.paths.resultsRoot / farm::fetchFolderName(id)).string();
+      farmNote_ = "Fetched the results of job " + id.substr(0, 8) + ".";
+      openFarmResult(farmFetched_[id]);
+    } else {
+      farmNote_ = "Could not fetch the results: " + firstLines(act.text, 3);
+      message_ = farmNote_;
+    }
+  }
+}
+
+// The window's settings and treatments as a farm job. Deviations from the defaults only, as the run summary
+// lists them; settings that are the window's own (View) or that the worker always sets (backend) stay home.
+void Ui::startFarmRun() {
+  const std::string blocked = farm::farmBlockedReason(env_.selection);
+  if (!blocked.empty()) {
+    message_ = blocked;
+    return;
+  }
+  ensureFarm();
+  farm::RunRequest r;
+  std::error_code ec;
+  r.snapshot = fs::absolute(env_.snapshotPath, ec).string();
+  r.label = snapshot_.boardName.empty() ? fs::path(env_.snapshotPath).stem().string() : snapshot_.boardName;
+  r.profile = env_.settings.text("profile");
+  r.variant = env_.settings.text("variant");
+  for (const std::string& key : env_.settings.modifiedKeys()) {
+    const auto& def = env_.settings.def(key);
+    if (key == "profile" || key == "variant" || key == "backend" || def.group == "View" ||
+        def.kind == app::Kind::Colour)
+      continue;
+    r.sets.emplace_back(key, def.kind == app::Kind::Number ? strf("%.10g", env_.settings.number(key))
+                                                           : env_.settings.text(key));
+  }
+  for (const auto& b : env_.selection.refine)
+    r.refineMm.push_back({b.x0 * 1e3, b.y0 * 1e3, b.x1 * 1e3, b.y1 * 1e3, b.cell * 1e3});
+  for (const auto& [ref, t] : env_.selection.parts)
+    if (!farm::partTreatmentText(t).empty())
+      r.parts.emplace_back(ref, farm::partTreatmentText(t));
+  for (const auto& [ref, t] : env_.selection.bodies)
+    r.bodies.emplace_back(ref, farm::bodyTreatmentText(t));
+  if (env_.selection.netFilter)
+    r.nets.assign(env_.selection.pickedNets.begin(), env_.selection.pickedNets.end());
+  farm_->run(farm::submitArgs(r), "Run on the farm");
+  farmSubmitPending_ = true;
+  message_ = "Sending the run to the farm...";
+}
+
+bool Ui::openFarmResult(const fs::path& dir) {
+  if (screen_ == Screen::Running) {
+    message_ = "A run is going; stop it first.";
+    return false;
+  }
+  try {
+    fdtd::SParam1 s11;
+    {
+      std::ifstream in(dir / "s11.s1p");
+      if (!in)
+        throw std::runtime_error("missing s11.s1p");
+      s11 = fdtd::readTouchstone(in);
+    }
+    if (worker_.joinable())
+      worker_.join();
+    result_ = {};
+    result_.s = s11;
+    liveS11_ = s11;
+    runDir_ = dir;
+    runSeconds_ = 0;
+    runError_.clear();
+    finished_ = true;
+    farmResult_ = true;
+    screen_ = Screen::Done;
+    pendingTab_ = "S11 plot";
+    message_ =
+        "Showing the S11 of the farm result " + dir.filename().string() + " (the fields stay on the worker).";
+    return true;
+  } catch (const std::exception& e) {
+    message_ = std::string("Could not show the farm result: ") + e.what();
+    return false;
+  }
+}
+
+void Ui::drawFarmTab(float, float) {
+  ensureFarm();
   farm_->touch();
   const farm::Snapshot s = farm_->latest();
   const farm::Client::Action act = farm_->action();
@@ -2833,9 +2949,32 @@ void Ui::drawFarmTab(float, float) {
       noteText("My jobs", viz::access::Role::Group);
       if (s.jobs.empty())
         wrapped("No jobs yet. Submit one with: emfdtd_farm.py submit BOARD.json ...");
-      for (const auto& j : s.jobs) {
+      // The newest 20 (the list is oldest first); older finished jobs collapse into one line.
+      constexpr std::size_t kShown = 20;
+      std::size_t hidden = 0, hiddenFrom = 0;
+      if (s.jobs.size() > kShown) {
+        hiddenFrom = s.jobs.size() - kShown;
+        for (std::size_t i = 0; i < hiddenFrom; ++i)
+          hidden +=
+              (s.jobs[i].state == "done" || s.jobs[i].state == "failed" || s.jobs[i].state == "cancelled")
+                  ? 1
+                  : 0;
+      }
+      if (hidden > 0)
+        wrapped(std::to_string(hidden) + " older finished job" + (hidden == 1 ? "" : "s") +
+                " are not listed. `emfdtd_farm.py queue` shows them all.");
+      const double nowEpoch =
+          std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+      for (std::size_t ji = 0; ji < s.jobs.size(); ++ji) {
+        const auto& j = s.jobs[ji];
+        const bool finished = j.state == "done" || j.state == "failed" || j.state == "cancelled";
+        if (ji < hiddenFrom && finished)
+          continue;
         ImGui::PushID(j.id.c_str());
-        wrapped((j.label.empty() ? j.id.substr(0, 8) : j.label) + ": " + stateWords(j));
+        wrapped((j.label.empty() ? j.id.substr(0, 8) : j.label) + ": " + stateWords(j) +
+                (j.state == "running" && !farm::runningFor(j.started, nowEpoch).empty()
+                     ? " for " + farm::runningFor(j.started, nowEpoch).substr(8)
+                     : std::string()));
         if (j.state == "running" || j.state == "queued") {
           const bool known = j.percent >= 0;
           const float frac = known ? static_cast<float>(j.percent) / 100.0f : 0.0f;
@@ -2853,7 +2992,34 @@ void Ui::drawFarmTab(float, float) {
           if (!j.reason.empty())
             coloured(ImVec4(ImColor(pal.bad)), j.reason);
         } else if (j.state == "done") {
-          wrapped("Fetch the results with: emfdtd_farm.py results " + j.id + " --dest FOLDER");
+          std::string device;
+          for (const auto& d : s.devices)
+            if (d.worker == j.worker)
+              device = d.name;
+          wrapped("Solved on " + (j.worker.empty() ? std::string("the farm") : j.worker) +
+                  (device.empty() ? "" : " (" + device + ")") + ".");
+          const auto got = farmFetched_.find(j.id);
+          const std::string who = j.label.empty() ? j.id.substr(0, 8) : j.label;
+          if (got == farmFetched_.end()) {
+            const bool busy = farmFetching_ == j.id;
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Button(busy ? "Fetching..." : "Fetch and open")) {
+              const fs::path dest = env_.paths.resultsRoot / farm::fetchFolderName(j.id);
+              farmFetching_ = j.id;
+              farm_->run({"results", j.id, "--dest", dest.string()}, "Fetch results");
+            }
+            ImGui::EndDisabled();
+            note(viz::access::Role::Button, "Fetch and open the results of " + who);
+          } else {
+            wrapped("Results are in " + got->second);
+            if (ImGui::Button("Show S11"))
+              openFarmResult(got->second);
+            note(viz::access::Role::Button, "Show the S11 of " + who);
+            ImGui::SameLine();
+            if (ImGui::Button("Open folder"))
+              app::openFolder(got->second);
+            note(viz::access::Role::Button, "Open the results folder of " + who);
+          }
         }
         ImGui::PopID();
       }
@@ -3756,9 +3922,42 @@ void Ui::drawStatusBar() {
   if (screen_ == Screen::Preview) {
     const std::string reason = blockedReason();
     ImGui::BeginDisabled(!reason.empty());
-    if (button("Run simulation", ImVec2(px(180), 0)))
-      start();
+    // Where the run goes: this GPU (default) or the farm. Shown only when the client role is on; the
+    // choice is kept in the farm folder, never in the board's sidecar file.
+    if (!runOnLoaded_) {
+      runOn_ = farm::loadRunOn();
+      runOnLoaded_ = true;
+    }
+    if (now_ - clientCheckedAt_ > 2.0) {
+      clientCheckedAt_ = now_;
+      clientOn_ = farm::clientEnabled();
+    }
+    const bool toFarm = clientOn_ && runOn_ == "farm";
+    if (button(toFarm ? "Run on the farm" : "Run simulation", ImVec2(px(180), 0))) {
+      if (toFarm)
+        startFarmRun();
+      else
+        start();
+    }
     ImGui::EndDisabled();
+    if (clientOn_) {
+      sameLineIfFits("Run on: This GPU");
+      ImGui::SetNextItemWidth(fitW(px(170)));
+      const char* current = runOn_ == "farm" ? "Run on: the farm" : "Run on: This GPU";
+      if (ImGui::BeginCombo("##runon", current)) {
+        for (const char* option : {"gpu", "farm"}) {
+          const std::string label =
+              std::string(option) == "farm" ? "The farm (any available device)" : "This GPU";
+          if (selectable(label, runOn_ == option)) {
+            runOn_ = option;
+            farm::saveRunOn(runOn_);
+          }
+        }
+        ImGui::EndCombo();
+      }
+      note(viz::access::Role::ComboBox, "Where the run goes", runOn_ == "farm" ? "the farm" : "this GPU",
+           "Choose whether Run solves on this machine's GPU or sends the run to the job farm.");
+    }
     sameLineIfFits("Open run...");
     if (button("Open run..."))
       openRunPopup_ = true;
@@ -3792,9 +3991,14 @@ void Ui::drawStatusBar() {
       ImGui::TextColored(ImColor(pal.bad), "The run failed: %s", runError_.c_str());
       noteText("The run failed: " + runError_, viz::access::Role::Status);
     } else {
-      ImGui::TextColored(ImColor(pal.good), "Finished in %s.", fmtTime(runSeconds_).c_str());
-      noteText("Finished in " + fmtTime(runSeconds_) + ". Results are in " + runDir_.string(),
-               viz::access::Role::Status);
+      if (farmResult_) {
+        ImGui::TextColored(ImColor(pal.good), "Fetched from the farm.");
+        noteText("Fetched from the farm. Results are in " + runDir_.string(), viz::access::Role::Status);
+      } else {
+        ImGui::TextColored(ImColor(pal.good), "Finished in %s.", fmtTime(runSeconds_).c_str());
+        noteText("Finished in " + fmtTime(runSeconds_) + ". Results are in " + runDir_.string(),
+                 viz::access::Role::Status);
+      }
       coloured(ImColor(pal.accent), "Results: " + runDir_.string());
     }
     if (button("Open results folder"))
@@ -3807,6 +4011,7 @@ void Ui::drawStatusBar() {
       openRunPopup_ = true;
     sameLineIfFits("Adjust settings and run again");
     if (button("Adjust settings and run again")) {
+      farmResult_ = false;
       if (worker_.joinable())
         worker_.join();
       screen_ = Screen::Preview;
@@ -3859,6 +4064,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     return std::chrono::duration<double, std::milli>(b - a).count();
   };
   now_ = now;
+  pollFarm();
   // Theme: the user's choice, with Auto following the system (checked about once a second: it is cheap but
   // not free).
   if (now - themeCheck_ > 1.0 || themeCheck_ > now) {

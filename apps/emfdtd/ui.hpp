@@ -100,6 +100,9 @@ public:
   // Opens a saved run (its folder under <project>/em-fdtd/results) without solving: the board, settings, S11
   // and field data it kept. False, with statusMessage() saying why, when it cannot be opened.
   bool openRun(const std::filesystem::path& dir);
+  // Shows the S11 of a job fetched from the farm (a folder with s11.s1p; the fields stay on the worker) in
+  // the S11 tab. False, with a message, if a run is going or the file cannot be read.
+  bool openFarmResult(const std::filesystem::path& dir);
   // A new export from KiCAD: replace the board and go back to the preview. Refused (false) while a run is
   // going.
   bool setSnapshot(board::Snapshot s);
@@ -195,6 +198,11 @@ private:
   void drawS11Tab(float w, float h);
   void drawProbesTab(float w, float h);
   void drawFarmTab(float w, float h);
+  // Runs that go to the farm (docs/ux.md "Farm screen"): the Run button sends the window's snapshot and its
+  // deviations to the farm instead of solving here; the result is fetched later from the Farm tab.
+  void startFarmRun();
+  void pollFarm();
+  void ensureFarm();
   void drawProbePanel();
   void refreshIsosurface();
   void drawSweepOverlay(float w, float h);
@@ -400,6 +408,14 @@ private:
   char farmName_[64] = "";
   char farmListen_[64] = "";
   bool farmInviteForClient_ = false;
+  std::string runOn_ =
+      "gpu"; // "gpu" or "farm", remembered in the farm folder (window.json), never the sidecar
+  bool runOnLoaded_ = false, clientOn_ = false;
+  double clientCheckedAt_ = -100;
+  bool farmSubmitPending_ = false, farmResult_ = false;
+  std::string farmFetching_;                       // id of the job being fetched
+  std::map<std::string, std::string> farmFetched_; // job id -> the folder its results are in
+  std::string farmNote_;                           // the last farm run or fetch, in words
   viz::access::Tree access_;
   bool accessWanted_ = false;
   struct PendingClick {
