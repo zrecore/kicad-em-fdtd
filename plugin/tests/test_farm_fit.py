@@ -162,3 +162,11 @@ def _stripped():
     assert spec["estimate"] == {"cells": 1e6, "steps": 1e5} and spec["pin"] == "mac:Apple"
     sent = jobs.worker_spec(spec)
     assert "estimate" not in sent and "pin" not in sent and "sets" in sent
+
+
+def test_the_device_listing_shows_each_workers_ceiling():
+    s = Scheduler()
+    s.worker_hello("new", [dev("u-new", "New box", 100)], 1000.0, max_minutes=45)
+    s.worker_hello("old", [dev("u-old", "Old box", 100)], 1000.0)
+    rows = {r["worker"]: r["ceiling_minutes"] for r in s.device_listing()}
+    assert rows == {"new": 45, "old": None}

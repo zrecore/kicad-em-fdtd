@@ -475,6 +475,7 @@ class Scheduler:
                         "name": d.get("name", ""),
                         "driver": d.get("driver", ""),
                         "mcells_per_s": d.get("mcells_per_s", 0.0),
+                        "ceiling_minutes": self._ceiling(w),  # None: the worker has not said (an old worker)
                         "state": "offline" if not w["online"] else "busy" if d.get("busy") else "idle",
                         "ok": d.get("ok", True),
                     }
