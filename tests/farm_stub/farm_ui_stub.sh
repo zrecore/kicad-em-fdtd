@@ -12,7 +12,8 @@ if [ -n "$EMFDTD_FARM_STUB_MANY" ]; then
 fi
 case "$1" in
 status)
-  echo '{"home":"/stub/farm","enabled":{"coordinator":true,"worker":false,"client":true}}' ;;
+  # EMFDTD_FARM_STUB_WORKER_JSON=true: the worker role is on (the Agent section is shown)
+  echo "{\"home\":\"/stub/farm\",\"enabled\":{\"coordinator\":true,\"worker\":${EMFDTD_FARM_STUB_WORKER_JSON:-false},\"client\":true}}" ;;
 queue)
   now=$(date +%s)
   started=$((now - 372))
@@ -39,6 +40,31 @@ local-worker)
   enable) echo '{"ok":true,"name":"mac-m1","device":"Apple M1 Pro"}' ;;
   disable) echo '{"ok":true,"was_running":true}' ;;
   *) echo "stub: unknown local-worker command $*" >&2; exit 2 ;;
+  esac ;;
+agent)
+  # EMFDTD_FARM_STUB_AGENT: stopped (default), running, connected, busy (connected, running a job), doctor_fail
+  A=${EMFDTD_FARM_STUB_AGENT:-stopped}
+  case "$2" in
+  status)
+    case "$A" in
+    running) echo '{"running":true,"pid":4242,"started":1,"uptime_s":90.0,"connected":false,"coordinator":"192.0.2.1:7420","job":null,"device":null,"last_error":"connection refused, retrying","log":"/stub/agent.log"}' ;;
+    connected) echo '{"running":true,"pid":4242,"started":1,"uptime_s":90.0,"connected":true,"coordinator":"192.0.2.1:7420","job":null,"device":null,"last_error":null,"log":"/stub/agent.log"}' ;;
+    busy) echo '{"running":true,"pid":4242,"started":1,"uptime_s":900.0,"connected":true,"coordinator":"192.0.2.1:7420","job":{"id":"9cf37054e5064a39b9298f6ec19fe720","label":null,"phase":"step 41200, 312 s so far","percent":37},"device":"Apple M1 Pro","last_error":null,"log":"/stub/agent.log"}' ;;
+    *) echo '{"running":false,"pid":null,"started":null,"uptime_s":null,"connected":false,"coordinator":"192.0.2.1:7420","job":null,"device":null,"last_error":null,"log":"/stub/agent.log"}' ;;
+    esac ;;
+  doctor)
+    if [ "$A" = doctor_fail ]; then
+      echo '{"ok":false,"checks":[{"id":"tls13","title":"Python has TLS 1.3","ok":true,"detail":"OpenSSL 3.5","fix":""},{"id":"solver","title":"The solver runs","ok":false,"detail":"/stub/emfdtd: No such file or directory","fix":"point `agent configure --solver` at the emfdtd program"},{"id":"config","title":"The agent is configured","ok":true,"detail":"turn: lock","fix":""}]}'
+      exit 1
+    fi
+    echo '{"ok":true,"checks":[{"id":"tls13","title":"Python has TLS 1.3","ok":true,"detail":"OpenSSL 3.5","fix":""},{"id":"solver","title":"The solver runs","ok":true,"detail":"emfdtd 0.1.0","fix":""},{"id":"config","title":"The agent is configured","ok":true,"detail":"turn: lock","fix":""}]}' ;;
+  logs)
+    echo "2026-11-25 22:10:01 worker connecting out to 192.0.2.1:7420"
+    echo "2026-11-25 22:10:02 connected as worker:mac-m1" ;;
+  start) echo '{"running":true,"pid":4242,"started":1,"uptime_s":0.1,"connected":false,"coordinator":"192.0.2.1:7420","job":null,"device":null,"last_error":null,"log":"/stub/agent.log"}' ;;
+  restart) echo '{"running":true,"pid":4243,"started":1,"uptime_s":0.1,"connected":false,"coordinator":"192.0.2.1:7420","job":null,"device":null,"last_error":null,"log":"/stub/agent.log"}' ;;
+  stop) echo '{"was_running":true,"stopped":true,"forced":false}' ;;
+  *) echo "stub: unknown agent command $*" >&2; exit 2 ;;
   esac ;;
 enable|disable|cancel|revoke)
   echo "stub: $*" ;;

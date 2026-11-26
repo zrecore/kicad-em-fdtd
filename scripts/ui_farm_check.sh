@@ -11,6 +11,7 @@ OUT=out/ui-farm
 rm -rf "$OUT/farm-home" "$OUT/project"
 mkdir -p "$OUT/project" "$OUT/farm-home"
 python3 plugin/tools/make_patch_snapshot.py "$OUT/patch.json" >/dev/null
+export EMFDTD_UI_FONT=builtin # click positions below were measured with the built-in font
 export EMFDTD_FARM_COMMAND="$PWD/tests/farm_stub/farm_ui_stub.sh"
 # The window reads the client role from the farm folder (no tool run) to decide whether to offer "Run on".
 export EMFDTD_FARM_HOME="$PWD/$OUT/farm-home"
@@ -43,11 +44,46 @@ run local_confirm Farm 720x1100 --ui-click 150,427
 need local_confirm 'button "Use this GPU"' "the confirmation for this computer's GPU"
 need local_confirm 'button "Keep it off"' "the confirmation for this computer's GPU"
 (EMFDTD_FARM_STUB_LOCAL=on; export EMFDTD_FARM_STUB_LOCAL; run local_on Farm 720x1100)
-need local_on 'Apple M1 Pro is offered to the farm: running and connected' "the running state"
+need local_on 'Apple M1 Pro is offered to the farm. The Agent section below starts and stops it.' "the enabled state (the Agent section shows the process state)"
 need local_on 'button "Stop using this computer.s GPU"' "the Stop button"
 (EMFDTD_FARM_STUB_LOCAL=unavailable; export EMFDTD_FARM_STUB_LOCAL; run local_unavailable Farm 720x1100)
 need local_unavailable 'no Vulkan GPU that the solver can use' "why this computer's GPU cannot be offered"
 if grep -q 'button "Also use this computer' "$OUT/local_unavailable.txt"; then echo "ui_farm_check: the button is shown although the GPU is unavailable" >&2; exit 1; fi
+# The Agent section (worker role on; the stand-in's status says so with EMFDTD_FARM_STUB_WORKER_JSON). The role off
+# shows none. Each state, the confirmation before stopping a busy agent, Start held back with the reason when a
+# doctor check fails, and the checks and the log behind their buttons.
+if grep -q 'group "Agent"' "$OUT/farm.txt"; then echo "ui_farm_check: the Agent section is shown with the worker role off" >&2; exit 1; fi
+agent() { # name state extra-args...
+  name=$1; state=$2; shift 2
+  (EMFDTD_FARM_STUB_WORKER_JSON=true; EMFDTD_FARM_STUB_AGENT=$state; export EMFDTD_FARM_STUB_WORKER_JSON EMFDTD_FARM_STUB_AGENT
+   run "$name" Farm 720x1100 "$@")
+}
+agent agent_stopped stopped
+need agent_stopped 'group "Agent"' "the Agent section"
+need agent_stopped 'text "Stopped."' "the stopped state"
+need agent_stopped 'button "Start"' "Start"
+need agent_stopped 'button "Show checks"' "the checks button"
+need agent_stopped 'button "Show log"' "the log button"
+agent agent_running running
+need agent_running 'text "Running, connecting to the coordinator..."' "running, not yet connected"
+need agent_running 'text "Last error: connection refused, retrying"' "the agent's last error"
+agent agent_connected connected
+need agent_connected 'text "Running, connected to 192.0.2.1:7420."' "connected"
+agent agent_busy busy
+need agent_busy 'text "Job 9cf37054 on Apple M1 Pro: step 41200, 312 s so far"' "the job the agent is running"
+agent agent_busy_stop busy --ui-click 88,527 # Stop while a job runs: it asks first
+need agent_busy_stop 'text "A job is running on this GPU; stopping cancels it and it goes back to the queue."' "the confirmation"
+need agent_busy_stop 'button "Stop anyway"' "the confirmation"
+need agent_busy_stop 'button "Keep it running"' "the confirmation"
+agent agent_doctor_fail doctor_fail
+need agent_doctor_fail 'text "The solver runs: /stub/emfdtd: No such file or directory. Fix: point `agent configure --solver` at the emfdtd program"' "why Start is held back, and the fix"
+agent agent_checks doctor_fail --ui-click 60,571
+need agent_checks 'text "FAIL: The solver runs: /stub/emfdtd: No such file or directory"' "the list of checks"
+need agent_checks 'text "ok: Python has TLS 1.3: OpenSSL 3.5"' "the list of checks"
+agent agent_log connected --ui-click 148,533
+need agent_log 'connected as worker:mac-m1' "the agent's log"
+agent agent_big_text busy --set text_scale=150% # the section at 150 % text: every control still has a name
+need agent_big_text 'button "Restart"' "Restart at 150 % text"
 (EMFDTD_FARM_STUB_MANY=25; export EMFDTD_FARM_STUB_MANY; run farm_many Farm 720x520) # a subshell: the variable must not leak
 need farm_many 'older finished jobs are not listed' "the cap on the jobs list"
 run farm_confirm Farm 720x700 --ui-click 20,229 # the Worker checkbox

@@ -1,9 +1,13 @@
-add_library(viz STATIC png.cpp slice.cpp volume.cpp theme.cpp a11y.cpp access.cpp vtk_export.cpp isosurface.cpp volume_renderer.cpp)
+add_library(viz STATIC png.cpp slice.cpp volume.cpp theme.cpp a11y.cpp access.cpp vtk_export.cpp isosurface.cpp volume_renderer.cpp system_font.cpp)
 target_include_directories(viz PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(viz PUBLIC fdtd_solver PRIVATE fdtd_options)
 if(APPLE)
-  target_sources(viz PRIVATE a11y_mac.mm)
-  target_link_libraries(viz PRIVATE "-framework CoreFoundation" "-framework AppKit")
+  target_sources(viz PRIVATE a11y_mac.mm system_font_mac.mm)
+  target_link_libraries(viz PRIVATE "-framework CoreFoundation" "-framework CoreText" "-framework AppKit")
+elseif(WIN32)
+  target_sources(viz PRIVATE system_font_win.cpp)
+else()
+  target_sources(viz PRIVATE system_font_linux.cpp)
 endif()
 
 # UI: Dear ImGui drawn by our CPU rasteriser (no Vulkan needed, so it is testable on any machine).

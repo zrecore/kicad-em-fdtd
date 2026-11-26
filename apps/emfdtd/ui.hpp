@@ -361,6 +361,7 @@ private:
   bool dark_ = true, themeApplied_ = false;
   // Accessibility (system preference or the user's override): see viz/a11y.hpp
   double textScale_ = 0; // 0: not applied yet
+  std::string fontMode_; // "system" or "builtin": the font the atlas was built with
   bool reduceMotion_ = false, highContrast_ = false, opaquePanels_ = false;
   bool lightVolume_ = false; // 3D view panel, from the volume_panel setting
   double themeCheck_ = -1e9;
@@ -406,6 +407,10 @@ private:
   std::unique_ptr<farm::Client> farm_;
   std::string farmPendingEnable_, farmPendingRevoke_;
   bool farmLocalConfirm_ = false; // the two-step confirmation for offering this computer's GPU
+  // The Agent section: which of Stop or Restart waits for "yes, cancel the running job", and the two
+  // expanders.
+  std::string farmAgentConfirm_;
+  bool farmAgentChecksOpen_ = false, farmAgentLogOpen_ = false;
   char farmName_[64] = "";
   char farmListen_[64] = "";
   bool farmInviteForClient_ = false;

@@ -5,6 +5,15 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (Agent section)
+- Farm tab: an **Agent** section, shown while the worker role is on: the agent's state (stopped, running, connected, its job and last error), Start, Stop and Restart (Stop and Restart ask first when a job is running), Start held back with the failing doctor check and its fix, and "Show checks" and "Show log". The window runs `agent status|doctor|start|stop|restart --json` and `agent logs`; "This computer's GPU" keeps the one-time setup.
+
+### Added (machine-readable CLI)
+- `emfdtd --json`: one JSON document on stdout (human text to stderr) for `--list-settings`, `--list-devices`, `--dry-run` and a headless run; new `emfdtd --run-info RUNDIR [--s11]` summarizes a saved run (grid, steps, best match, -10 dB band, S11 table) without solving. Schema 1, additive changes only; see `docs/cli-json.md`. Tests: `tests/cpu/cli_json_test.cpp`, `scripts/cli_json_check.sh` (`ctest -L cpu`).
+
+### Changed (window font)
+- The window uses the operating system's UI font (San Francisco on macOS, Segoe UI on Windows, the desktop's interface font on Linux; loaded at run time, never bundled) instead of the small built-in bitmap font, at the same text size and following the system text-size setting. Settings, View, "Font" (system or built-in) and `EMFDTD_UI_FONT` choose; the built-in font stays as the fallback for missing characters. Only macOS is exercised.
+
 ### Added (coordinator's own GPU)
 - `emfdtd-farm local-worker status|enable|disable`: the coordinator machine offers its own GPU to the farm on request (never automatic): it turns the worker role on, enrolls this computer with its own certificate authority, records one entry per physical GPU, saves the agent settings (an existing `agent.json` is kept) and starts the agent. The Farm tab has the button (see below).
 

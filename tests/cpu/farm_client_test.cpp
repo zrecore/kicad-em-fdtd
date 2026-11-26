@@ -376,3 +376,76 @@ SCENARIO("The window reads what this computer's own GPU offers the farm", "[farm
     }
   }
 }
+
+SCENARIO("The window reads the worker agent's state, checks and log", "[farm]") {
+  GIVEN("the agent's JSON as the farm tool prints it") {
+    farm::Snapshot s;
+    std::string error;
+    WHEN("the agent is busy with a job") {
+      REQUIRE(farm::parseAgentStatus(
+          R"({"running":true,"pid":4242,"connected":true,"coordinator":"192.0.2.1:7420","job":{"id":"9cf37054e5064a39","label":null,"phase":"step 41200","percent":37},"device":"Apple M1 Pro","last_error":null})",
+          s, error));
+      THEN("the window knows the job, its phase and the device") {
+        REQUIRE(s.agent.have);
+        REQUIRE(s.agent.running);
+        REQUIRE(s.agent.connected);
+        REQUIRE(s.agent.hasJob);
+        REQUIRE(s.agent.jobId == "9cf37054e5064a39");
+        REQUIRE(s.agent.jobLabel.empty());
+        REQUIRE(s.agent.jobPhase == "step 41200");
+        REQUIRE(s.agent.jobPercent == 37);
+        REQUIRE(s.agent.device == "Apple M1 Pro");
+        REQUIRE(s.agent.lastError.empty());
+      }
+    }
+    WHEN("the agent is stopped") {
+      REQUIRE(farm::parseAgentStatus(
+          R"({"running":false,"pid":null,"connected":false,"coordinator":null,"job":null,"device":null,"last_error":"boom"})",
+          s, error));
+      THEN("there is no job and the last error is kept") {
+        REQUIRE_FALSE(s.agent.running);
+        REQUIRE_FALSE(s.agent.hasJob);
+        REQUIRE(s.agent.lastError == "boom");
+      }
+    }
+    WHEN("the doctor report has a failing check") {
+      REQUIRE(farm::parseAgentStatus(R"({"running":false})", s, error));
+      REQUIRE(farm::parseAgentDoctor(
+          R"({"ok":false,"checks":[{"id":"tls13","title":"Python has TLS 1.3","ok":true,"detail":"OpenSSL 3.5","fix":""},{"id":"solver","title":"The solver runs","ok":false,"detail":"missing","fix":"set --solver"}]})",
+          s, error));
+      THEN("the checks, the verdict and the fix are kept, and the status is not lost") {
+        REQUIRE(s.agent.have);
+        REQUIRE(s.agent.haveDoctor);
+        REQUIRE_FALSE(s.agent.doctorOk);
+        REQUIRE(s.agent.checks.size() == 2);
+        REQUIRE(s.agent.checks[1].title == "The solver runs");
+        REQUIRE_FALSE(s.agent.checks[1].ok);
+        REQUIRE(s.agent.checks[1].fix == "set --solver");
+      }
+    }
+    THEN("an error report or bad text is refused with a reason") {
+      REQUIRE_FALSE(farm::parseAgentDoctor(R"({"error":"no saved configuration"})", s, error));
+      REQUIRE(error == "no saved configuration");
+      REQUIRE_FALSE(farm::parseAgentStatus("not json", s, error));
+      REQUIRE_FALSE(error.empty());
+    }
+    THEN("the log keeps the last lines, oldest first, without blanks") {
+      const auto lines = farm::lastLines("a\n\nb  \r\nc\nd\n", 3);
+      REQUIRE(lines == std::vector<std::string>{"b", "c", "d"});
+      REQUIRE(farm::lastLines("", 20).empty());
+    }
+    THEN("the outcome of start, stop and restart becomes a sentence") {
+      REQUIRE(farm::agentActionWords(R"({"running":true,"pid":4242})") ==
+              "the agent is running (process 4242)");
+      REQUIRE(farm::agentActionWords(R"({"was_running":true,"stopped":true,"forced":false})") ==
+              "the agent stopped");
+      REQUIRE(farm::agentActionWords(R"({"was_running":true,"stopped":true,"forced":true})") ==
+              "the agent stopped (it had to be ended by force)");
+      REQUIRE(farm::agentActionWords(R"({"was_running":false,"stopped":true,"forced":false})") ==
+              "the agent was not running");
+      REQUIRE(farm::agentActionWords(R"({"error":"cannot start: the solver"})") ==
+              "cannot start: the solver");
+      REQUIRE(farm::agentActionWords("plain text").empty());
+    }
+  }
+}

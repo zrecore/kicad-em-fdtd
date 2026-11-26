@@ -332,6 +332,10 @@ void Settings::build() {
   choice("text_scale", "Text size",
          "Follow the system's text-size setting, or choose a size. Everything in the window scales with it.",
          "View", Tier::Essential, {"accessibility", "a11y", "font", "zoom", "large text", "size"});
+  choice("ui_font", "Font",
+         "System uses the font of your operating system's interface. Built-in is the program's own small "
+         "monospace font, which some people find easier to read and which looks the same on every computer.",
+         "View", Tier::Essential, {"accessibility", "a11y", "font", "typeface", "monospace", "text"});
   choice("slice_panel", "Field slice panel",
          "Background of the field slice: follow the appearance above, or always light or always dark.",
          "View", Tier::Essential, {"light panel", "dark panel", "slice", "background", "theme"});
@@ -531,6 +535,8 @@ Value Settings::defaultValue(const std::string& key) const {
     return static_cast<double>(run.sampleEvery);
   if (key == "ui_theme")
     return std::string("auto");
+  if (key == "ui_font")
+    return std::string("system");
   if (key == "slice_panel" || key == "volume_panel" || key == "reduce_motion" || key == "high_contrast" ||
       key == "text_scale")
     return std::string("follow");
@@ -666,6 +672,8 @@ std::vector<std::string> Settings::choices(const std::string& key) const {
     return {"follow", "on", "off"};
   if (key == "text_scale")
     return {"follow", "100%", "125%", "150%", "200%", "250%"};
+  if (key == "ui_font")
+    return {"system", "builtin"};
   if (key == "field_component")
     return {"ez", "ex", "ey"};
   if (key == "copper_model")

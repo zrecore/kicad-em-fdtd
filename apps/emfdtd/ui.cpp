@@ -5,6 +5,7 @@
 #include <complex>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -22,6 +23,7 @@
 #include "viz/a11y.hpp"
 #include "viz/colormap.hpp"
 #include "viz/poynting.hpp"
+#include "viz/system_font.hpp"
 #include "viz/theme.hpp"
 #include "viz/triangulate.hpp"
 #include "viz/view_axes.hpp"
@@ -429,6 +431,40 @@ void drawColourBar(ImDrawList* dl, ImVec2 pos, float width, const char* titleTex
   dl->AddText({pos.x + pad + width - ImGui::CalcTextSize(right).x, ty}, pal.legendDim, right);
 }
 
+// Which font the window uses: "system" (the operating system's UI font) or "builtin". EMFDTD_UI_FONT
+// overrides the setting (the screenshot checks use "builtin" so their click positions do not depend on the
+// machine's font).
+std::string fontMode(const app::Settings& settings) {
+  const char* env = std::getenv("EMFDTD_UI_FONT");
+  const std::string v = env && *env ? env : settings.text("ui_font");
+  return v == "builtin" ? "builtin" : "system";
+}
+
+// (Re)builds the font atlas at `size` pixels and the physical-pixel `density`. The system UI font comes
+// first, with the built-in font merged behind it for any character the system font lacks; if there is no
+// system font, or it does not load, the built-in font alone, as before.
+void buildFonts(ImGuiIO& io, float size, float density, bool system) {
+  io.Fonts->Clear();
+  bool loaded = false;
+  if (system) {
+    if (const auto font = viz::systemUiFont()) {
+      ImFontConfig cfg;
+      cfg.SizePixels = size;
+      cfg.RasterizerDensity = density; // crisp text on a Retina display
+      cfg.FontNo = font->index;
+      cfg.OversampleH = density >= 2.0f ? 1 : 2;
+      cfg.OversampleV = 1;
+      loaded = io.Fonts->AddFontFromFileTTF(font->path.c_str(), size, &cfg,
+                                            io.Fonts->GetGlyphRangesDefault()) != nullptr;
+    }
+  }
+  ImFontConfig cfg;
+  cfg.SizePixels = size;
+  cfg.RasterizerDensity = density;
+  cfg.MergeMode = loaded;
+  io.Fonts->AddFontDefault(&cfg);
+}
+
 } // namespace
 
 Ui::Ui(Env env) : env_(std::move(env)), snapshot_(env_.snapshot) {
@@ -436,10 +472,8 @@ Ui::Ui(Env env) : env_(std::move(env)), snapshot_(env_.snapshot) {
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;
   io.LogFilename = nullptr;
-  ImFontConfig cfg;
-  cfg.SizePixels = 16;
-  cfg.RasterizerDensity = env_.pixelScale; // crisp text on a Retina display
-  io.Fonts->AddFontDefault(&cfg);
+  fontMode_ = fontMode(env_.settings);
+  buildFonts(io, 16, env_.pixelScale, fontMode_ == "system");
   ImGui::StyleColorsDark();
   ImGuiStyle& st = ImGui::GetStyle();
   st.WindowRounding = 0;
@@ -2933,7 +2967,9 @@ void Ui::drawFarmTab(float, float) {
       wrapped("Setting up... this can take several minutes: it waits for this GPU's turn if another program "
               "is using it.");
   } else if (!act.label.empty()) {
-    const std::string words = farm::localActionWords(act.text);
+    std::string words = farm::localActionWords(act.text);
+    if (words.empty())
+      words = farm::agentActionWords(act.text);
     coloured(ImVec4(ImColor(act.code == 0 ? pal.good : pal.bad)),
              act.label + (act.code == 0 ? ": done. " : ": failed. ") +
                  (words.empty() ? firstLines(act.text, 3) : words));
@@ -2949,11 +2985,10 @@ void Ui::drawFarmTab(float, float) {
                                               ? "Reading this computer's GPU..."
                                               : "This computer's GPU is not available: " + g.error);
     } else if (g.enabled) {
-      const std::string state = g.running ? (g.connected ? "running and connected to the farm"
-                                                         : "running, connecting to the farm...")
-                                          : "not running";
+      // With the worker role on (it is, when this is enabled) the Agent section below shows the state and has
+      // Start, Stop and Restart: this section keeps only the one-time setup and its undo.
       wrapped((g.device.empty() ? std::string("This computer's GPU") : g.device) +
-              " is offered to the farm: " + state + ".");
+              " is offered to the farm. The Agent section below starts and stops it.");
       if (button("Stop using this computer's GPU##localoff") && !act.running)
         farm_->run({"local-worker", "disable", "--json"}, kLocalOff);
     } else {
@@ -2976,6 +3011,112 @@ void Ui::drawFarmTab(float, float) {
         ImGui::SameLine();
         if (button("Keep it off##localkeep"))
           farmLocalConfirm_ = false;
+      }
+    }
+  }
+
+  // ---- the worker agent on this computer (worker role): state, Start, Stop, Restart, checks, log
+  farm_->watchAgent(s.worker && farmAgentChecksOpen_, s.worker && farmAgentLogOpen_);
+  if (s.worker) {
+    ImGui::SeparatorText("Agent");
+    noteText("Agent", viz::access::Role::Group);
+    const farm::AgentState& a = s.agent;
+    constexpr const char* kStart = "Start the agent";
+    constexpr const char* kStop = "Stop the agent";
+    constexpr const char* kRestart = "Restart the agent";
+    if (!a.have) {
+      coloured(ImVec4(ImColor(pal.warn)), a.error.empty() ? "Reading the agent state..."
+                                                          : "The agent state is not available: " + a.error);
+    } else {
+      std::string state = "Stopped.";
+      if (a.running) {
+        state = a.connected ? "Running, connected to " +
+                                  (a.coordinator.empty() ? "the coordinator" : a.coordinator) + "."
+                            : "Running, connecting to the coordinator...";
+      }
+      wrapped(state);
+      if (a.running && a.hasJob) {
+        const std::string job = a.jobLabel.empty() ? a.jobId.substr(0, 8) : a.jobLabel;
+        wrapped("Job " + job + (a.device.empty() ? std::string() : " on " + a.device) +
+                (a.jobPhase.empty() ? std::string() : ": " + a.jobPhase));
+      }
+      if (!a.lastError.empty())
+        coloured(ImVec4(ImColor(pal.bad)), "Last error: " + a.lastError);
+
+      // Start needs the doctor's checks to pass: say which one does not and how to fix it.
+      std::string startBlocked;
+      if (!a.running) {
+        if (!a.haveDoctor)
+          startBlocked = a.doctorError.empty() ? "Checking whether the agent can start..." : a.doctorError;
+        else if (!a.doctorOk)
+          for (const auto& c : a.checks)
+            if (!c.ok) {
+              startBlocked = c.title + ": " + c.detail + (c.fix.empty() ? "" : ". Fix: " + c.fix);
+              break;
+            }
+      }
+      if (!startBlocked.empty())
+        coloured(ImVec4(ImColor(pal.warn)), startBlocked);
+
+      const bool busy = act.running;
+      ImGui::BeginDisabled(busy || a.running || !startBlocked.empty());
+      if (button("Start##agentstart") && !busy)
+        farm_->run({"agent", "start", "--json"}, kStart, 120);
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(busy || !a.running);
+      const bool stopHit = button("Stop##agentstop");
+      ImGui::SameLine();
+      const bool restartHit = button("Restart##agentrestart");
+      ImGui::EndDisabled();
+      for (const auto& [hit, which] : {std::pair<bool, const char*>{stopHit, "stop"},
+                                       std::pair<bool, const char*>{restartHit, "restart"}}) {
+        if (!hit)
+          continue;
+        if (a.hasJob)
+          farmAgentConfirm_ = which; // a job is running: ask first
+        else
+          farm_->run({"agent", which, "--json"}, std::string(which) == "stop" ? kStop : kRestart, 120);
+      }
+      if (!farmAgentConfirm_.empty() && !a.hasJob)
+        farmAgentConfirm_.clear(); // the job ended while the question was open
+      if (!farmAgentConfirm_.empty()) {
+        const bool stopping = farmAgentConfirm_ == "stop";
+        coloured(ImVec4(ImColor(pal.warn)), "A job is running on this GPU; " +
+                                                std::string(stopping ? "stopping" : "restarting") +
+                                                " cancels it and it goes back to the queue.");
+        if (button(stopping ? "Stop anyway##agentyes" : "Restart anyway##agentyes") && !act.running) {
+          farm_->run({"agent", farmAgentConfirm_, "--json"}, stopping ? kStop : kRestart, 120);
+          farmAgentConfirm_.clear();
+        }
+        ImGui::SameLine();
+        if (button("Keep it running##agentno"))
+          farmAgentConfirm_.clear();
+      }
+      if (busy && (act.label == kStart || act.label == kStop || act.label == kRestart))
+        wrapped(act.label == kStop ? "Stopping... this can take up to 20 seconds."
+                                   : "Working... this can take about ten seconds.");
+
+      // The checks and the log, each behind a button that names what it shows.
+      if (button(farmAgentChecksOpen_ ? "Hide checks##agentchecks" : "Show checks##agentchecks"))
+        farmAgentChecksOpen_ = !farmAgentChecksOpen_;
+      ImGui::SameLine();
+      if (button(farmAgentLogOpen_ ? "Hide log##agentlog" : "Show log##agentlog"))
+        farmAgentLogOpen_ = !farmAgentLogOpen_;
+      if (farmAgentChecksOpen_) {
+        if (!a.haveDoctor)
+          wrapped(a.doctorError.empty() ? "Running the checks..." : a.doctorError);
+        for (const auto& c : a.checks) {
+          wrapped(std::string(c.ok ? "ok: " : "FAIL: ") + c.title + ": " + c.detail);
+          if (!c.ok && !c.fix.empty())
+            wrapped("Fix: " + c.fix);
+        }
+      }
+      if (farmAgentLogOpen_) {
+        if (a.log.empty())
+          wrapped("The log is empty.");
+        for (const auto& line : a.log)
+          wrapped(line);
       }
     }
   }
@@ -4127,14 +4268,12 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     reduceMotion_ = motion;
     opaquePanels_ = hc || sys.reduceTransparency;
     const double text = viz::resolveTextScale(env_.settings.text("text_scale"), viz::systemTextScale());
-    if (std::abs(text - textScale_) > 1e-3) { // the text size changed: rebuild the font atlas and the style
+    const std::string mode = fontMode(env_.settings);
+    if (std::abs(text - textScale_) > 1e-3 ||
+        mode != fontMode_) { // text size or font changed: rebuild the atlas
       textScale_ = text;
-      ImGuiIO& fio = ImGui::GetIO();
-      fio.Fonts->Clear();
-      ImFontConfig cfg;
-      cfg.SizePixels = static_cast<float>(16 * textScale_);
-      cfg.RasterizerDensity = env_.pixelScale;
-      fio.Fonts->AddFontDefault(&cfg);
+      fontMode_ = mode;
+      buildFonts(ImGui::GetIO(), static_cast<float>(16 * textScale_), env_.pixelScale, mode == "system");
       soft_ = std::make_unique<viz::SoftImGui>(); // reads the new atlas
       if (onFontsChanged_)
         onFontsChanged_();

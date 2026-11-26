@@ -38,6 +38,23 @@ struct LocalGpu {
   bool enabled = false, running = false, connected = false;
   std::string reason, name, device, solver, turn, error; // turn: lock, coordinator, none
 };
+// The worker agent on this computer (`agent status|doctor|logs`, docs/ux.md "Agent section").
+struct AgentCheck {
+  std::string id, title, detail, fix;
+  bool ok = false;
+};
+struct AgentState {
+  bool have = false; // `agent status` was read
+  bool running = false, connected = false;
+  std::string coordinator, device, lastError, error;
+  bool hasJob = false;
+  std::string jobId, jobLabel, jobPhase;
+  int jobPercent = -1;
+  bool haveDoctor = false, doctorOk = false;
+  std::string doctorError;
+  std::vector<AgentCheck> checks;
+  std::vector<std::string> log; // the last lines of the agent's log (only read while the Log is open)
+};
 struct Snapshot {
   bool haveStatus = false;
   std::string home, statusError;
@@ -48,6 +65,7 @@ struct Snapshot {
   std::vector<Job> jobs;
   std::vector<Member> members;
   LocalGpu local;
+  AgentState agent;
 };
 
 // Parsers for the tool's `--json` output (pure, tested). Each returns false and sets `error` on bad input.
@@ -57,6 +75,15 @@ bool parseMembers(const std::string& json, Snapshot& out, std::string& error);
 bool parseLocalStatus(const std::string& json, Snapshot& out, std::string& error);
 // What `local-worker enable|disable --json` said, as a sentence for the window; "" if the text is not JSON.
 std::string localActionWords(const std::string& json);
+// `agent status --json` and `agent doctor --json` (doctor exits 1 when a check fails but still prints the
+// report: parse it whatever the exit code). Each keeps the other parts of `out.agent`.
+bool parseAgentStatus(const std::string& json, Snapshot& out, std::string& error);
+bool parseAgentDoctor(const std::string& json, Snapshot& out, std::string& error);
+// The last `n` non-empty lines of `agent logs` output, oldest first.
+std::vector<std::string> lastLines(const std::string& text, std::size_t n);
+// What `agent start|stop|restart --json` said, as a sentence; the error text for {"error": ...}; "" if the
+// text is not JSON.
+std::string agentActionWords(const std::string& json);
 // "progress: 41200 steps, about 37%, 312 s": -1 if the text is not that line.
 int percentFromProgressLine(const std::string& line);
 // What a worker's last line means to a reader: the solver's progress line becomes "step 41200, 312 s so far",
@@ -124,6 +151,12 @@ public:
   // window that is not showing the tab does nothing.
   void touch();
   Snapshot latest() const;
+  // What the Agent section has open: the doctor checks are read while the agent is stopped or "Show checks"
+  // is open, the log only while "Log" is open (each is a tool run). Set every frame the section is drawn.
+  void watchAgent(bool checksOpen, bool logOpen) {
+    agentChecksOpen_ = checksOpen;
+    agentLogOpen_ = logOpen;
+  }
 
   // One tool run in the background (enable, disable, cancel, revoke...). The outcome is in action().
   struct Action {
@@ -155,6 +188,7 @@ private:
   std::thread thread_;
   std::atomic<bool> quit_{false};
   std::atomic<double> touched_{0};
+  std::atomic<bool> agentChecksOpen_{false}, agentLogOpen_{false};
   Snapshot snap_;
   Action action_;
   Invite invite_;

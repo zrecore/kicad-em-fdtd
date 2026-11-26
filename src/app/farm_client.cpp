@@ -142,6 +142,104 @@ std::string localActionWords(const std::string& json) {
   }
 }
 
+bool parseAgentStatus(const std::string& json, Snapshot& out, std::string& error) {
+  try {
+    const auto j = nlohmann::json::parse(json);
+    if (j.contains("error")) {
+      error = str(j, "error");
+      return false;
+    }
+    AgentState a = out.agent; // keep the doctor report and the log
+    a.have = true;
+    a.running = j.value("running", false);
+    a.connected = j.value("connected", false);
+    a.coordinator = str(j, "coordinator");
+    a.device = str(j, "device");
+    a.lastError = str(j, "last_error");
+    a.error.clear();
+    a.hasJob = false;
+    a.jobId.clear();
+    a.jobLabel.clear();
+    a.jobPhase.clear();
+    a.jobPercent = -1;
+    const auto job = j.find("job");
+    if (job != j.end() && job->is_object()) {
+      a.hasJob = true;
+      a.jobId = str(*job, "id");
+      a.jobLabel = str(*job, "label");
+      a.jobPhase = str(*job, "phase");
+      a.jobPercent =
+          job->contains("percent") && (*job)["percent"].is_number() ? (*job)["percent"].get<int>() : -1;
+    }
+    out.agent = std::move(a);
+    return true;
+  } catch (const std::exception& ex) {
+    error = std::string("the agent state was not understood: ") + ex.what();
+    return false;
+  }
+}
+
+bool parseAgentDoctor(const std::string& json, Snapshot& out, std::string& error) {
+  try {
+    const auto j = nlohmann::json::parse(json);
+    if (!j.contains("checks")) {
+      error = j.contains("error") ? str(j, "error") : "the agent report has no checks";
+      return false;
+    }
+    std::vector<AgentCheck> checks;
+    for (const auto& c : j.at("checks")) {
+      AgentCheck k;
+      k.id = str(c, "id");
+      k.title = str(c, "title");
+      k.detail = str(c, "detail");
+      k.fix = str(c, "fix");
+      k.ok = c.value("ok", false);
+      checks.push_back(std::move(k));
+    }
+    out.agent.checks = std::move(checks);
+    out.agent.doctorOk = j.value("ok", false);
+    out.agent.haveDoctor = true;
+    out.agent.doctorError.clear();
+    return true;
+  } catch (const std::exception& ex) {
+    error = std::string("the agent checks were not understood: ") + ex.what();
+    return false;
+  }
+}
+
+std::vector<std::string> lastLines(const std::string& text, std::size_t n) {
+  std::vector<std::string> lines;
+  std::istringstream in(text);
+  for (std::string line; std::getline(in, line);) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+      line.pop_back();
+    if (!line.empty())
+      lines.push_back(line);
+  }
+  if (lines.size() > n)
+    lines.erase(lines.begin(), lines.end() - static_cast<std::ptrdiff_t>(n));
+  return lines;
+}
+
+std::string agentActionWords(const std::string& json) {
+  try {
+    const auto j = nlohmann::json::parse(json);
+    if (j.contains("error"))
+      return str(j, "error");
+    if (j.contains("was_running")) {
+      if (!j.value("was_running", false))
+        return "the agent was not running";
+      return j.value("forced", false) ? "the agent stopped (it had to be ended by force)"
+                                      : "the agent stopped";
+    }
+    if (j.contains("pid") && !j["pid"].is_null())
+      return "the agent is running (process " + std::to_string(j["pid"].get<long long>()) + ")";
+    return "";
+  } catch (const std::exception&) {
+    return "";
+  }
+}
+
 bool parseMembers(const std::string& json, Snapshot& out, std::string& error) {
   try {
     const auto j = nlohmann::json::parse(json);
@@ -622,6 +720,35 @@ void Client::pollOnce() {
     }
   } else {
     next.local = {};
+  }
+  if (next.haveStatus && next.worker) {
+    const Output a = call({"agent", "status", "--json"}, 15);
+    std::string aerr;
+    if (a.code == 0 && parseAgentStatus(a.text, next, aerr)) {
+    } else {
+      next.agent.have = false;
+      next.agent.error = a.timedOut ? "the farm tool did not answer" : (aerr.empty() ? a.text : aerr);
+    }
+    // The doctor checks decide whether Start is offered, so they are read while the agent is stopped; while
+    // it runs they are read only if the list is open. (The report is JSON whatever its exit code.)
+    if (next.agent.have && (!next.agent.running || agentChecksOpen_)) {
+      const Output d = call({"agent", "doctor", "--json"}, 40);
+      std::string derr;
+      if (!parseAgentDoctor(d.text, next, derr)) {
+        next.agent.haveDoctor = false;
+        next.agent.doctorError = d.timedOut ? "the checks did not finish in time" : derr;
+      }
+    } else if (next.agent.running && !agentChecksOpen_) {
+      next.agent.haveDoctor = false; // stale once running: not needed
+    }
+    if (next.agent.have && agentLogOpen_) {
+      const Output l = call({"agent", "logs", "-n", "20"}, 10);
+      next.agent.log = lastLines(l.text, 20);
+    } else {
+      next.agent.log.clear();
+    }
+  } else {
+    next.agent = {};
   }
   std::lock_guard<std::mutex> lock(mu_);
   snap_ = std::move(next);
