@@ -31,6 +31,9 @@ if args[:1] == ["--list-settings"]:
     print("expert_knob                    expert  1  [Run] expert")
     sys.exit(0)
 
+if not sys.argv[1:]:  # like the real solver: no arguments prints the usage (the worker looks for the flag)
+    print("usage: stub_solver [--checkpoint-dir DIR [--resume]] ...")
+    sys.exit(0)
 snapshot = args[0]
 opts = {}
 i = 1
@@ -56,9 +59,6 @@ while i < len(args):
     else:
         opts.setdefault(a, []).append(True)
         i += 1
-if "--help" in sys.argv[1:]:  # the worker reads this to see whether the solver can checkpoint
-    print("usage: stub_solver [--checkpoint-dir DIR [--resume]] ...")
-    sys.exit(0)
 stub = json.load(open(snapshot)).get("stub", {})
 if "--dry-run" in opts:
     print("the farm must not call --dry-run (it repeats the whole preparation)", file=sys.stderr)

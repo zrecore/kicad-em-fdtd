@@ -15,6 +15,22 @@
 using Catch::Matchers::ContainsSubstring;
 
 namespace {
+// MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the variable.
+void setEnv(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+void unsetEnv(const char* name) {
+#if defined(_WIN32)
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
+
 bool waitFor(const std::function<bool()>& ok, double seconds) {
   const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
   while (std::chrono::steady_clock::now() < end) {
@@ -122,10 +138,10 @@ SCENARIO("The window runs the farm tool without a shell and never waits for ever
 SCENARIO("The client polls the tool only while the tab is showing, and runs actions in the background",
          "[farm]") {
   GIVEN("a stand-in for the farm tool") {
-    setenv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB, 1);
+    setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
     const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_calls.log";
     std::remove(log.c_str());
-    setenv("EMFDTD_FARM_STUB_LOG", log.c_str(), 1);
+    setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
     farm::Client client;
     WHEN("the tab is shown") {
       client.touch();
@@ -163,24 +179,24 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
         REQUIRE_FALSE(client.invite().running);
       }
     }
-    unsetenv("EMFDTD_FARM_COMMAND");
-    unsetenv("EMFDTD_FARM_STUB_LOG");
+    unsetEnv("EMFDTD_FARM_COMMAND");
+    unsetEnv("EMFDTD_FARM_STUB_LOG");
   }
 }
 
 SCENARIO("A client that nobody touches does not call the tool", "[farm]") {
-  setenv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB, 1);
+  setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
   const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_idle.log";
   std::remove(log.c_str());
-  setenv("EMFDTD_FARM_STUB_LOG", log.c_str(), 1);
+  setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
   {
     farm::Client client;
     std::this_thread::sleep_for(std::chrono::milliseconds(2200));
     std::ifstream in(log);
     REQUIRE_FALSE(in.good()); // the tool was never run
   }
-  unsetenv("EMFDTD_FARM_COMMAND");
-  unsetenv("EMFDTD_FARM_STUB_LOG");
+  unsetEnv("EMFDTD_FARM_COMMAND");
+  unsetEnv("EMFDTD_FARM_STUB_LOG");
 }
 
 SCENARIO("A run that goes to the farm is described by the window's settings and treatments", "[farm]") {
@@ -296,7 +312,7 @@ SCENARIO("Where a run goes is remembered in the farm folder, and the client role
          "[farm]") {
   const std::string home = std::string(FDTD_TEST_TMP) + "/farm_runon_home";
   std::filesystem::remove_all(home);
-  setenv("EMFDTD_FARM_HOME", home.c_str(), 1);
+  setEnv("EMFDTD_FARM_HOME", home.c_str());
   THEN("the default is this GPU and the client role is off") {
     REQUIRE(farm::loadRunOn() == "gpu");
     REQUIRE_FALSE(farm::clientEnabled());
@@ -316,11 +332,11 @@ SCENARIO("Where a run goes is remembered in the farm folder, and the client role
     std::string text((std::istreambuf_iterator<char>(in)), {});
     REQUIRE(text.find("run_on") == std::string::npos);
   }
-  unsetenv("EMFDTD_FARM_HOME");
+  unsetEnv("EMFDTD_FARM_HOME");
 }
 
 SCENARIO("The window's submit and fetch run the tool and keep its answers", "[farm]") {
-  setenv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB, 1);
+  setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
   farm::Client client;
   WHEN("a run is submitted") {
     farm::RunRequest r;
@@ -345,7 +361,7 @@ SCENARIO("The window's submit and fetch run the tool and keep its answers", "[fa
       REQUIRE(std::filesystem::exists(dest + "/s11.s1p"));
     }
   }
-  unsetenv("EMFDTD_FARM_COMMAND");
+  unsetEnv("EMFDTD_FARM_COMMAND");
 }
 
 SCENARIO("The window reads what this computer's own GPU offers the farm", "[farm]") {

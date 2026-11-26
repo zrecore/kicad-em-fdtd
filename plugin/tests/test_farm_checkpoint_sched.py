@@ -179,7 +179,10 @@ def test_a_worker_offers_checkpoints_only_if_its_solver_names_the_flag(tmp_path)
 
     def probe(help_text):
         solver = tmp_path / f"solver{abs(hash(help_text))}.py"
-        solver.write_text(f"#!{sys.executable}\nprint({help_text!r})\n")
+        # like the real solver: usage with no arguments, "cannot open" for anything else
+        solver.write_text(
+            f"#!{sys.executable}\nimport sys\nprint({help_text!r} if len(sys.argv) == 1 else 'cannot open')\n"
+        )
         solver.chmod(solver.stat().st_mode | stat.S_IEXEC)
         w = Worker({}, "127.0.0.1", 1, str(solver), tmp_path / "work", [], no_lock=True)
         asyncio.run(w.probe_checkpoint())

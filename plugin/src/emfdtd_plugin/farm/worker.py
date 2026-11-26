@@ -301,11 +301,11 @@ class Worker:
 
     async def probe_checkpoint(self):
         """A solver built before checkpoints existed would fail every job on the unknown flag, so a worker
-        offers the feature only if the solver's own help names it (no GPU call; an empty help keeps it)."""
+        offers the feature only if the solver's usage text names it (no GPU call; empty text keeps it)."""
         if not self.checkpoint or self._probed:
             return
         self._probed = True
-        code, text = await self._capture("--help")
+        code, text = await self._capture()  # no arguments: the solver prints its usage (it has no --help)
         if text.strip() and "--checkpoint-dir" not in text:
             self.checkpoint = False
             self._status(last_error="the solver has no --checkpoint-dir: jobs run without checkpoints")
