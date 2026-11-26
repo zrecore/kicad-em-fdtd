@@ -8,18 +8,24 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
 #ifdef _WIN32
+#include <io.h>
 #include <process.h>
 #define getpid _getpid
+#define dup _dup
+#define dup2 _dup2
+#define fdopen _fdopen
 #else
 #include <unistd.h>
 #endif
 
+#include "app/cli_json.hpp"
 #include "app/paths.hpp"
 #include "app/phasor_feed.hpp"
 #include "app/prepare.hpp"
@@ -216,6 +222,44 @@ void listDevices() {
     std::printf("no Vulkan devices found\n");
 }
 
+// --json: stdout carries exactly one JSON document. The human text of a run (printf all over this file) is
+// moved to stderr by pointing file descriptor 1 at stderr; the document goes to a copy of the real stdout.
+FILE* jsonOut = nullptr;
+
+void startJson() {
+  std::fflush(stdout);
+  jsonOut = fdopen(dup(1), "w");
+  dup2(2, 1);
+}
+
+void emitJson(const std::string& document) {
+  std::fputs(document.c_str(), jsonOut ? jsonOut : stdout);
+  std::fputc('\n', jsonOut ? jsonOut : stdout);
+  std::fflush(jsonOut ? jsonOut : stdout);
+}
+
+app::clijson::DeviceRow deviceRow(const vkcore::DeviceInfo& d, std::optional<int> index) {
+  app::clijson::DeviceRow r;
+  r.index = index;
+  r.name = d.name;
+  r.uuid = d.uuid;
+  r.driver = d.driver;
+  r.memoryBytes = d.deviceLocalBytes;
+  r.vulkanMajor = VK_API_VERSION_MAJOR(d.apiVersion);
+  r.vulkanMinor = VK_API_VERSION_MINOR(d.apiVersion);
+  r.discrete = d.discrete;
+  r.usable = vkcore::usable(d);
+  return r;
+}
+
+std::string devicesJson() {
+  std::vector<app::clijson::DeviceRow> rows;
+  int usableIndex = 0;
+  for (const auto& d : vkcore::listDevices())
+    rows.push_back(deviceRow(d, vkcore::usable(d) ? std::optional<int>(usableIndex++) : std::nullopt));
+  return app::clijson::devicesList(FDTD_VERSION, rows);
+}
+
 int main(int argc, char** argv) {
   // Progress lines should appear even if the run is killed. The MSVC runtime rejects a zero buffer size with
   // _IOLBF (it aborts) and treats _IOLBF as full buffering, so there stdout is unbuffered.
@@ -224,24 +268,56 @@ int main(int argc, char** argv) {
 #else
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
+  bool jsonMode = false, wantS11 = false;
+  for (int i = 1; i < argc; ++i) {
+    jsonMode = jsonMode || std::string(argv[i]) == "--json";
+    wantS11 = wantS11 || std::string(argv[i]) == "--s11";
+  }
+  if (jsonMode)
+    startJson();
+  // Every failure in --json mode is a document on stdout too, so a caller never has to read stderr.
+  auto fail = [&](int code, const std::string& message) {
+    if (jsonMode)
+      emitJson(app::clijson::error(FDTD_VERSION, message));
+    return code;
+  };
   try {
     if (argc < 2) {
       usage();
-      return 2;
+      return fail(2, "no arguments; usage is on stderr");
+    }
+    if (std::string(argv[1]) == "--run-info") { // a saved run folder as JSON: no solve, no GPU, no window
+      if (argc < 3) {
+        usage();
+        return fail(2, "--run-info needs a run folder");
+      }
+      try {
+        emitJson(app::clijson::runInfo(FDTD_VERSION, argv[2], wantS11));
+        return 0;
+      } catch (const std::exception& e) {
+        emitJson(app::clijson::error(FDTD_VERSION, e.what()));
+        return 1;
+      }
     }
     if (std::string(argv[1]) == "--version") {
       std::printf("emfdtd %s\n", FDTD_VERSION);
       return 0;
     }
     if (std::string(argv[1]) == "--list-devices") {
-      listDevices();
+      if (jsonMode)
+        emitJson(devicesJson());
+      else
+        listDevices();
       return 0;
     }
     const app::Catalog catalog =
         app::Catalog::load(core::resourceDir("data", FDTD_DATA_DIR) + "/radio_profiles.json");
     app::Settings settings(catalog);
     if (std::string(argv[1]) == "--list-settings") {
-      listSettings(settings);
+      if (jsonMode)
+        emitJson(app::clijson::settingsList(FDTD_VERSION, settings));
+      else
+        listSettings(settings);
       return 0;
     }
     const fs::path snapshotPath = argv[1];
@@ -442,11 +518,17 @@ int main(int argc, char** argv) {
         showSettings = true;
       else if (a == "--ui-hide-controls")
         hideControls = true;
+      else if (a == "--json")
+        ; // read before the loop: the document goes to stdout, everything else to stderr
       else {
         usage();
-        return 2;
+        return fail(2, "unknown option " + a + "; usage is on stderr");
       }
     }
+    if (jsonMode && (uiMode || !shotFile.empty() || view || !sweepSpec.key.empty() || pruneKeep >= 0))
+      return fail(2,
+                  "--json covers --list-settings, --list-devices, --run-info, --dry-run and a headless run, "
+                  "not the window, --view, --sweep or --prune-runs");
 
     const app::ProjectPaths paths(projectDir);
     if (pruneKeep >= 0) {
@@ -773,8 +855,13 @@ int main(int argc, char** argv) {
       std::printf("note: %s\n", n.c_str());
     for (const auto& n : refineNotes)
       std::printf("note: %s\n", n.c_str());
-    if (dryRun)
+    const std::string deviceName = ctx ? ctx->properties().deviceName : "";
+    const auto facts = app::clijson::runFacts(settings, prepared, est, gpu, deviceName, refineNotes);
+    if (dryRun) {
+      if (jsonMode)
+        emitJson(app::clijson::dryRun(FDTD_VERSION, facts));
       return 0;
+    }
     if (est.exceedsMemory)
       throw std::runtime_error(
           "the model would not fit in device memory; choose a coarser mesh preset or a smaller region");
@@ -904,8 +991,8 @@ int main(int argc, char** argv) {
     if (failure)
       std::rethrow_exception(failure);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("%zu steps of %.3g ps in %.1f s (%.0f Mcells/s)\n", r.steps, r.dt * 1e12, secs,
-                static_cast<double>(g.cellCount()) * static_cast<double>(r.steps) / secs * 1e-6);
+    const double mcells = static_cast<double>(g.cellCount()) * static_cast<double>(r.steps) / secs * 1e-6;
+    std::printf("%zu steps of %.3g ps in %.1f s (%.0f Mcells/s)\n", r.steps, r.dt * 1e12, secs, mcells);
 
     std::ofstream out(runDir / "s11.s1p");
     fdtd::writeTouchstone(
@@ -953,9 +1040,22 @@ int main(int argc, char** argv) {
         viz::writePng((runDir / "frames" / name).string(), w, h, rgb);
       }
     }
+    if (jsonMode) {
+      app::clijson::RunOutcome outcome;
+      outcome.runDir = runDir.string();
+      outcome.steps = r.steps;
+      outcome.timeStepS = r.dt;
+      outcome.wallSeconds = secs;
+      outcome.mcellsPerSecond = mcells;
+      if (!r.s.s11.empty()) {
+        outcome.bestHz = r.s.frequenciesHz[best];
+        outcome.bestDb = 20 * std::log10(std::abs(r.s.s11[best]));
+      }
+      emitJson(app::clijson::run(FDTD_VERSION, facts, outcome));
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "emfdtd: %s\n", e.what());
-    return 1;
+    return fail(1, e.what());
   }
 }
