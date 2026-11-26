@@ -505,8 +505,19 @@ def _farm_command(args, say):
             for sig in (signal.SIGINT, signal.SIGTERM):
                 with contextlib.suppress(NotImplementedError, ValueError):  # not on Windows loops
                     loop.add_signal_handler(sig, stop_now)
+
+            async def watch_stop_file():
+                while not task.done():
+                    if agent.stop_file().exists():
+                        stop_now()
+                        return
+                    await asyncio.sleep(0.5)
+
+            watcher = asyncio.ensure_future(watch_stop_file()) if args.from_agent else None
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            if watcher:
+                watcher.cancel()
 
         asyncio.run(run_worker())
         w.stop()

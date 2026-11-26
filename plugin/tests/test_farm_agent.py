@@ -771,3 +771,9 @@ def _stop_patient(ctx, n):
 def _forced(ctx):
     assert ctx["stopped"]["was_running"] is True and ctx["stopped"]["forced"] is True
     assert ctx["stopped"]["stopped"] is True
+
+
+@when("the stop file is written")
+def _stop_file(ctx):
+    agent.stop_file().write_text("stop\n")
+    _wait(lambda: not agent.pid_alive(ctx["pids"][-1]), 15, "the agent to leave on its stop file")

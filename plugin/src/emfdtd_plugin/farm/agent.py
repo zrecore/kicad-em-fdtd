@@ -72,6 +72,11 @@ def status_file():
     return config.home() / "agent.status.json"
 
 
+def stop_file():
+    """Windows has no SIGTERM for a detached process: `agent stop` drops this file and the worker leaves."""
+    return config.home() / "agent.stop"
+
+
 def _read_json(path):
     try:
         data = json.loads(Path(path).read_text())
@@ -310,6 +315,8 @@ def start(wait_s=10.0):
         pid_file().unlink()
     with contextlib.suppress(OSError):
         status_file().unlink()
+    with contextlib.suppress(OSError):
+        stop_file().unlink()
     log = log_path(cfg)
     log.parent.mkdir(parents=True, exist_ok=True)
     _rotate(log)
@@ -322,9 +329,7 @@ def start(wait_s=10.0):
     ]  # -u: the log shows lines as they happen
     kwargs = {}
     if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        )
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
     with open(log, "ab") as out:
@@ -380,7 +385,9 @@ def stop(timeout=20.0):
         return {"was_running": False, "stopped": True, "forced": False}
     forced = False
     if sys.platform == "win32":
-        _run(["taskkill", "/PID", str(pid), "/T"])
+        # a plain `taskkill /T` cannot end a console-less process, so ask through a file the worker watches
+        with contextlib.suppress(OSError):
+            stop_file().write_text("stop\n")
     else:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGTERM)  # the worker ends its solver and exits
@@ -399,6 +406,8 @@ def stop(timeout=20.0):
             time.sleep(0.1)
     with contextlib.suppress(OSError):
         pid_file().unlink()
+    with contextlib.suppress(OSError):
+        stop_file().unlink()
     if state:
         _write_json(status_file(), {**state, "connected": False, "job": None, "solver_pids": []})
     return {"was_running": True, "stopped": not pid_alive(pid), "forced": forced}

@@ -105,3 +105,9 @@ Feature: The agent starts and stops a real worker and says what it is doing
     Then the stop had to kill it
     And the agent process is gone
     And the solver process is gone
+
+  Scenario: The agent leaves cleanly when its stop file appears (how a stop works on Windows)
+    When the user starts the agent
+    And the stop file is written
+    Then the agent process is gone
+    And the agent status says not running
