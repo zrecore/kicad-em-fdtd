@@ -7,10 +7,16 @@ on:
 permissions:
   contents: read
 
+# A newer push replaces a run still going for the same branch: a stuck or superseded run must not hold a runner.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native:
     # macOS on Apple silicon is the only supported platform for now. No GPU on the runner: CPU tests only.
-    runs-on: macos-15 # Apple silicon
+    runs-on: macos-15 # Apple silicon (the hosted runner has a fixed 7 GB of memory: not configurable)
+    timeout-minutes: 30 # a normal run takes 8 to 12; GitHub's default of 360 let a stuck build run for 40+
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
@@ -20,14 +26,17 @@ jobs:
       - name: Format
         run: find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs clang-format --dry-run --Werror
       - name: Build (warnings are errors, ASan and UBSan)
+        timeout-minutes: 20
         run: |
           cmake --preset ci
           cmake --build --preset ci
       - name: CPU tests
-        run: ctest --preset ci -L '^cpu$'
+        timeout-minutes: 15
+        run: ctest --preset ci -L '^cpu$' --timeout 300 # no single test may run past 5 minutes
 
   plugin:
     runs-on: ubuntu-22.04 # Python 3.9 (KiCAD's interpreter) is not offered on newer images
+    timeout-minutes: 15 # a normal run takes about 4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

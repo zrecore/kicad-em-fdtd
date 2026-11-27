@@ -12,6 +12,7 @@ permissions:
 jobs:
   macos-arm64:
     runs-on: macos-15 # Apple silicon
+    timeout-minutes: 60 # a release builds and packages; GitHub's default of 360 hides a stuck job
     steps:
       - uses: actions/checkout@v4
       - name: The tag must match VERSION and the changelog
