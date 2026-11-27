@@ -59,10 +59,11 @@ The same document with `"mode": "run"` and:
 ```json
 { "results_dir": "/path/em-fdtd/results/run-20261125-231912", "steps": 118000, "time_step_s": 7.75e-14,
   "wall_seconds": 906.2, "mcells_per_second": 1250.0,
-  "best_match": { "freq_hz": 2.3664e9, "db": -33.2 }, "exit_status": 0 }
+  "best_match": { "freq_hz": 2.3664e9, "db": -33.2 }, "exit_status": 0,
+  "gpu_bytes_allocated": 1.9e9 }
 ```
 
-`best_match` is `null` if the run produced no S11. `best_match` is the deepest point of the sweep; it is not a resonance estimate (the sweep resolution limits it; see `--run-info` and `scripts/antenna/subbin.py`).
+`gpu_bytes_allocated` is the most kernel-bound buffer memory (the VRAM copy of every solver and accumulator buffer; staging copies and the driver's own overhead excluded) alive at once during the run, counted in `vkcore`; `null` on the CPU. It is the figure to set against `estimate.memory_bytes` (see `docs/trust.md`). `best_match` is `null` if the run produced no S11. `best_match` is the deepest point of the sweep; it is not a resonance estimate (the sweep resolution limits it; see `--run-info` and `scripts/antenna/subbin.py`).
 
 ## `emfdtd --run-info RUNDIR [--s11] --json`
 

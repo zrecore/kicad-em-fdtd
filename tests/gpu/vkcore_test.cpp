@@ -106,3 +106,37 @@ SCENARIO("A device-resident buffer works on the staged path too", "[gpu][staged]
     }
   }
 }
+
+SCENARIO("The context counts the buffer memory a run allocates", "[gpu][memory]") {
+  GIVEN("a fresh context") {
+    vkcore::Context ctx({.validation = kValidation});
+    REQUIRE(ctx.bufferBytes() == 0);
+    WHEN("two buffers of known size are made and one is freed") {
+      constexpr std::uint64_t a = 3u << 20, b = 1u << 20;
+      {
+        vkcore::Buffer big(ctx, a, vkcore::Residency::Device);
+        {
+          vkcore::Buffer small(ctx, b);
+          THEN("the live count is their sum, exactly") {
+            REQUIRE(ctx.bufferBytes() == a + b);
+          }
+        }
+        THEN("freeing one lowers the live count but not the peak") {
+          REQUIRE(ctx.bufferBytes() == a);
+          REQUIRE(ctx.peakBufferBytes() == a + b);
+        }
+        AND_WHEN("the context is forced onto staged buffers, the host staging copy is not counted") {
+          vkcore::Context staged({.validation = kValidation, .stagedBuffers = true});
+          vkcore::Buffer s(staged, b, vkcore::Residency::Device);
+          THEN("only the VRAM copy counts: exactly the requested size") {
+            REQUIRE(s.staged());
+            REQUIRE(staged.bufferBytes() == b);
+          }
+        }
+      }
+      THEN("everything freed leaves a live count of zero") {
+        REQUIRE(ctx.bufferBytes() == 0);
+      }
+    }
+  }
+}

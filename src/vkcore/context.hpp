@@ -59,6 +59,12 @@ public:
   VkMemoryPropertyFlags memoryTypeFlags(std::uint32_t index) const;
   std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags wanted) const;
 
+  // Bytes of kernel-bound buffer memory (the VRAM copy of every Buffer, not host staging) alive now and the
+  // most alive at once since the context was made. The honest figure to set against the solver's estimate.
+  std::uint64_t bufferBytes() const { return bufferBytes_.load(); }
+  std::uint64_t peakBufferBytes() const { return peakBufferBytes_.load(); }
+  void noteBuffer(std::int64_t delta); // called by Buffer only
+
   bool validationEnabled() const { return messenger_ != VK_NULL_HANDLE; }
   unsigned validationErrors() const { return validationErrors_.load(); }
 
@@ -78,6 +84,7 @@ private:
   VkCommandBuffer copyCmd_ = VK_NULL_HANDLE;
   VkFence copyFence_ = VK_NULL_HANDLE;
   std::atomic<unsigned> validationErrors_{0};
+  std::atomic<std::uint64_t> bufferBytes_{0}, peakBufferBytes_{0};
 };
 
 } // namespace vkcore

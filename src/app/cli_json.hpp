@@ -57,6 +57,7 @@ struct RunOutcome {
   double timeStepS = 0, wallSeconds = 0, mcellsPerSecond = 0;
   std::optional<double> bestHz, bestDb; // the deepest S11 point; empty if the run produced none
   int exitStatus = 0;
+  std::uint64_t gpuBytesAllocated = 0; // peak kernel-bound buffer bytes (0 on the CPU: the document then has null)
   std::size_t resumedFromStep = 0; // 0: not a resumed run (the document then has "resumed_from_step": null)
 };
 // `emfdtd SNAPSHOT --json` after a headless run.

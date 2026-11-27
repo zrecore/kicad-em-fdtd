@@ -340,3 +340,13 @@ std::uint32_t Context::findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFl
 }
 
 } // namespace vkcore
+
+namespace vkcore {
+void Context::noteBuffer(std::int64_t delta) {
+  const auto now =
+      bufferBytes_.fetch_add(static_cast<std::uint64_t>(delta)) + static_cast<std::uint64_t>(delta);
+  auto peak = peakBufferBytes_.load();
+  while (now > peak && !peakBufferBytes_.compare_exchange_weak(peak, now)) {
+  }
+}
+} // namespace vkcore

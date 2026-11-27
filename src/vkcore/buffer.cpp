@@ -43,6 +43,7 @@ Buffer::Buffer(Context& ctx, VkDeviceSize bytes, Residency residency)
     make(ctx, bytes, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer_, memory_, memoryFlags_);
     make(ctx, bytes, kHostVisible, staging_, stagingMemory_, stagingFlags);
     VK_CHECK(vkMapMemory(device_, stagingMemory_, 0, VK_WHOLE_SIZE, 0, &mapped_));
+    ctx_.noteBuffer(static_cast<std::int64_t>(bytes_));
     return;
   }
   // Host-visible; on unified memory prefer the device-local type so the kernels see the fast path.
@@ -55,6 +56,7 @@ Buffer::Buffer(Context& ctx, VkDeviceSize bytes, Residency residency)
     make(ctx, bytes, kHostVisible, buffer_, memory_, memoryFlags_);
   }
   VK_CHECK(vkMapMemory(device_, memory_, 0, VK_WHOLE_SIZE, 0, &mapped_));
+  ctx_.noteBuffer(static_cast<std::int64_t>(bytes_));
 }
 
 void Buffer::upload(VkDeviceSize offset, VkDeviceSize size) const {
@@ -74,6 +76,8 @@ void Buffer::download(VkDeviceSize offset, VkDeviceSize size) const {
 }
 
 Buffer::~Buffer() {
+  if (memory_)
+    ctx_.noteBuffer(-static_cast<std::int64_t>(bytes_));
   if (mapped_)
     vkUnmapMemory(device_, staged() ? stagingMemory_ : memory_);
   if (staging_)

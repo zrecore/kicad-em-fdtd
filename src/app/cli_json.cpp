@@ -228,6 +228,10 @@ std::string run(const std::string& version, const RunFacts& f, const RunOutcome&
   else
     j["best_match"] = nullptr;
   j["exit_status"] = o.exitStatus;
+  if (o.gpuBytesAllocated)
+    j["gpu_bytes_allocated"] = o.gpuBytesAllocated;
+  else
+    j["gpu_bytes_allocated"] = nullptr;
   if (o.resumedFromStep)
     j["resumed_from_step"] = o.resumedFromStep;
   else

@@ -1094,6 +1094,10 @@ int main(int argc, char** argv) {
     std::printf("%zu steps of %.3g ps in %.1f s (%.0f Mcells/s)%s\n", r.steps, r.dt * 1e12, secs, mcells,
                 r.resumedFromStep ? "; the first part is from the checkpoint" : "");
 
+    const std::uint64_t gpuBytes = ctx ? ctx->peakBufferBytes() : 0;
+    if (gpuBytes)
+      std::printf("device memory: %.1f MB in buffers at the peak (estimate %.1f MB)\n", gpuBytes * 1e-6,
+                  est.memoryBytes * 1e-6);
     std::ofstream out(runDir / "s11.s1p");
     fdtd::writeTouchstone(
         out, r.s, "kicad-em-fdtd S11, board " + snap.boardName + ", profile " + settings.text("profile"));
@@ -1152,6 +1156,7 @@ int main(int argc, char** argv) {
       outcome.wallSeconds = secs;
       outcome.mcellsPerSecond = mcells;
       outcome.resumedFromStep = r.resumedFromStep;
+      outcome.gpuBytesAllocated = gpuBytes;
       if (!r.s.s11.empty()) {
         outcome.bestHz = r.s.frequenciesHz[best];
         outcome.bestDb = 20 * std::log10(std::abs(r.s.s11[best]));
