@@ -123,5 +123,19 @@ check("the recipe builds a valid snapshot with the pour, the trace and the strip
       len(top) == 2 and info["vias"] == (1, 2) and abs(snap["vias"][0]["x"] - 0.00762) < 1e-6 and len(snap["outline"]) == 4
       and snap["ports"][0]["layer_b"] == "B.Cu",
       "F.Cu shapes %d, vias kept %s" % (len(top), info["vias"]))
+import snapshot_to_kicad  # noqa: E402
+
+outer = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+hole = [[4.0, 4.0], [4.0, 6.0], [6.0, 6.0], [6.0, 4.0]]
+ring = snapshot_to_kicad.with_bridges(outer, [hole])
+shoelace = abs(sum(ring[i][0] * ring[(i + 1) % len(ring)][1] - ring[(i + 1) % len(ring)][0] * ring[i][1]
+                   for i in range(len(ring)))) / 2
+check("a polygon with a hole becomes one outline whose area is the polygon minus the hole",
+      len(ring) == 10 and abs(shoelace - 96.0) < 1e-9, "points %d, area %g" % (len(ring), shoelace))
+text = snapshot_to_kicad.board_text(snap, "selftest")
+check("the KiCad board has one zone per copper shape, one via per via, the outline and the stackup",
+      text.count("(zone ") == len(snap["copper"]) and text.count("(via ") == len(snap["vias"])
+      and text.count("Edge.Cuts") >= 2 and text.count('(type "copper")') == 2 and text.count('"dielectric ') == 1,
+      "zones %d vias %d" % (text.count("(zone "), text.count("(via ")))
 shutil.rmtree(OUT, ignore_errors=True)
 print("gerber tools: ok")
