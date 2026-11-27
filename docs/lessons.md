@@ -49,3 +49,8 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
 11. **A long-lived service ran old code.** The coordinator rejected a field the new client sent until it was
     restarted. *Rule:* after a protocol or schema change, restart the long-lived processes (when idle) and test
     one real submit. 
+12. **A blanket `git add -A` committed another agent's unfinished work (2026-11-27).** A subagent had written, but not
+    compiled, a GPU memory counter in the working tree; my docs commit carried it into main and CI failed at the format
+    check. *Rule:* while any agent works in the tree, stage by path (`git add docs/trust.md`), and read `git status`
+    before every commit; code that was never built does not ride along with a docs change. *Enforced:* habit; CI
+    caught it in 22 s because the format check runs first.
