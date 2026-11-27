@@ -37,7 +37,7 @@ slab copper, medium mesh, series resonance (reactance zero crossing, 8.2 MHz bin
 
 | Question | State |
 |---|---|
-| Why we sit about 3 % above openEMS (about 2.29 against 2.223 GHz) | suspects: the lumped port and feed model, openEMS's own mesh error at 0.4 mm, and how both codes put a mesh line exactly on copper edges (the thirds rule is untried). Fork K is running the port controls and the matched-cell comparison on exact-answer structures |
+| Why we sit about 3 % above openEMS (about 2.29 against 2.223 GHz) | suspects: the lumped port and feed model, openEMS's own mesh error at 0.4 mm, and how both codes put a mesh line exactly on copper edges (the thirds rule is untried). Fork K is running the port controls and the matched-cell comparison on exact-answer structures. Found 2026-11-26: our openEMS case refines only the antenna box (0.4 mm) and uses 3 mm cells over the rest of the board, while our solver uses 0.5 mm over the whole board, so the comparison was not like for like; a mesh ladder (`out/openems-case/ladder/`, coarse cell 1.0, then 0.75 and 0.5 mm) is queued on the CPU slot. Online reports of openEMS behavior: feed-line mesh sensitivity (one user saw +-30 ohm), lumped ports are not ideal launchers, nothing that explains a 3 % shift |
 | Impedance level: R, dip depth, Q | moved 2 to 4 times with the box on the default mesh; not rechecked at the converged mesh |
 | Sensitivities at the converged mesh (thickness, copper model, mask, loss tangent) | measured only at coarse mesh and box 0.25 |
 | The open-versus-short known-load control on real hardware | failed on the nRF52840 IFA board, cause not found; the coupon's open, short and load siblings test it |
