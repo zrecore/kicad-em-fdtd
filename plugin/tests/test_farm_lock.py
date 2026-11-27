@@ -270,3 +270,27 @@ def _ran(farm):
     while time.time() < end and farm.coord.locks.status():
         time.sleep(0.1)
     assert farm.coord.locks.status() == []
+
+
+@given("a clean command line parser")
+def _parser_given():
+    pass
+
+
+@then(
+    parsers.parse('"{line}" parses as lock {name}, {mins:d} minutes, label {label} and the command {command}')
+)
+def _parse_lock(monkeypatch, line, name, mins, label, command):
+    seen = {}
+
+    async def fake(bundle, host, port, n, lab, m, cmd, say=print):
+        seen.update(name=n, label=lab, mins=m, cmd=cmd)
+        return 0
+
+    monkeypatch.setattr(cli.pki, "min_tls", lambda: None)
+    monkeypatch.setattr(cli.pki, "load_identity", lambda role: {})
+    monkeypatch.setattr(cli.client, "lock", fake)
+    monkeypatch.setattr(cli, "_connection", lambda: ("127.0.0.1", 1))
+    monkeypatch.setattr(cli.config, "enabled", lambda role: True)
+    assert cli.main(line.split()) == 0
+    assert seen == {"name": name, "label": label, "mins": mins, "cmd": command.split()}

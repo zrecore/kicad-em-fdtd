@@ -64,3 +64,7 @@ Feature: The farm hands out GPU turns itself
     And a client "alice"
     When "alice" runs a command inside the lock "cpu:mac"
     Then the command ran, its exit code came back and the lock is free
+
+  Scenario: The command line takes options before the command and everything after -- as the command
+    Given a clean command line parser
+    Then "lock cpu:mac --max-minutes 5 --label x -- prog --flag 1" parses as lock cpu:mac, 5 minutes, label x and the command prog --flag 1

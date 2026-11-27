@@ -247,7 +247,6 @@ def _parser():
     s.add_argument(
         "--hold", action="store_true", help="no command: print HOLDING, keep the turn until stdin closes"
     )
-    s.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND ARGS...")
     s = sub.add_parser("cancel", help="client: cancel one of my jobs")
     s.add_argument("job")
     s = sub.add_parser("results", help="client: download a finished job's results")
@@ -294,10 +293,26 @@ def _run(coro):
         raise SystemExit(f"error: {e}") from None
 
 
+def _split_command(argv):
+    """(arguments, command): for `lock`, everything after the first -- is the command, options and all."""
+    if "lock" in argv and "--" in argv:
+        cut = argv.index("--")
+        return argv[:cut], argv[cut + 1 :]
+    return argv, []
+
+
+def _parse_args(argv):
+    argv, command = _split_command(argv)
+    args = _parser().parse_args(argv)
+    if args.cmd == "lock":
+        args.command = command
+    return args
+
+
 def main(argv=None, stdin=None, out=None):
     out = out or sys.stdout
     stdin = stdin or sys.stdin
-    args = _parser().parse_args(argv)
+    args = _parse_args(list(sys.argv[1:] if argv is None else argv))
     if args.cmd == "gui":  # the window runs this tool as child processes; it needs no TLS itself
         from .gui import main as gui_main
 
@@ -623,7 +638,7 @@ def _farm_command(args, say):  # noqa: C901  (complexity ratchet: split when nex
             say(f"  {j['job']}  {j['state']:<10} {pct} {j['label']}  {note}")
         return 0
     if cmd == "lock":
-        command = args.command[1:] if args.command[:1] == ["--"] else args.command
+        command = args.command
         if bool(command) == bool(args.hold):
             raise SystemExit("give a command after --, or --hold")
         try:
