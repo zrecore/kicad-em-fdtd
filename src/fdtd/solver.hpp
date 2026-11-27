@@ -37,6 +37,8 @@ struct LumpedPort {
   std::function<double(double)> voltage;
   double capacitance = 0; // farad across this edge, added as permittivity C dl / area (a lumped capacitor)
   double inductance = 0;  // henry across this edge, in parallel with R and C; 0: none (a lumped inductor)
+  bool record = true; // false: a passive load (its source is zero): the GPU path keeps no per-step voltage
+                      // history for it (that grew with load edges x steps, into the checkpoint too)
 };
 
 // Convolution PML on all six walls (kappa = 1, polynomial sigma, linearly falling alpha) [4][5].

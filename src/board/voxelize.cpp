@@ -981,6 +981,25 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     lumpedRefs.insert(c.ref);
   }
 
+  // A treatment the user gave for a part that cannot take it does nothing; say so instead of staying silent.
+  for (const auto& [ref, treatment] : sel.parts) {
+    if (treatment.state == PartTreatment::State::Auto && !treatment.fitDnp)
+      continue; // nothing to apply
+    const auto comp = std::find_if(s.components.begin(), s.components.end(),
+                                   [&](const Component& c) { return c.ref == ref; });
+    if (comp == s.components.end()) {
+      m.notes.push_back("part " + ref + " not found in the snapshot (a treatment was given for it)");
+    } else if (!sel.includes(ref)) {
+      m.notes.push_back("part " + ref + " ignored: the part is left out of the model by the selection");
+    } else if (comp->pads.size() != 2 || comp->pads[0].net == comp->pads[1].net) {
+      const std::size_t n = comp->pads.size();
+      m.notes.push_back("part " + ref +
+                        " ignored: it needs exactly two pads on two different nets (the snapshot lists " +
+                        std::to_string(n) + (n == 1 ? " pad" : " pads") +
+                        (n == 2 ? ", both on net " + comp->pads[0].net : std::string()) + ")");
+    }
+  }
+
   std::sort(m.pecEdges.begin(), m.pecEdges.end(), [](const fdtd::PecEdge& a, const fdtd::PecEdge& b) {
     return a.axis != b.axis ? a.axis < b.axis : a.node < b.node;
   });

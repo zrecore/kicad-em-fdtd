@@ -88,12 +88,13 @@ def main():
     ap.add_argument("--nts", type=int, default=600000)
     ap.add_argument("--end", type=float, default=5e-4, help="energy decay stop criterion")
     ap.add_argument("--growth", type=float, default=1.1)
+    ap.add_argument("--band", type=float, nargs=2, default=[1.9, 2.9], metavar=("LO", "HI"), help="S11 band (GHz); the excitation spans 0.6 of its width around the centre")
     a = ap.parse_args()
 
     a.outdir = os.path.abspath(a.outdir)  # the engine changes directory while it runs
     snap = json.load(open(a.snapshot))
     os.makedirs(a.outdir, exist_ok=True)
-    f0, fc = 2.4e9, 0.6e9
+    f0, fc = 0.5e9 * (a.band[0] + a.band[1]), 0.6e9 * (a.band[1] - a.band[0])  # default 1.9..2.9: 2.4 GHz, 0.6 GHz
     mm = lambda p: [[x * 1e3, y * 1e3] for x, y in p]  # noqa: E731
 
     # Stack, bottom to top: z positions in mm.
@@ -101,7 +102,7 @@ def main():
     z, layers = 0.0, {}
     diel = []
     for e in stack:
-        t = e["thickness"] * 1e3
+        t = e.get("thickness", 0.0) * 1e3  # a copper entry without a thickness is a PEC sheet (like the solver)
         if e["kind"] == "copper":
             layers[e["name"]] = (z, z + t)
         else:
@@ -212,7 +213,7 @@ def main():
         return
     if not a.post_only:
         FDTD.Run(sim, cleanup=True, numThreads=a.threads)
-    freqs = np.linspace(1.9e9, 2.9e9, 401)
+    freqs = np.linspace(a.band[0] * 1e9, a.band[1] * 1e9, 401)
     p1.CalcPort(sim, freqs, ref_impedance=port["impedance"])
     s11 = p1.uf_ref / p1.uf_inc
     zin = p1.uf_tot / p1.if_tot

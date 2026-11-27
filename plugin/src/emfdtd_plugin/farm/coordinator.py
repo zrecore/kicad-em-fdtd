@@ -375,6 +375,8 @@ class Coordinator:
             self.sched.progress(msg["job"], msg["lease"], str(msg["line"]))
         elif kind == "stopped":
             self._confirm_dead(msg["job"], msg["lease"])
+            self.sched.stopped(msg["job"], name)  # a cancelled job's device is free once its solver is gone
+            self._dispatch()
         elif kind == "checkpointed":
             self.sched.checkpointed(msg["job"], msg["lease"], msg["step"])
             self._persist()

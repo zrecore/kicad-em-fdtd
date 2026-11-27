@@ -4,6 +4,7 @@
 #include <complex>
 #include <numbers>
 
+#include "core/bytes.hpp"
 #include "fdtd_vk/gpu_engine.hpp"
 #include "fdtd_vk/gpu_solver.hpp"
 #include "sim/simulation.hpp"
@@ -369,6 +370,64 @@ SCENARIO("The GPU solver matches the CPU reference with a lumped R, L, C part on
         const double cpuV = cpu.e(fdtd::Z, 6, 10, 9) * (edges[2][10] - edges[2][9]);
         REQUIRE(std::abs(cpuV) > 0);
         REQUIRE(std::abs(gpu.portVoltage(1).back() - cpuV) <= 1e-3 * std::abs(cpuV) + 1e-12);
+      }
+      AND_THEN("the validation layer reported no errors") {
+        REQUIRE(ctx.validationErrors() == 0);
+      }
+    }
+  }
+}
+
+SCENARIO("A passive lumped load keeps no voltage history; the driven port and a checkpoint are unaffected",
+         "[gpu][lumped][checkpoint]") {
+  GIVEN("a graded 20-cell PEC box, a 50 ohm port driven by a pulse and a 600 ohm load on another edge, "
+        "once with the load recording its voltage and once not") {
+    vkcore::Context ctx({.validation = kValidation});
+    std::array<std::vector<double>, 3> edges;
+    for (auto& e : edges) {
+      double x = 0;
+      e.push_back(x);
+      for (int i = 0; i < 20; ++i)
+        e.push_back(x += 1e-3 * std::pow(1.02, i));
+    }
+    auto build = [&](bool record) {
+      fdtd::Solver<float> cpu(fdtd::Grid(edges), 0.95);
+      cpu.addLumpedPort({10, 10, 9, fdtd::Z, 50.0, [](double t) {
+                           const double tau = 2e-11, u = (t - 4 * tau) / tau;
+                           return -u * std::exp(-u * u);
+                         }});
+      fdtd::LumpedPort load{6, 10, 9, fdtd::Z, 600.0, [](double) { return 0.0; }};
+      load.record = record;
+      cpu.addLumpedPort(load);
+      return cpu;
+    };
+    const auto cpuKeep = build(true), cpuDrop = build(false);
+    fdtd_vk::GpuSolver keep(ctx, cpuKeep), drop(ctx, cpuDrop);
+    WHEN("both advance 300 steps") {
+      keep.step(300);
+      drop.step(300);
+      THEN("the load's history is empty when it does not record and 300 samples when it does") {
+        REQUIRE(drop.portVoltage(1).empty());
+        REQUIRE(drop.portSourceVoltage(1).empty());
+        REQUIRE(keep.portVoltage(1).size() == 300);
+      }
+      AND_THEN("the driven port's voltage and source are identical in both") {
+        REQUIRE(drop.portVoltage(0) == keep.portVoltage(0));
+        REQUIRE(drop.portSourceVoltage(0) == keep.portSourceVoltage(0));
+      }
+      AND_THEN("the saved state is smaller by the load's two histories, and restoring it continues the run "
+               "identically") {
+        core::ByteWriter wk, wd;
+        keep.saveState(wk);
+        drop.saveState(wd);
+        REQUIRE(wk.bytes().size() - wd.bytes().size() == 2 * (300 * sizeof(double) + sizeof(std::uint64_t)));
+        fdtd_vk::GpuSolver resumed(ctx, cpuDrop);
+        core::ByteReader r(wd.bytes());
+        resumed.restoreState(r);
+        REQUIRE(r.atEnd());
+        resumed.step(100);
+        drop.step(100);
+        REQUIRE(resumed.portVoltage(0) == drop.portVoltage(0));
       }
       AND_THEN("the validation layer reported no errors") {
         REQUIRE(ctx.validationErrors() == 0);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Self-test of the antenna helper scripts (closed-form checks). Run: python3 scripts/antenna/selftest.py"""
 
+import cmath
 import math
 import os
 import sys
@@ -168,3 +169,23 @@ check(
     "same coarse cell at er 4.2 needs fewer cells per wavelength",
     abs(known_answer.cpw_for(4.2, 20) - 20 * math.sqrt(4.2 / 4.5)) < 1e-12,
 )
+
+import port_controls  # noqa: E402
+
+_w50, _eeff50 = port_controls.hammerstad(4.5, 1.6e-3)
+check(
+    "Hammerstad: a 50 ohm strip on 1.6 mm FR-4 (er 4.5) is about 3.0 mm wide with eeff about 3.4",
+    2.9e-3 < _w50 < 3.1e-3 and 3.3 < _eeff50 < 3.5,
+    "%.3f mm, eeff %.3f" % (_w50 * 1e3, _eeff50),
+)
+check(
+    "line phase slope: 5 mm of eeff 3.39 line is about 22 degrees per GHz",
+    abs(port_controls.slope_per_metre(3.394) * 5e-3 - 22.1) < 0.2,
+)
+check("reflection of 100 ohm on 50 ohm is 1/3", abs(port_controls.gamma(100.0) - 1 / 3) < 1e-12)
+_f = [1.5 + 0.01 * i for i in range(201)]
+_open = [(x, cmath.exp(-1j * math.radians(22.0 * x))) for x in _f]
+_sl, _p0 = port_controls.phase_fit(_open)
+check("phase_fit reads an open line: slope -22 deg/GHz, 0 degrees at f = 0", abs(_sl + 22) < 1e-6 and min(_p0, 360 - _p0) < 1e-6)
+_short = [(x, -cmath.exp(-1j * math.radians(22.0 * x))) for x in _f]
+check("phase_fit reads a short line: 180 degrees at f = 0", abs(port_controls.phase_fit(_short)[1] - 180) < 1e-6)

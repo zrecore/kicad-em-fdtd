@@ -614,6 +614,49 @@ SCENARIO("A fitted 0 ohm link or resistor between two pads is modelled across th
   }
 }
 
+SCENARIO("A part treatment that cannot apply is reported, not silently ignored") {
+  GIVEN("a snapshot with R6 listed without pads and R7 whose two pads share a net") {
+    const std::string comps =
+        R"(,{"ref":"R6","value":"0R","x":0.0045,"y":0.008,"layer":"F.Cu"})"
+        R"(,{"ref":"R7","value":"0R","x":0.0045,"y":0.004,"layer":"F.Cu",)"
+        R"("pads":[{"number":"1","net":"A","x":0.0035,"y":0.004},{"number":"2","net":"A","x":0.0055,"y":0.004}]})";
+    const auto snap = board::parseSnapshot(fixture(1, "", comps));
+    WHEN("the user sets treatments for R6, R7 and a reference that is not in the snapshot") {
+      board::Selection sel;
+      sel.parts["R6"].state = board::PartTreatment::State::Short;
+      sel.parts["R7"].state = board::PartTreatment::State::Open;
+      sel.parts["R9"].state = board::PartTreatment::State::Short;
+      const auto model = board::voxelize(snap, sel, kPlan, kF0);
+      THEN("one note per part says why it does nothing and names the pad count") {
+        REQUIRE(noteContains(model, "part R6 ignored", "needs exactly two pads on two different nets"));
+        REQUIRE(noteContains(model, "part R6 ignored", "lists 0 pads"));
+        REQUIRE(noteContains(model, "part R7 ignored", "lists 2 pads, both on net A"));
+        REQUIRE(noteContains(model, "part R9", "not found in the snapshot"));
+      }
+    }
+    WHEN("no treatment is set, or one with nothing to apply") {
+      board::Selection none, autoOnly;
+      autoOnly.parts["R6"] = {};
+      THEN("there is no such note: only treatments the user gave are checked") {
+        for (const board::Selection* sel : {&none, &autoOnly}) {
+          const auto model = board::voxelize(snap, *sel, kPlan, kF0);
+          REQUIRE(!noteContains(model, "part R6 ignored", ""));
+          REQUIRE(!noteContains(model, "not found in the snapshot", ""));
+        }
+      }
+    }
+    WHEN("the treatment is for a part that is a proper two-terminal part") {
+      board::Selection sel;
+      sel.parts["R6"].state = board::PartTreatment::State::Short;
+      const auto model = board::voxelize(snapshotWithPart("R6", "100R"), sel, kPlan, kF0);
+      THEN("it is applied and nothing is reported as ignored") {
+        REQUIRE(gapIsShort(model));
+        REQUIRE(!noteContains(model, "ignored", "part R6"));
+      }
+    }
+  }
+}
+
 SCENARIO("The voxelizer drops copper on nets that the net selection leaves out") {
   GIVEN("the fixture board: ground plane on GND, the antenna pad on FEED") {
     const auto snap = board::parseSnapshot(fixture());

@@ -5,6 +5,18 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (farm: a cancelled job left its device busy)
+- Cancelling a running job did not free its device in the coordinator, so the device showed `busy` with nothing running on it and its queue waited until the worker reconnected (seen on the RTX for over an hour after a cancel, and probably once before a resume). The device is now freed when the worker says the solver is gone, and any device still marked busy for a job that ended more than two minutes ago is freed.
+
+### Fixed (farm: device speed)
+- A device's speed is the median of its last five full runs. The end-of-run line of a resumed run (it covers only the last segment) and of a run shorter than three minutes no longer count, so the listing no longer shows a slowdown that did not happen (417, 636 and 848 Mcells/s for jobs that ran normally).
+
+### Fixed (`--part` treatments that cannot apply)
+- A `--part REF=...` treatment for a part that is not in the snapshot, is left out by the selection, or does not have exactly two pads on two different nets now gets a run note ("part R6 ignored: it needs exactly two pads on two different nets (the snapshot lists 0 pads)") instead of silently doing nothing.
+
+### Fixed (GPU solver: passive loads keep no voltage history)
+- Lumped loads (`--part`) no longer keep a per-step voltage and source history on the host (it grew with load edges times steps, 760 MB for 238 edges over 200 000 steps, and went into the checkpoint); only port 0's edges do. The GPU state in a checkpoint has format 2.
+
 ### Fixed (solver: lumped loads)
 - Adding a lumped part (a resistor, capacitor or inductor from `--part`) rebuilt every update coefficient on the grid after each of its edges, and each node scanned all ports, so preparation grew with the square of the load edges: 238 load edges on 11 M cells took about 40 minutes before the first step (383 s against 7.7 s on a 3.5 M cell case, the same S11 byte for byte). Each load now updates only its own edge. A resume pays the preparation again, so this mattered most on the farm.
 

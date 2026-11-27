@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import ssl
+import statistics
 import time
 from pathlib import Path
 
@@ -24,7 +25,9 @@ DEVICE_LINE = re.compile(
     r"(?P<unusable>\s{2}\(below Vulkan 1\.2: not usable\))?$"
 )
 PROGRESS_PERCENT = re.compile(r"^progress: \d+ steps, about (\d{1,3})%")
-SPEED = re.compile(r"\(([\d.]+) Mcells/s\)")
+SPEED = re.compile(r"in ([\d.]+) s \(([\d.]+) Mcells/s\)")  # the solver's end-of-run line
+MIN_RATE_RUN_S = 180.0  # a shorter run is mostly setup: it does not say how fast the device is
+RATE_HISTORY = 5  # the device speed is the median of this many recent full runs
 ESTIMATE_MB = re.compile(r"estimate:.*?(\d+(?:\.\d+)?) (MB|GB)")
 CKPT_LINE = re.compile(r"^checkpoint: step (\d+) written")  # the solver's line after each checkpoint
 PAUSED_LINE = re.compile(r"^paused: checkpoint at step (\d+)")
@@ -172,6 +175,7 @@ class Worker:
         self._connected = None
         self._tiers = None
         self._speed = {}
+        self._rates = {}  # device uuid -> the last full-run rates (the speed is their median)
         self._stop = False
         self.checkpoint_wait_s = float(checkpoint_wait_s)
         self._probed = False
@@ -322,14 +326,29 @@ class Worker:
         return self.work_root / "speed.json"
 
     def _load_speed(self):
-        with contextlib.suppress(OSError, ValueError):
-            self._speed = json.loads(self._speed_file().read_text())
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            data = json.loads(self._speed_file().read_text())
+            if isinstance(data.get("speed"), dict):
+                self._speed = {k: float(v) for k, v in data["speed"].items()}
+                self._rates = {k: [float(x) for x in v] for k, v in (data.get("rates") or {}).items()}
+            else:  # the older format: {device uuid: speed}
+                self._speed = {k: float(v) for k, v in data.items()}
+                self._rates = {k: [v] for k, v in self._speed.items()}
 
-    def _note_speed(self, uuid, mcells):
-        old = self._speed.get(uuid)
-        self._speed[uuid] = mcells if old is None else 0.7 * old + 0.3 * mcells
+    def _note_speed(self, uuid, mcells, seconds=None, resumed=False):
+        """Record what a run says about the device. The speed is the median of the last few whole runs:
+        a resumed run's end line covers only its last segment, and a run of a few minutes or less is mostly
+        setup, so neither counts (unless the device has no figure at all yet)."""
+        if resumed:
+            return
+        if seconds is not None and seconds < MIN_RATE_RUN_S and uuid in self._speed:
+            return
+        rates = self._rates.setdefault(uuid, [])
+        rates.append(float(mcells))
+        del rates[:-RATE_HISTORY]
+        self._speed[uuid] = float(statistics.median(rates))
         with contextlib.suppress(OSError):
-            self._speed_file().write_text(json.dumps(self._speed))
+            self._speed_file().write_text(json.dumps({"speed": self._speed, "rates": self._rates}))
 
     def _wire_devices(self, devs):
         return [
@@ -693,7 +712,8 @@ class Worker:
         self.running[job] = running
         self._status(solver_pids=[running.proc.pid])
         loop = asyncio.get_running_loop()
-        state = {"last": 0.0, "speed": None, "ckpt_step": None}
+        state = {"last": 0.0, "speed": None, "seconds": None, "ckpt_step": None}
+        resumed = bool(ckpt and ckpt["resume"])
         stop_file = work / "ckpt" / "stop"
 
         def on_line(line):
@@ -708,7 +728,7 @@ class Worker:
                 )
             m = SPEED.search(line)
             if m:
-                state["speed"] = float(m.group(1))
+                state["seconds"], state["speed"] = float(m.group(1)), float(m.group(2))
             p = PROGRESS_PERCENT.match(line)
             job_state = self._state.get("job")
             if p and job_state and job_state.get("id") == job:
@@ -773,7 +793,7 @@ class Worker:
             return
         await self._upload(job, lease, files, ctl)
         if state["speed"]:
-            self._note_speed(device, state["speed"])
+            self._note_speed(device, state["speed"], state["seconds"], resumed)
 
     @staticmethod
     def _collect(work):

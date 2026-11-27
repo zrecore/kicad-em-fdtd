@@ -17,6 +17,7 @@ HEARTBEAT_TIMEOUT = 45.0  # seconds without a heartbeat before a worker's leases
 DEFAULT_MAX_QUEUED = 100
 HOLD_SECONDS = 3600.0  # a job that lost its worker waits this long for it to come back with its checkpoint
 RECEIVE_TIMEOUT = 3600.0  # a submission whose input never arrived is dropped after this long
+STALE_BUSY_S = 120.0  # a device still marked busy for a job that ended this long ago is freed (see expire)
 # What is kept across a coordinator restart (progress text and percentages are not: a job starts over)
 JOB_FIELDS = (
     "id", "owner", "spec", "input_sha256", "input_bytes", "label", "group",
@@ -364,6 +365,13 @@ class Scheduler:
         job.state, job.lease, job.worker, job.device = "queued", None, None, None
         return True
 
+    def stopped(self, job_id, worker):
+        """The worker says the solver of `job_id` is gone (after a cancel): its device is free again. A job
+        that runs again (a new lease) keeps its device: only a job that is no longer running lets go."""
+        job = self.jobs.get(job_id)
+        if job and job.worker == worker and job.state != "running":
+            self._release_device(job)
+
     def _release_device(self, job):
         w = self.workers.get(job.worker)
         if w and job.device in w["devices"] and w["devices"][job.device].get("busy") == job.id:
@@ -387,7 +395,21 @@ class Scheduler:
             if w["online"] and now - w["last"] > self.heartbeat_timeout:
                 w["online"] = False
                 lost += self._lose_worker_jobs(name, now, "worker stopped answering")
+        self._free_stale_devices(now)
         return lost
+
+    def _free_stale_devices(self, now):
+        """A device marked busy for a job that is no longer running (a cancel whose 'stopped' never came, or
+        any path that forgot to let go) would block its queue for ever: free it STALE_BUSY_S after the job
+        ended."""
+        for w in self.workers.values():
+            for d in w["devices"].values():
+                job = self.jobs.get(d.get("busy"))
+                if d.get("busy") is None or (job is not None and job.state == "running"):
+                    continue
+                ended = job.finished if job is not None and job.finished else None
+                if ended is None or now - ended > STALE_BUSY_S:
+                    d["busy"] = None
 
     # --- placement ----------------------------------------------------------------------------
 

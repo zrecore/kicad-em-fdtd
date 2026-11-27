@@ -84,6 +84,24 @@ Feature: The scheduler shares devices fairly and never loses or doubles a job
     Then "client:bob" cannot cancel it
     And "client:alice" can cancel it
 
+  Scenario: Cancelling a running job frees its device once the worker confirms the solver is gone
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    And "client:alice" cancels the running job
+    Then the device still shows the cancelled job as running on it until the worker says it stopped
+    When the worker "win" says the cancelled job's solver stopped
+    Then the device is idle
+    And a job submitted next is offered the same device
+
+  Scenario: A device left marked busy by a job that is no longer running is freed after two minutes
+    When "client:alice" submits a job and its input arrives
+    And offers are made
+    And "client:alice" cancels the running job
+    And 100 seconds pass with heartbeats
+    Then the device still shows the cancelled job as running on it until the worker says it stopped
+    When 40 seconds pass with heartbeats
+    Then the device is idle
+
   Scenario: A user sees only their own jobs
     When "client:alice" submits a job and its input arrives
     And "client:bob" submits a job and its input arrives

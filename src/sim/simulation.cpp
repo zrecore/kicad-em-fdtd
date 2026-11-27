@@ -150,6 +150,7 @@ fdtd::Solver<float> buildSolver(const board::Model& model, const RunOptions& opt
       const double scale =
           p == 0 ? pe.sign * pe.share : 0.0; // only port 0 is driven; others are passive loads
       lp.voltage = [waveform, scale](double t) { return scale * waveform(t); };
+      lp.record = p == 0; // the passive loads need no voltage history: only port 0's strips are read
       solver.addLumpedPort(std::move(lp));
     }
   return solver;

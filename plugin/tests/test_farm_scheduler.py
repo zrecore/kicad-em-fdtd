@@ -309,3 +309,44 @@ def _failed_reason(ctx, reason):
 def _both_busy(ctx):
     busy = [d["busy"] for w in ctx["s"].workers.values() for d in w["devices"].values()]
     assert len(busy) == 2 and all(busy)
+
+
+@when(parsers.parse('"{who}" cancels the running job'))
+def _cancel_running(ctx, who):
+    job = next(j for j in ctx["jobs"] if j.state == "running")
+    ctx["cancelled"] = job
+    assert ctx["s"].cancel(job.id, who, ctx["now"]) == (job.worker, job.id)
+
+
+@then("the device still shows the cancelled job as running on it until the worker says it stopped")
+def _still_busy(ctx):
+    job = ctx["cancelled"]
+    assert ctx["s"].workers[job.worker]["devices"][job.device]["busy"] == job.id
+
+
+@when(parsers.parse('the worker "{name}" says the cancelled job\'s solver stopped'))
+def _stopped(ctx, name):
+    ctx["s"].stopped(ctx["cancelled"].id, name)
+
+
+@then("the device is idle")
+def _idle(ctx):
+    listing = ctx["s"].device_listing()
+    assert [d["state"] for d in listing] == ["idle"], listing  # not "busy" with nothing running on it
+
+
+@then("a job submitted next is offered the same device")
+def _next_gets_it(ctx):
+    (job,) = _submit(ctx, "client:alice")
+    _arrive(ctx, [job])
+    offers = _offer(ctx)
+    taken = ctx["cancelled"]
+    assert [(o[0].id, o[1], o[2]) for o in offers] == [(job.id, taken.worker, taken.device)]
+
+
+@when(parsers.parse("{n:d} seconds pass with heartbeats"))
+def _quiet_with_beats(ctx, n):
+    for _ in range(n // 10):
+        ctx["now"] += 10
+        ctx["s"].heartbeat("win", [dev("u-rtx", "RTX 4060 Ti", 1200, "NVIDIA")], ctx["now"])
+        ctx["s"].expire(ctx["now"])

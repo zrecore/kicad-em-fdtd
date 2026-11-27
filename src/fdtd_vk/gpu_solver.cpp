@@ -194,6 +194,10 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
       float* wave = &words[4 + 8 * portCount];
       for (std::uint32_t s = 0; s < chunk; ++s)
         for (std::size_t p = 0; p < portCount; ++p) {
+          if (!ports_[p].record) { // a passive load: no source, no history
+            wave[s * portCount + p] = 0.0f;
+            continue;
+          }
           const double vs = ports_[p].voltage((static_cast<double>(stepsDone_ + s) + 0.5) * dt_);
           wave[s * portCount + p] = static_cast<float>(vs);
           portVs_[p].push_back(vs);
@@ -209,7 +213,8 @@ vkcore::Timing GpuSolver::step(std::uint32_t n) {
       const float* log = &words[4 + 8 * portCount + kMaxStepsPerSubmit * portCount];
       for (std::uint32_t s = 0; s < chunk; ++s)
         for (std::size_t p = 0; p < portCount; ++p)
-          portV_[p].push_back(static_cast<double>(log[s * portCount + p]) * portDl_[p]);
+          if (ports_[p].record)
+            portV_[p].push_back(static_cast<double>(log[s * portCount + p]) * portDl_[p]);
     }
     stepsDone_ += chunk;
     n -= chunk;
@@ -228,7 +233,7 @@ std::span<const float> GpuSolver::field(fdtd::Kind kind, fdtd::Axis component) c
 
 namespace {
 constexpr std::uint32_t kGpuTag = 0x53'55'50'47; // "GPUS"
-constexpr std::uint32_t kGpuVersion = 1;
+constexpr std::uint32_t kGpuVersion = 2;         // 2: passive loads keep no voltage history
 } // namespace
 
 void GpuSolver::saveState(core::ByteWriter& w) const {
@@ -252,10 +257,12 @@ void GpuSolver::saveState(core::ByteWriter& w) const {
     w.put(words[4 + 8 * p + 6]); // inductor current
     w.put(words[4 + 8 * p + 7]); // E at the end of the previous step
   }
-  for (const auto& v : portV_)
-    w.putArray(v);
-  for (const auto& v : portVs_)
-    w.putArray(v);
+  for (std::size_t p = 0; p < ports_.size(); ++p)
+    if (ports_[p].record)
+      w.putArray(portV_[p]);
+  for (std::size_t p = 0; p < ports_.size(); ++p)
+    if (ports_[p].record)
+      w.putArray(portVs_[p]);
 }
 
 void GpuSolver::restoreState(core::ByteReader& r) {
@@ -285,10 +292,12 @@ void GpuSolver::restoreState(core::ByteReader& r) {
     words[4 + 8 * p + 7] = r.get<float>();
   }
   buffers_[10]->upload();
-  for (auto& v : portV_)
-    r.getArray(v, steps);
-  for (auto& v : portVs_)
-    r.getArray(v, steps);
+  for (std::size_t p = 0; p < ports_.size(); ++p)
+    if (ports_[p].record)
+      r.getArray(portV_[p], steps);
+  for (std::size_t p = 0; p < ports_.size(); ++p)
+    if (ports_[p].record)
+      r.getArray(portVs_[p], steps);
   stepsDone_ = steps;
   fieldSynced_.fill(~0ull); // the host views of the fields are stale now
 }
