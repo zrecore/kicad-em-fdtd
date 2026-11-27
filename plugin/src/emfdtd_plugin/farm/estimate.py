@@ -58,7 +58,7 @@ def _model_args(spec):
 
 
 def estimate_job(solver, snapshot, spec, timeout=DRY_RUN_TIMEOUT_S):
-    """(estimate, why): {"cells", "steps", "bound_steps"} for the job, or (None, the reason there is none).
+    """(estimate, why): {"cells", "steps", "bound_steps", "memory_bytes"} for the job, or (None, why not).
     Never raises: a job with no estimate is simply placed as before."""
     try:
         jobs.validate(spec, None, {"max_steps": 10**9, "max_tier": "expert"})
@@ -88,7 +88,11 @@ def estimate_job(solver, snapshot, spec, timeout=DRY_RUN_TIMEOUT_S):
     decay = spec.get("sets", {}).get("decay_threshold", DEFAULT_DECAY)
     if isinstance(decay, bool) or not isinstance(decay, (int, float)) or decay <= 0:
         decay = DEFAULT_DECAY
-    return {"cells": cells, "steps": round(bound * step_share(decay)), "bound_steps": round(bound)}, ""
+    est = {"cells": cells, "steps": round(bound * step_share(decay)), "bound_steps": round(bound)}
+    memory = doc["estimate"].get("memory_bytes")  # the solver's own estimate of the device memory it needs
+    if isinstance(memory, (int, float)) and not isinstance(memory, bool) and memory > 0:
+        est["memory_bytes"] = float(memory)
+    return est, ""
 
 
 def default_solver():

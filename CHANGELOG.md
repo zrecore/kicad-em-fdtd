@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (farm: jobs are kept off a GPU whose memory they would exceed)
+- The dry run's memory estimate travels with the job and the scheduler refuses a GPU for a job that needs more than 80 percent of its memory with a 1.5 margin; the queue says why a job waits (`needs about 5.0 GiB of GPU memory ...`). Unknown memory or no estimate is not refused. Not yet checked against real GPU use (`docs/trust.md`, Open).
+
 ### Changed (farm worker: one status entry per job)
 - A worker that runs two jobs at once (two GPUs of one machine with their own locks) reported only the last job it started and no job once either ended. The status file now has `job` (the newest) and `jobs` (all). The Radeon Pro 555X of the Windows box is on the farm on its own lock.
 

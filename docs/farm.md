@@ -154,6 +154,8 @@ your jobs:
 **3. Fetch results.** `emfdtd-farm results JOB --dest DIR` copies `s11.s1p`, `summary.txt`, `settings.json` and `run.log` into `DIR`.
 `emfdtd-farm cancel JOB` stops a job (a running one is killed, a paused one drops its checkpoint).
 
+**3b. A job too big for a GPU's memory.** The submitting machine's dry run also reports the device memory the job needs (the solver's own estimate: six field arrays, the material word and the CPML slabs per node). The scheduler keeps the job off any GPU whose memory it would exceed: 1.5 times the estimate against 80 percent of the GPU's memory (the solver's own budget rule, plus a margin because the estimate leaves out the animation accumulators and the logs). A job that fits no online GPU waits with the reason (`needs about 5.0 GiB of GPU memory (the farm adds 50%); the largest online GPU has 3.8 GiB, of which a job may use 80%`); a pinned job gets the same reason for its GPU. A GPU that did not report its memory, and a job without the estimate (`--no-estimate`), are not refused. The worker's own solver still refuses a run that does not fit.
+
 **4. A job that outruns a worker's ceiling.** Every worker has a time ceiling per run (the worker's own setting; the coordinator can only
 lower it; the `queue` device listing shows it as `ceiling_minutes` in `--json`). The scheduler keeps a job off a worker whose ceiling it
 would exceed. If you send it anyway (`--device WORKER --no-estimate`), the worker writes a checkpoint at the ceiling and the job is

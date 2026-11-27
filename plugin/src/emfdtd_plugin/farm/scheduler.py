@@ -473,6 +473,8 @@ class Scheduler:
                 return f"{pin_worker} has no device matching '{pin_device}'"
             ok = [d for d in devs if self._fits(job, w, d)]
             if not ok:
+                if not any(self._fits_memory(job, d) for d in devs):
+                    return self._memory_reason(job, devs, f"'{pin_device or pin_worker}'")
                 need = min((n for n in (self._need_seconds(job, d) for d in devs) if n), default=None)
                 ceiling = self._ceiling(w)
                 if need and ceiling:
@@ -485,6 +487,9 @@ class Scheduler:
         fitting = [n for n, w in online.items() if any(self._fits(job, w, d) for d in w["devices"].values())]
         if fitting:
             return "waiting for " + " or ".join(fitting) + " (busy)"
+        every = [d for w in online.values() for d in w["devices"].values()]
+        if not any(self._fits_memory(job, d) for d in every):
+            return self._memory_reason(job, every, "the largest online GPU")
         need = min(
             (n for w in online.values() for d in w["devices"].values() if (n := self._need_seconds(job, d))),
             default=None,
@@ -521,10 +526,29 @@ class Scheduler:
             return None
         return est["cells"] * est["steps"] / (speed * 1e6) * self.TIME_MARGIN
 
+    def _memory_reason(self, job, devs, who):
+        need = job.spec["estimate"]["memory_bytes"]
+        largest = max(d.get("memory_bytes") or 0 for d in devs)
+        return (
+            f"needs about {need / (1 << 30):.1f} GiB of GPU memory (the farm adds "
+            f"{self.MEMORY_MARGIN - 1:.0%}); {who} has {largest / (1 << 30):.1f} GiB, "
+            f"of which a job may use {self.MEMORY_BUDGET:.0%}"
+        )
+
+    MEMORY_BUDGET = 0.8  # the share of a GPU's memory a job may need: the solver's own rule (exceedsMemory)
+    MEMORY_MARGIN = 1.5  # the solver's estimate counts fields, materials and CPML only: a lower bound
+
+    def _fits_memory(self, job, dev):
+        """False when the solver's memory estimate for the job is over the budget of this device's memory.
+        A job without that estimate, or a device that did not say how much it has, is not refused."""
+        need = (job.spec.get("estimate") or {}).get("memory_bytes")
+        have = dev.get("memory_bytes") or 0
+        return not (need and have and need * self.MEMORY_MARGIN > self.MEMORY_BUDGET * have)
+
     def _fits(self, job, w, dev):
         ceiling = self._ceiling(w)
         need = self._need_seconds(job, dev)
-        return ceiling is None or need is None or need <= ceiling * 60
+        return self._fits_memory(job, dev) and (ceiling is None or need is None or need <= ceiling * 60)
 
     @staticmethod
     def _pin_parts(job):

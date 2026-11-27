@@ -118,13 +118,14 @@ def validate(spec, tiers, limits):  # noqa: C901  (complexity ratchet: split whe
 def _estimate(value):
     """{"cells", "steps"}: how big the job is expected to be, for placement only (the worker enforces its own
     ceilings whatever this says)."""
-    if not isinstance(value, dict) or set(value) - {"cells", "steps", "bound_steps"}:
+    if not isinstance(value, dict) or set(value) - {"cells", "steps", "bound_steps", "memory_bytes"}:
         raise JobError("an estimate is {cells, steps}")
     out = {}
     for key, cap in (
         ("cells", MAX_CELLS),
         ("steps", MAX_ESTIMATE_STEPS),
         ("bound_steps", MAX_ESTIMATE_STEPS),
+        ("memory_bytes", 1 << 46),
     ):
         if key in value:
             n = _number(value[key], "estimate " + key)
