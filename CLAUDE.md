@@ -64,6 +64,10 @@ KiCAD PCB editor -> thin Python IPC plugin (kipy) -> board snapshot -> native C+
 - DRY: shared flags live in `fdtd_options`, Vulkan plumbing in `src/vkcore` (RAII wrappers, one `VK_CHECK`), unit conversion in one header per language. No bare `vkDestroy*` outside `vkcore`. SI units (m, s, Hz) in the core; mm and nm only at the board boundary.
 - Layout: `src/vkcore` (Vulkan), `src/core` (Vulkan-free solver pieces), `apps/`, `tests/`, `plugin/`, `poc/` (throwaway; promote or delete at milestone end). No volk for now (YAGNI): link the Vulkan loader.
 
+## Lessons
+
+`docs/lessons.md` lists the mistakes that cost the most time and the rule each produced. Read it before comparing against another solver (also `.claude/skills/reference-comparison`), before changing the farm, a command line or CI. When a mistake costs more than an hour, add an entry there in the same change that fixes it, and say how the rule is enforced.
+
 ## Licensing and sources
 
 - The project is MIT. **Clean-room rule:** the mature FDTD/EM codes (openEMS, MEEP, gprMax) are GPL. Run them for validation and read their docs for behavior, but never copy, translate or use their source as an implementation template. Write kernels from the papers in `docs/PLAN.md` References.
