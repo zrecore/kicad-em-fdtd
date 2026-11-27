@@ -88,6 +88,7 @@ def main():
     ap.add_argument("--nts", type=int, default=600000)
     ap.add_argument("--end", type=float, default=5e-4, help="energy decay stop criterion")
     ap.add_argument("--growth", type=float, default=1.1)
+    ap.add_argument("--zstep", type=float, default=0.16, help="largest vertical cell inside the board stack (mm); the z axis is not refined by --cell or --fine")
     ap.add_argument("--band", type=float, nargs=2, default=[1.9, 2.9], metavar=("LO", "HI"), help="S11 band (GHz); the excitation spans 0.6 of its width around the centre")
     a = ap.parse_args()
 
@@ -173,7 +174,7 @@ def main():
     mtol = 0.5 * min(a.cell, fcell)
     X = thin(X, mtol)
     Y = thin(Y, mtol)
-    # z: every slab edge, at most 0.16 mm in the dielectric.
+    # z: every slab edge, at most --zstep (default 0.16 mm) in the dielectric.
     zl = {-a.margin - 8 * a.coarse, top + a.margin + 8 * a.coarse}
     for lo, hi in layers.values():
         zl |= {lo, hi}
@@ -182,7 +183,7 @@ def main():
     fine_z = []
     for lo, hi in zip(zl, zl[1:]):
         if 0 <= lo and hi <= top:
-            n = max(1, int(math.ceil((hi - lo) / 0.16)))
+            n = max(1, int(math.ceil((hi - lo) / a.zstep)))
             fine_z += [lo + (hi - lo) * i / n for i in range(n + 1)]
     zl = thin(sorted(set(zl) | set(fine_z)), 1e-4)
     for ax, lines in (("x", X), ("y", Y), ("z", zl)):
