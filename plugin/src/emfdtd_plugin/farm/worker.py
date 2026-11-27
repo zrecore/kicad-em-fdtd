@@ -171,6 +171,7 @@ class Worker:
         self._children = {}  # job id or None -> other solver children (device listing)
         self.cancelled = set()  # jobs the coordinator told us to stop
         self.tasks = {}
+        self._jobs = {}  # job id -> its status entry: two GPUs of this machine may each run a job
         self._lock = None  # asyncio objects are created inside the running loop (Python 3.9 binds them early)
         self._connected = None
         self._tiers = None
@@ -199,6 +200,20 @@ class Worker:
             tmp = self.status_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._state))
             os.replace(str(tmp), str(self.status_file))
+
+    def _job_status(self, job, **fields):
+        """Update one job's entry; `job` in the status file is the newest, `jobs` lists all of them."""
+        entry = self._jobs.setdefault(job, {"id": job, "label": None, "phase": "starting", "percent": None})
+        entry.update(fields)
+        self._status(job=entry, jobs=list(self._jobs.values()))
+
+    def _job_done(self, job):
+        self._jobs.pop(job, None)
+        newest = list(self._jobs.values())[-1] if self._jobs else None
+        self._status(job=newest, jobs=list(self._jobs.values()), solver_pids=self._pids())
+
+    def _pids(self):
+        return sorted(r.proc.pid for r in self.running.values())
 
     def _fresh(self):
         loop = asyncio.get_running_loop()
@@ -381,7 +396,8 @@ class Worker:
     async def run_forever(self, data_hash="", solver_version=""):
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._load_speed()
-        self._status(connected=False, last_error=None, job=None, solver_pids=[])
+        self._jobs.clear()
+        self._status(connected=False, last_error=None, job=None, jobs=[], solver_pids=[])
         delay = 1.0
         while not self._stop:
             try:
@@ -399,7 +415,8 @@ class Worker:
             ) as e:
                 self._status(last_error=f"{type(e).__name__}: {e}"[:300])
             self.connected.clear()
-            self._status(connected=False, job=None, solver_pids=[])
+            self._jobs.clear()
+            self._status(connected=False, job=None, jobs=[], solver_pids=[])
             await asyncio.sleep(delay)
             delay = min(30.0, delay * 2)
 
@@ -579,7 +596,7 @@ class Worker:
         fail = {"type": "fail", "job": job, "lease": lease, "retry": False}
         keep = False  # a paused job keeps its folder: the checkpoint is in it
         ckpt = self._checkpoint_plan(offer, work)
-        self._status(job={"id": job, "label": None, "phase": "starting", "percent": None})
+        self._job_status(job)
         try:
             if self.mode == "coordinator" and offer.get("turn") is not True:
                 raise jobs.JobError("this worker only runs jobs while the coordinator holds the GPU turn")
@@ -650,7 +667,7 @@ class Worker:
             self._children.pop(job, None)
             self._ckpt_dirs.pop(job, None)
             self.tasks.pop(job, None)
-            self._status(job=None, solver_pids=[])
+            self._job_done(job)
             if not keep:
                 shutil.rmtree(str(work), ignore_errors=True)
 
@@ -668,9 +685,8 @@ class Worker:
 
     async def _phase(self, ctl, job, lease, text):
         """Tell the coordinator what this job is doing, so 'running' is never silent."""
-        job_state = self._state.get("job")
-        if job_state and job_state.get("id") == job:
-            self._status(job={**job_state, "phase": text})
+        if job in self._jobs:
+            self._job_status(job, phase=text)
         with contextlib.suppress(Exception):
             await self._send(ctl, {"type": "progress", "job": job, "lease": lease, "line": text})
 
@@ -710,7 +726,7 @@ class Worker:
         cmd = self._gpu_prefix() + argv
         running = await procs.start(cmd, cwd=str(work / "run"))
         self.running[job] = running
-        self._status(solver_pids=[running.proc.pid])
+        self._status(solver_pids=sorted({*self._pids(), running.proc.pid}))
         loop = asyncio.get_running_loop()
         state = {"last": 0.0, "speed": None, "seconds": None, "ckpt_step": None}
         resumed = bool(ckpt and ckpt["resume"])
@@ -730,9 +746,8 @@ class Worker:
             if m:
                 state["seconds"], state["speed"] = float(m.group(1)), float(m.group(2))
             p = PROGRESS_PERCENT.match(line)
-            job_state = self._state.get("job")
-            if p and job_state and job_state.get("id") == job:
-                self._status(job={**job_state, "phase": line[:120], "percent": min(100, int(p.group(1)))})
+            if p and job in self._jobs:
+                self._job_status(job, phase=line[:120], percent=min(100, int(p.group(1))))
             now = loop.time()
             if now - state["last"] >= PROGRESS_EVERY:
                 state["last"] = now

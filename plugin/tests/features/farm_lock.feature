@@ -86,3 +86,8 @@ Feature: The farm hands out GPU turns itself
     When "alice" submits 2 slow jobs
     Then at most one job ever holds a turn at a time on "gpu-box"
     And both jobs finish and no lock stays held
+
+  Scenario: A worker running two jobs reports both and keeps reporting the other when one ends
+    Given a worker object with a status file
+    When it starts two jobs and the first one ends
+    Then its status still shows the second job as the current one and lists only it

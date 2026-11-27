@@ -354,3 +354,26 @@ def _both_done(farm):
     while time.time() < end and (farm.coord.turns or any(lk["holder"] for lk in farm.coord.locks.status())):
         time.sleep(0.1)
     assert not farm.coord.turns and not any(lk["holder"] for lk in farm.coord.locks.status())
+
+
+# --- the worker's own status with two jobs ----------------------------------------------------------------
+
+
+@given("a worker object with a status file", target_fixture="wk")
+def _wk(tmp_path):
+    return Worker({}, "", 0, STUB, tmp_path / "w", [], no_lock=True, status_file=tmp_path / "status.json")
+
+
+@when("it starts two jobs and the first one ends")
+def _two_jobs(wk):
+    wk._job_status("job-a", phase="solving", percent=10)
+    wk._job_status("job-b", phase="solving", percent=20)
+    assert [j["id"] for j in json.loads(wk.status_file.read_text())["jobs"]] == ["job-a", "job-b"]
+    wk._job_done("job-a")
+
+
+@then("its status still shows the second job as the current one and lists only it")
+def _second_stays(wk):
+    st = json.loads(wk.status_file.read_text())
+    assert st["job"]["id"] == "job-b" and st["job"]["percent"] == 20
+    assert [j["id"] for j in st["jobs"]] == ["job-b"]
