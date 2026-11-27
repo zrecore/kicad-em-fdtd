@@ -17,6 +17,7 @@ slab copper, medium mesh, series resonance (reactance zero crossing, 8.2 MHz bin
 | A resumed run is bit-identical on the same machine | identical in tests; real resumed jobs came out 0.04 % from their neighbors | `checkpoint_*` tests; `fb05_dk42_bd75w` (RTX), `fb05_dk42_bd100` (Mac) |
 | The time-step growth ratio does not matter | +-0.25 % | growth-ratio pair |
 | Sheet-copper edges were decided by rounding (a defect, fixed) | patch resonance jumped up to 6 % with the box; a 2 nm shift of the copper moved it 2.8 % | known-answer study; fix `872d69b` with a test. The board runs use slab copper, which already used the robust test |
+| The decay threshold does not matter at the converged mesh | 1e-3 and 1e-4 give 2.2856 and 2.2857 GHz at 0.5 mm, box 0.5 (0.004 %; 158 992 and 273 312 steps); the early -0.2 % was a coarse-mesh effect | `fb05_off000_bd50_dc4` |
 | At 0.5 mm cells the box size no longer matters | Dk 4.5: 2.2829, 2.2856, 2.2838, 2.2855 GHz at boxes 0.25, 0.5, 0.75, 1.0 (spread 0.12 %) | `fb_ref05_*` |
 | A Dk change shifts the resonance the right way and by a plausible amount | +2.2 to +2.3 % for Dk 4.5 to 4.2 at boxes 0.5 to 1.0 (a patch fully in the material would show 3.4 %) | `fb05_dk42_*` |
 | A closed cavity is reproduced | 0.12 to 0.17 % below the exact 2.8826 GHz at 0.25 mm cells; Dk shift +3.48 to +3.56 % against the exact +3.51 % | known-answer cavity |
@@ -30,7 +31,6 @@ slab copper, medium mesh, series resonance (reactance zero crossing, 8.2 MHz bin
 |---|---|---|
 | The series resonance is about 2.28 GHz on the unshifted grid, and the in-plane mesh is converged | box 0.5: 2.3241 (default mesh), 2.2811 (1.0 mm), 2.2856 (0.5 mm), 2.2816 GHz (0.25 mm, `fb025_bd50w`): converged to 0.2 %, not monotonic | the offset runs below (about 2.30 GHz when the board is shifted) |
 | Grid placement is worth +-0.5 % at 0.5 mm cells | the board shifted by 0, 0.10, 0.17, 0.33 mm: 2.2856, 2.3073, 2.3027, 2.3007 GHz (range 0.95 %). It is not mesh resolution (the unshifted grid sits at 2.282 for 1.0, 0.5 and 0.25 mm cells); a shift only changes how the coarse air grid outside the refinement box (1 mm margin) lines up | `fb05_off*_pad10`: the refinement box grown to a 10 mm margin, shifts 0 and 0.17 mm; if the scatter vanishes the cause is the air mesh next to the antenna |
-| The decay threshold is worth about -0.2 % | measured on a coarse mesh | `fb05_off000_bd50_dc4` (1e-4 at 0.5 mm) |
 | A box of 0.25 wavelengths is too small | Dk 4.2 at box 0.25 reads 0.7 % above the other boxes | rerun at 0.25 mm cells |
 
 ## Open
