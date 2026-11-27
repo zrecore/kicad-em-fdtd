@@ -6,10 +6,10 @@ import os
 
 from . import config
 
-ACTIONS = ("submit", "cancel", "status", "results", "run")
+ACTIONS = ("submit", "cancel", "status", "results", "run", "lock")
 DEFAULT_GRANTS = {
-    "worker": ("run",),
-    "client": ("submit", "cancel", "status", "results"),
+    "worker": ("run", "lock"),
+    "client": ("submit", "cancel", "status", "results", "lock"),
 }
 MIB = 1 << 20
 DEFAULT_LIMITS = {

@@ -1,9 +1,11 @@
 """The submitting side: connect with the client certificate, send a job, ask for status, fetch results."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import ssl
+import sys
 from pathlib import Path
 
 from . import pki, protocol
@@ -72,7 +74,55 @@ async def submit(bundle, host, port, spec, snapshot_path, label="", group=None):
 
 async def status(bundle, host, port):
     reply = await _ask(bundle, host, port, {"type": "status"})
-    return {"jobs": reply["jobs"], "devices": reply["devices"]}
+    return {"jobs": reply["jobs"], "devices": reply["devices"], "locks": reply.get("locks", [])}
+
+
+async def lock(bundle, host, port, name, label, max_minutes, cmd, say=print):
+    """Wait for the farm's lock `name` (cpu:MACHINE or gpu:MACHINE[:GPU]), run `cmd` inside the turn (None:
+    just keep the turn until stdin closes, after printing HOLDING) and give the turn back. The turn is the
+    open connection: if this process dies the coordinator takes it back at once. Returns the exit code
+    (75 if the turn ended before the command did)."""
+    reader, writer = await _connect(bundle, host, port)
+    try:
+        writer.write(
+            protocol.encode({"type": "lock_hold", "lock": name, "label": label, "max_minutes": max_minutes})
+        )
+        await writer.drain()
+        while True:
+            msg = await protocol.read_message(reader)
+            if msg is None:
+                raise ClientError("the coordinator closed the connection")
+            if msg["type"] == "refused":
+                raise ClientError(msg["reason"])
+            if msg["type"] == "lock_queued" and msg["ahead"]:
+                say(f"waiting for {name}: {msg['ahead']} turn(s) ahead")
+            if msg["type"] == "lock_granted":
+                break
+        lost = asyncio.ensure_future(protocol.read_message(reader))  # lock_lost, or the hang-up
+        if cmd:
+            proc = await asyncio.create_subprocess_exec(*cmd)
+            work = asyncio.ensure_future(proc.wait())
+        else:
+            say("HOLDING")
+            loop = asyncio.get_running_loop()
+            work = asyncio.ensure_future(loop.run_in_executor(None, sys.stdin.buffer.read))
+        await asyncio.wait({work, lost}, return_when=asyncio.FIRST_COMPLETED)
+        if work.done():
+            lost.cancel()
+            with contextlib.suppress(Exception):
+                writer.write(protocol.encode({"type": "lock_release"}))
+                await writer.drain()
+            return proc.returncode if cmd else 0
+        if cmd:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            await proc.wait()
+        say(f"the turn of {name} ended before the command did (its time ran out)")
+        return 75
+    except (protocol.ProtocolError, ConnectionError, ssl.SSLError) as e:
+        raise ClientError(f"the coordinator conversation failed: {e}") from None
+    finally:
+        writer.close()
 
 
 async def cancel(bundle, host, port, job):

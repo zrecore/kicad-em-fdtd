@@ -61,6 +61,12 @@ MESSAGES = {
     "resume": {"job": _STR},  # client: continue a paused job from its checkpoint (optional max_minutes)
     "restart": {"job": _STR},  # client: drop the checkpoint and start the job again from step 0
     "status_reply": {"jobs": _LIST, "devices": _LIST},
+    # lock queue (cpu:MACHINE, gpu:MACHINE[:GPU]): the connection is the turn; closing it gives the turn back
+    "lock_hold": {"lock": _STR, "label": _STR, "max_minutes": _NUM},  # client -> coordinator
+    "lock_queued": {"ahead": _INT},  # coordinator -> client: waiting, this many in front
+    "lock_granted": {},  # coordinator -> client: the turn is yours now
+    "lock_lost": {},  # coordinator -> client: the turn ended (time ran out)
+    "lock_release": {},  # client -> coordinator: give the turn back
     "results": {"job": _STR},
     "result_info": {"job": _STR, "files": _DICT},
     "ok": {},

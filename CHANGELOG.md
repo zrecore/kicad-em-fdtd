@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (farm: its own CPU and GPU lock queue)
+- The coordinator now has a turn manager: named locks (`cpu:MACHINE`, `gpu:MACHINE[:GPU]`), first come first served, a turn ends by itself after its time and the moment the holder's connection drops. `gates.json` entries can name a lock (`{"lock": ...}`) and a key `worker:GPU` guards one GPU of a machine, so two GPUs of one machine take separate turns. `emfdtd-farm lock NAME [--max-minutes N] (-- COMMAND | --hold)` waits for a turn from any enrolled machine and runs the command inside it; `queue` lists every lock. New `lock` grant (default for workers and clients). See `docs/farm.md`.
+
 ### Fixed (farm: a cancelled job left its device busy)
 - Cancelling a running job did not free its device in the coordinator, so the device showed `busy` with nothing running on it and its queue waited until the worker reconnected (seen on the RTX for over an hour after a cancel, and probably once before a resume). The device is now freed when the worker says the solver is gone, and any device still marked busy for a job that ended more than two minutes ago is freed.
 

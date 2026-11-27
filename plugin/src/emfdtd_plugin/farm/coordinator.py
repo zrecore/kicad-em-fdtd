@@ -13,10 +13,11 @@ import re
 import ssl
 import time
 
-from . import audit, config, jobs, pki, policy, procs, protocol, store
+from . import audit, config, gpulock, jobs, pki, policy, procs, protocol, store
 from .scheduler import Scheduler, SchedulerError
 
 READ_TIMEOUT = 30.0
+LOCK_NAME = re.compile(r"^(cpu|gpu):[A-Za-z0-9._-]{1,64}(:[A-Za-z0-9._-]{1,64})?$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GROUP = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
@@ -75,6 +76,7 @@ class Coordinator:
         self.gates_loader = gates_loader
         self._saved = None  # the text last written to jobs.json
         self.turns = {}  # job id -> the held turn (see _gated_offer)
+        self.locks = gpulock.GpuLocks()  # the farm's own turn manager: a gate with a "lock" name uses it
         self.ping_every = ping_every
         self.turn_margin_s = (
             turn_margin_s  # added to the worker's watchdog before a turn is given back unconfirmed
@@ -161,6 +163,8 @@ class Coordinator:
                 await self._transfer(ident, der, first, reader, writer)
             elif first["type"] == "hello":
                 await self._worker_session(ident, der, first, reader, writer)
+            elif first["type"] == "lock_hold":
+                await self._lock_session(ident, der, first, reader, writer)
             else:
                 await self._client_session(ident, der, first, reader, writer)
         except (protocol.ProtocolError, asyncio.TimeoutError, ConnectionError, ssl.SSLError):
@@ -183,6 +187,42 @@ class Coordinator:
         ok, why = policy.authorize(ident, grant or action)
         audit.record(ident, action, ok, job, "" if ok else why)
         return ok, why
+
+    # --- lock queue: any enrolled device may wait for a turn (cpu:MACHINE, gpu:MACHINE[:GPU]) -----
+
+    async def _lock_session(self, ident, der, msg, reader, writer):
+        """The connection is the turn. Queue for it, tell the peer when it comes, and give it back when the
+        peer says so, hangs up or its time is up, so a crashed client can never leave a lock held."""
+        ok, why = self._allowed(ident, der, "lock")
+        name, label = msg["lock"], str(msg["label"])[:80] or f"{ident[0]}:{ident[1]}"
+        if ok and not LOCK_NAME.match(name):
+            ok, why = False, "lock names look like cpu:MACHINE or gpu:MACHINE[:GPU]"
+        if not ok:
+            await self._send(writer, {"type": "refused", "reason": why})
+            return
+        minutes = min(max(float(msg["max_minutes"]), 0.1), 24 * 60)
+        gone = asyncio.ensure_future(protocol.read_message(reader))  # a message or the hang-up
+        acq = asyncio.ensure_future(self.locks.acquire(name, label, minutes * 60))
+        hold = None
+        try:
+            await self._send(writer, {"type": "lock_queued", "ahead": self.locks.ahead(name)})
+            await asyncio.wait({acq, gone}, return_when=asyncio.FIRST_COMPLETED)
+            if not acq.done():
+                return  # hung up while waiting (the finally clause leaves the queue)
+            hold = acq.result()
+            audit.record(ident, "lock_held", True, None, f"{name} {label}")
+            await self._send(writer, {"type": "lock_granted"})
+            await asyncio.wait({hold.lost, gone}, return_when=asyncio.FIRST_COMPLETED)
+            if hold.lost.done():
+                await self._send(writer, {"type": "lock_lost"})
+        finally:
+            gone.cancel()
+            if hold is None and acq.done() and not acq.cancelled() and acq.exception() is None:
+                hold = acq.result()  # granted just as the peer left
+            acq.cancel()
+            if hold is not None:
+                hold.release()
+                audit.record(ident, "lock_released", True, None, f"{name} {label}")
 
     # --- clients ------------------------------------------------------------------------------
 
@@ -230,6 +270,7 @@ class Coordinator:
                     "type": "status_reply",
                     "jobs": self.sched.listing(owner),
                     "devices": self.sched.device_listing(),
+                    "locks": self.locks.status(self._known_locks()),
                 }
             if kind in ("resume", "restart"):
                 if kind == "resume":
@@ -458,13 +499,20 @@ class Coordinator:
         turn = self.turns.get(job_id)
         if not turn:
             return
-        await turn["hold"].proc.wait()
+        if turn.get("lock") is not None:
+            await turn["lock"].lost
+        else:
+            await turn["hold"].proc.wait()
         if self.turns.get(job_id) is not turn:
             return  # we released it ourselves
         job = self.sched.jobs.get(job_id)
         if job is not None and job.state == "running" and job.lease == turn["lease"]:
             audit.record(
-                ("coordinator", "main"), "turn_ended_early", False, job_id, "the hold command exited"
+                ("coordinator", "main"),
+                "turn_ended_early",
+                False,
+                job_id,
+                "the lock's time ran out" if turn.get("lock") is not None else "the hold command exited",
             )
             sess = self.sessions.get(turn["worker"])
             if sess:
@@ -478,7 +526,10 @@ class Coordinator:
         held = self.turns.pop(job_id, None)
         if not held:
             return
-        await self._give_back(held["hold"], held["release"], held.get("wait", 20.0))
+        if held.get("lock") is not None:
+            held["lock"].release()
+        else:
+            await self._give_back(held["hold"], held["release"], held.get("wait", 20.0))
         audit.record(("coordinator", "main"), "turn_released", True, job_id)
 
     @staticmethod
@@ -501,8 +552,26 @@ class Coordinator:
                 return True
         return False
 
-    async def _gated_offer(self, job, worker, device, sess, offer):
-        gate = self.gates[worker]
+    def _known_locks(self):
+        """Lock names listed even when idle: a CPU lock for every machine that has connected, and the locks
+        the gates name."""
+        names = [f"cpu:{w}" for w in self.sched.workers]
+        return names + [str(g["lock"]) for g in self.gates.values() if "lock" in g]
+
+    def _gate_for(self, worker, device):
+        """The gate that guards `device` of `worker`, or None. A key "worker:TEXT" guards the worker's devices
+        whose name contains TEXT (case does not matter) or whose uuid starts with it, and wins over the plain
+        "worker" key, so two GPUs of one machine can take separate turns."""
+        dev = self.sched.workers.get(worker, {}).get("devices", {}).get(device, {})
+        text = f"{dev.get('name', '')}".lower()
+        for key, gate in self.gates.items():
+            name, _, part = key.partition(":")
+            part = part.lower()
+            if name == worker and part and (part in text or str(device).lower().startswith(part)):
+                return gate
+        return self.gates.get(worker)
+
+    async def _gated_offer(self, job, worker, device, sess, offer, gate):
         lease = job.lease
         fmt = {
             "worker": worker,
@@ -511,14 +580,26 @@ class Coordinator:
             "minutes": int(offer["limits"].get("max_minutes", 120)) + 10,
         }  # (the gate's own max_minutes already lowered the job's limit: see _dispatch)
         running = None
+        held = None
         ok = False
         try:
-            running = await procs.start([a.format(**fmt) for a in gate["hold"]], cwd=str(config.home()))
-            ok = await asyncio.wait_for(self._wait_holding(running), gate.get("max_wait_s", 6 * 3600))
+            if "lock" in gate:  # the farm's own manager: first come, first served, one turn per lock name
+                held = await asyncio.wait_for(
+                    self.locks.acquire(
+                        str(gate["lock"]), f"farm-{fmt['job']}-{fmt['lease']}", fmt["minutes"] * 60
+                    ),
+                    gate.get("max_wait_s", 6 * 3600),
+                )
+                ok = True
+            else:
+                running = await procs.start([a.format(**fmt) for a in gate["hold"]], cwd=str(config.home()))
+                ok = await asyncio.wait_for(self._wait_holding(running), gate.get("max_wait_s", 6 * 3600))
         except (asyncio.TimeoutError, OSError):
             ok = False
         still = job.state == "running" and job.lease == lease and self.sessions.get(worker) is sess
         if not ok or not still:
+            if held is not None:
+                held.release()
             if running:
                 await self._give_back(
                     running, [a.format(**fmt) for a in gate["release"]], gate.get("release_wait_s", 20.0)
@@ -530,7 +611,8 @@ class Coordinator:
             return
         self.turns[job.id] = {
             "hold": running,
-            "release": [a.format(**fmt) for a in gate["release"]],
+            "lock": held,
+            "release": [a.format(**fmt) for a in gate.get("release", [])],
             "lease": lease,
             "worker": worker,
             "confirmed": False,
@@ -592,14 +674,15 @@ class Coordinator:
                     "max_minutes": min(limits["max_minutes"], job.run_limit),
                 }
                 job.run_limit = None
-            if worker in self.gates:
-                cap = self.gates[worker].get("max_minutes")
+            gate = self._gate_for(worker, device)
+            if gate is not None:
+                cap = gate.get("max_minutes")
                 if isinstance(cap, (int, float)) and cap > 0:
                     offer["limits"] = {
                         **offer["limits"],
                         "max_minutes": min(offer["limits"]["max_minutes"], cap),
                     }
-                asyncio.ensure_future(self._gated_offer(job, worker, device, sess, offer))
+                asyncio.ensure_future(self._gated_offer(job, worker, device, sess, offer, gate))
             else:
                 sess.outbox.put_nowait(offer)
 

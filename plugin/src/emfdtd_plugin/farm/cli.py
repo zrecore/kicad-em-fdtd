@@ -56,8 +56,9 @@ class GatesError(ValueError):
 
 
 def read_gates():
-    """gates.json in the farm folder: {"worker-name": {"hold": [command...], "release": [command...]}}. The
-    coordinator then holds that GPU's turn for every job it offers the worker (see docs/farm.md). Raises
+    """gates.json in the farm folder: {"worker-name": {"hold": [command...], "release": [command...]}} or
+    {"worker-name[:GPU]": {"lock": "name"}} (the farm's own lock). The coordinator then holds that GPU's turn
+    for every job it offers there (see docs/farm.md). Raises
     GatesError for a file that is not usable; a missing file means no gates."""
     try:
         gates = json.loads((config.home() / "gates.json").read_text())
@@ -68,12 +69,16 @@ def read_gates():
     if not isinstance(gates, dict):
         raise GatesError("gates.json must be an object of worker names")
     for name, gate in gates.items():
-        if not (
+        own = isinstance(gate, dict) and isinstance(gate.get("lock"), str) and bool(gate["lock"])
+        cmds = (
             isinstance(gate, dict)
             and isinstance(gate.get("hold"), list)
             and isinstance(gate.get("release"), list)
-        ):
-            raise GatesError(f"gates.json: {name} needs a hold and a release command list")
+        )
+        if own == cmds:  # exactly one of: the farm's own lock, or a hold and a release command
+            raise GatesError(
+                f"gates.json: {name} needs either a lock name or a hold and a release command list"
+            )
     return gates
 
 
@@ -232,6 +237,17 @@ def _parser():
     )
     s.add_argument("job")
     s.add_argument("--json", action="store_true")
+    s = sub.add_parser(
+        "lock",
+        help="wait for a farm lock (cpu:MACHINE or gpu:MACHINE[:GPU]) and run a command inside the turn",
+    )
+    s.add_argument("name", help="lock name, e.g. cpu:mac-m1 or gpu:win-egpu:radeon")
+    s.add_argument("--max-minutes", type=float, default=60, help="the turn ends after this long (default 60)")
+    s.add_argument("--label", default="", help="who is waiting, shown in `queue` (default: the command)")
+    s.add_argument(
+        "--hold", action="store_true", help="no command: print HOLDING, keep the turn until stdin closes"
+    )
+    s.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND ARGS...")
     s = sub.add_parser("cancel", help="client: cancel one of my jobs")
     s.add_argument("job")
     s = sub.add_parser("results", help="client: download a finished job's results")
@@ -288,7 +304,7 @@ def main(argv=None, stdin=None, out=None):
         return gui_main()
 
     def say(text=""):
-        print(text, file=out)
+        print(text, file=out, flush=True)
 
     if args.cmd == "status":
         s = state()
@@ -369,6 +385,9 @@ def _farm_command(args, say):
             raise SystemExit("turn on the worker or client role first: emfdtd-farm enable worker|client")
     elif cmd in ("devices", "worker"):
         _need("worker")
+    elif cmd == "lock":
+        if not (config.enabled("worker") or config.enabled("client")):
+            raise SystemExit("turn on the worker or client role first: emfdtd-farm enable worker|client")
     else:
         _need("client")
 
@@ -576,7 +595,12 @@ def _farm_command(args, say):
 
     # client commands
     host, port = _connection()
-    bundle = pki.load_identity("client")
+    try:
+        bundle = pki.load_identity("client")
+    except pki.PkiError:
+        if cmd != "lock":
+            raise
+        bundle = pki.load_identity("worker")  # a worker-only machine may queue for its own CPU too
     if cmd == "queue":
         st = _run(client.status(bundle, host, port))
         if args.json:
@@ -585,6 +609,9 @@ def _farm_command(args, say):
         say("devices:")
         for d in st["devices"]:
             say(f"  {d['worker']:<14} {d['name']:<28} {d['state']:<8} {d['mcells_per_s']:.0f} Mcells/s")
+        for lk in st.get("locks", []):
+            waiting = f", {len(lk['waiting'])} waiting" if lk["waiting"] else ""
+            say(f"  lock {lk['lock']}: held by {lk['holder'] or 'nobody'} for {lk['held_s']:.0f} s{waiting}")
         say("your jobs:")
         for j in st["jobs"]:
             pct = f"{j['percent']:>3}%" if j.get("percent") is not None else "    "
@@ -595,6 +622,20 @@ def _farm_command(args, say):
             )
             say(f"  {j['job']}  {j['state']:<10} {pct} {j['label']}  {note}")
         return 0
+    if cmd == "lock":
+        command = args.command[1:] if args.command[:1] == ["--"] else args.command
+        if bool(command) == bool(args.hold):
+            raise SystemExit("give a command after --, or --hold")
+        try:
+            return _run(
+                client.lock(
+                    bundle, host, port, args.name, args.label or (command[0] if command else "hold"),
+                    args.max_minutes, command or None, say,
+                )
+            )  # fmt: skip
+        except client.ClientError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     if cmd == "cancel":
         _run(client.cancel(bundle, host, port, args.job))
         say("cancel requested")

@@ -353,6 +353,34 @@ after a cancel; a cancel stops the job wherever it is: fetching input, checking 
 ended on the coordinator's side. If the hold command itself ends while the job runs, the coordinator cancels the
 job and requeues it.
 
+## The farm's own lock queue (CPU and GPU turns)
+
+The coordinator has a turn manager of its own, so no outside lock script is needed. A lock is a name, one turn at
+a time, first come first served: `cpu:MACHINE` for a machine's CPU (name it after the worker, e.g. `cpu:mac-m1`,
+`cpu:win-egpu`; every machine that has connected is listed in `queue`) and `gpu:MACHINE[:GPU]` for a GPU.
+
+**For the farm's own jobs.** In `gates.json` a gate can name a lock instead of a hold and a release command
+(`{"lock": "gpu:win-egpu:rtx"}`), and the key can be `worker:TEXT` to guard only the worker's GPUs whose name
+contains TEXT (or whose uuid starts with it); that entry wins over the plain `worker` entry. Two GPUs of one
+machine with two lock names therefore run two jobs at the same time, while a script-based gate (as above) still
+works for a lock shared with other projects. The turn rules are the ones above: never given back while the
+solver might still run.
+
+**For any other work on any enrolled machine** (an openEMS run, a build, a benchmark):
+
+```
+emfdtd-farm lock cpu:win-egpu --max-minutes 240 -- python run_case.py     # waits its turn, runs, gives the turn back
+emfdtd-farm lock gpu:win-egpu:radeon --hold                              # prints HOLDING, keeps the turn until stdin closes
+emfdtd-farm queue                                                        # lists every lock, its holder and who waits
+```
+
+The open connection is the turn: if the command, the machine or the network dies the coordinator takes the turn
+back at once, and a turn ends by itself after `--max-minutes` (default 60; the command is stopped, exit status
+75). A worker or a client may use it (the `lock` grant is a default of both roles; devices enrolled before it
+existed need `"lock"` added to their `may` list in `policy.json`). Names that do not look like `cpu:` or `gpu:`
+are refused. Each lock has one slot. The Mac's own `with_cpu_lock.sh` is separate and still guards that machine's
+CPU against local tools that do not use the farm.
+
 ## Pausing and resuming
 
 A worker that says `features: ["checkpoint"]` in its hello (this version and later, and only if its solver's usage text names `--checkpoint-dir`: the worker reads it when it connects, so an `emfdtd` built before checkpoints existed is not offered them) runs every job with the solver's checkpoints on (`docs/checkpoint.md`), so a job that is stopped can continue instead of starting over. **A checkpoint lives only on the worker that wrote it and resumes only there, on the same GPU, driver and binary.** Nothing moves between machines. An older worker that says nothing keeps the old behavior: no checkpoint flags are sent to it, and a job at its ceiling fails as before.
