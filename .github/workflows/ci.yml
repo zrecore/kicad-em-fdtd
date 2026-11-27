@@ -32,7 +32,7 @@ jobs:
           cmake --build --preset ci
       - name: CPU tests
         timeout-minutes: 15
-        run: ctest --preset ci -L '^cpu$' --timeout 300 # no single test may run past 5 minutes
+        run: ctest --preset ci -L '^cpu$' --timeout 600 # the whole CPU suite is one ctest test (about 5 minutes): 10 minutes is the ceiling
 
   plugin:
     runs-on: ubuntu-22.04 # Python 3.9 (KiCAD's interpreter) is not offered on newer images
