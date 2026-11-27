@@ -145,7 +145,14 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
     farm::Client client;
     WHEN("the tab is shown") {
       client.touch();
-      REQUIRE(waitFor([&] { return client.latest().haveQueue && client.latest().haveMembers; }, 30));
+      // Generous: the sanitizer build on a loaded CI runner starts the stand-in tool slowly (two CI runs
+      // timed out at 30 s). The message says what the client saw if it still fails.
+      const bool read = waitFor([&] { return client.latest().haveQueue && client.latest().haveMembers; }, 90);
+      const auto seen = client.latest();
+      INFO("status: " << seen.haveStatus << " '" << seen.statusError << "', queue: " << seen.haveQueue << " '"
+                      << seen.queueError << "', members: " << seen.haveMembers << " '" << seen.membersError
+                      << "'");
+      REQUIRE(read);
       THEN("roles, devices, jobs and members are read, with the queue only for a client") {
         const auto s = client.latest();
         REQUIRE(s.coordinator);
