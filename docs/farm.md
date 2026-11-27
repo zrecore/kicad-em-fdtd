@@ -192,7 +192,7 @@ Details: "Pausing and resuming" below.
 A worker needs only the farm's Python package (standard library, no installs), a launcher that finds a Python with TLS 1.3,
 the `emfdtd` program for that machine and a Vulkan 1.2 GPU. `scripts/package_farm_agent.sh` builds a self-contained bundle
 (`out/dist/emfdtd-farm-agent-<version>-<date>.tar.gz` and `.zip`, with `SHA256SUMS`) and checks that it runs on its own;
-`farm-setup.md` in it is a step-by-step guide for a person with no assistant: prerequisites, enrol, record devices, the three
+`farm-setup.md` in it is a step-by-step guide for a person with no assistant: prerequisites, enroll, record devices, the three
 GPU-turn modes, start and stop, update, uninstall, a table of the tool's messages, and the coordinator owner's side.
 
 ## The Farm tab
@@ -229,7 +229,7 @@ log only while the Log tab is showing. Everything it does goes through the comma
 Needs a Python with `tkinter` (the python.org and Windows installers and the macOS system Python have it; Homebrew's
 needs `python-tk`) and a display; on a machine without it the command says so and points to `agent status`. The window
 follows the system font (larger system text makes it larger), wraps its text, scrolls its content, works from the keyboard
-(Tab, Space or Return on a focused button, the underlined letters) and never uses colour alone. Tests: the controller is
+(Tab, Space or Return on a focused button, the underlined letters) and never uses color alone. Tests: the controller is
 tested headless in `plugin/tests/test_farm_gui_controller.py`; the window itself is built and walked against a fake agent by
 `tests/gui_smoke.py`, run by `EMFDTD_GUI_TESTS=1 pytest tests/test_farm_gui_view.py` (opt-in: it needs tkinter and a display,
 and with the variable set any failure to build the window fails the test; `EMFDTD_GUI_PYTHON` picks the Python,
@@ -264,7 +264,7 @@ shape, which the agent window uses.
 | `agent status [--json]` | Running or not, pid, uptime, connected to the coordinator, the current job and its phase. |
 | `agent logs [-n N] [--follow]` | The last N lines of the log (default 50), optionally following. |
 | `agent autostart on\|off\|status [--json]` | Start the agent when you log in: a launchd user agent (macOS), a systemd user unit (Linux) or a Task Scheduler task at logon (Windows). **Off unless you turn it on**, `on` needs a saved configuration, `off` removes only what `on` installed. |
-| `setup [--yes] [flags]` | Walk a new machine through: check Python, turn the worker role on, enrol (invitation address, fingerprint, one-time code, coordinator address), record the GPUs (one GPU call, explained first), save the settings, run the doctor, offer to start. With `--yes` and the flags it never asks and says which flag is missing. |
+| `setup [--yes] [flags]` | Walk a new machine through: check Python, turn the worker role on, enroll (invitation address, fingerprint, one-time code, coordinator address), record the GPUs (one GPU call, explained first), save the settings, run the doctor, offer to start. With `--yes` and the flags it never asks and says which flag is missing. |
 
 The agent knows it is ours by a small `agent.status.json` the worker rewrites every 10 seconds (pid, connected, job, phase,
 solver pids), so a pid that was recycled by an unrelated program is never mistaken for it and never killed.
@@ -298,7 +298,7 @@ been run on a Windows machine.
   on the LAN gives no access. Certificates last 90 days.
 - **Pairing** uses a one-time code (12 characters, valid for 10 minutes, a few tries, single use) *and* the
   coordinator's fingerprint, which you read from its screen: the new device accepts only the coordinator with
-  that fingerprint, then proves it knows the code without sending it. The enrolment port exists only while an
+  that fingerprint, then proves it knows the code without sending it. The enrollment port exists only while an
   invitation is open.
 - **Policy is checked on every request.** A worker may only run jobs, a client may only submit, list, cancel
   and fetch its own work. Nothing is allowed that is not granted.

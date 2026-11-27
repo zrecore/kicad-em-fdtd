@@ -20,7 +20,7 @@ STIMULUS: start 2.0 GHz, stop 3.0 GHz, at least 101 points. (Wider shows the res
 ## 4. Calibrate (one port, on port 1 / CH0)
 1. Fit the cable on CH0 and the standards on its end.
 2. CAL, then RESET, then CALIBRATE: connect OPEN and press OPEN; SHORT and press SHORT; LOAD and press LOAD. For a one-port reading skip ISOLN and THRU or press DONE after LOAD. Then DONE and SAVE to a slot (for example 0).
-3. Check: with the load fitted, the dB trace should sit very low (deep below -30 dB) and the Smith trace should be a dot at the centre.
+3. Check: with the load fitted, the dB trace should sit very low (deep below -30 dB) and the Smith trace should be a dot at the center.
 4. Calibrate at the end of the cable that the pigtail attaches to (SMA). The pigtail, from SMA to the U.FL, is then an extra length between the reference plane and the board. Remove its effect with the electrical delay: DISPLAY, SCALE, ELECTRICAL DELAY, and adjust until an open pigtail end (nothing connected) shows a trace that stays at the right-hand point of the Smith chart instead of spiralling. A U.FL calibration kit would avoid this step.
 
 ## 5. Measure

@@ -57,7 +57,7 @@ A lumped port sits where the model puts its gap, usually on a short line before 
 
 ## 6. What this does not cover
 * Modal (waveguide) ports for non-TEM structures: not needed for lumped feeds on a PCB.
-* Parasitics of the port gap itself (its stray capacitance and inductance): they are part of "the port" as modelled, the same limit the one-port result has, measured by the open and short controls.
+* Parasitics of the port gap itself (its stray capacitance and inductance): they are part of "the port" as modeled, the same limit the one-port result has, measured by the open and short controls.
 * Frequency dependence of `R`: the references are real constants, as in the existing ports.
 * Time truncation: the run must continue until the voltage at **every** port has decayed, not only the driven one; the stopping rule has to look at all ports.
 

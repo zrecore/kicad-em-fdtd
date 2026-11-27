@@ -9,7 +9,7 @@ Worked example, if present in this checkout: `boards/nrf52840-w3008/` and `board
 
 ## Before anything
 1. **Ask the user which repositories or folders to look in first** (their own hardware, a parts library, earlier boards), and whether anything there is read-only or must never be copied into this project; follow what they say. Do not assume any particular repository. Then the vendor. Pages are often behind a bot check: never work around it; ask the user to download and say where to put the file (`out/<name>/download/`).
-2. **Licence.** No licence file means private: the folder is git-ignored and `docs/PLAN.md` says so. TI-style "use only for developing an application with our products" terms: same. Never publish without asking the vendor.
+2. **License.** No license file means private: the folder is git-ignored and `docs/PLAN.md` says so. TI-style "use only for developing an application with our products" terms: same. Never publish without asking the vendor.
 3. **Check the package.** The vendor may publish a different package from the user's chip (QIAA vs CKAA): the RF match differs. Say so in the README.
 
 ## Import

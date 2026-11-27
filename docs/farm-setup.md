@@ -84,7 +84,7 @@ Type 'enable worker' to confirm:
 After you confirm: `farm worker is on`. Add `--yes` to skip the question. (`emfdtd-farm setup` walks through
 sections 4 to 7 with these questions in order, or use the window.)
 
-## 5. Join the farm (enrol)
+## 5. Join the farm (enroll)
 
 When the coordinator owner says the invitation is open, run:
 
@@ -220,7 +220,7 @@ farm folder, so the coordinator takes the turn for each job and releases it afte
 ```
 
 `hold` must print a line starting with `HOLDING` once it has the turn and keep it until `release` makes it exit. The
-worker is then started with `--turn-from-coordinator`. Details, limits and the restart behaviour: `farm.md`.
+worker is then started with `--turn-from-coordinator`. Details, limits and the restart behavior: `farm.md`.
 
 ## 10. Updating and removing
 
