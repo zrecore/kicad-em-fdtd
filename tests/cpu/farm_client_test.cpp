@@ -16,14 +16,14 @@ using Catch::Matchers::ContainsSubstring;
 
 namespace {
 // MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the variable.
-void setEnv(const char* name, const char* value) {
+[[maybe_unused]] void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)
   _putenv_s(name, value);
 #else
   setenv(name, value, 1);
 #endif
 }
-void unsetEnv(const char* name) {
+[[maybe_unused]] void unsetEnv(const char* name) {
 #if defined(_WIN32)
   _putenv_s(name, "");
 #else
@@ -31,7 +31,7 @@ void unsetEnv(const char* name) {
 #endif
 }
 
-bool waitFor(const std::function<bool()>& ok, double seconds) {
+[[maybe_unused]] bool waitFor(const std::function<bool()>& ok, double seconds) {
   const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
   while (std::chrono::steady_clock::now() < end) {
     if (ok())
@@ -92,6 +92,8 @@ SCENARIO("The window reads the farm tool's JSON", "[farm]") {
   }
 }
 
+// Needs /bin/sh, /bin/sleep or the .sh stub tool; the real tool is tested in plugin/tests.
+#if !defined(_WIN32)
 SCENARIO("The window runs the farm tool without a shell and never waits for ever", "[farm]") {
   THEN("output is captured and the exit code returned") {
     const auto o = farm::runCapture({"/bin/sh", "-c", "echo hello; echo oops 1>&2; exit 3"}, 30);
@@ -134,7 +136,10 @@ SCENARIO("The window runs the farm tool without a shell and never waits for ever
     REQUIRE(o.cancelled);
   }
 }
+#endif // !_WIN32
 
+// Needs /bin/sh, /bin/sleep or the .sh stub tool; the real tool is tested in plugin/tests.
+#if !defined(_WIN32)
 SCENARIO("The client polls the tool only while the tab is showing, and runs actions in the background",
          "[farm]") {
   GIVEN("a stand-in for the farm tool") {
@@ -190,7 +195,10 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
     unsetEnv("EMFDTD_FARM_STUB_LOG");
   }
 }
+#endif // !_WIN32
 
+// Needs /bin/sh, /bin/sleep or the .sh stub tool; the real tool is tested in plugin/tests.
+#if !defined(_WIN32)
 SCENARIO("A client that nobody touches does not call the tool", "[farm]") {
   setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
   const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_idle.log";
@@ -205,6 +213,7 @@ SCENARIO("A client that nobody touches does not call the tool", "[farm]") {
   unsetEnv("EMFDTD_FARM_COMMAND");
   unsetEnv("EMFDTD_FARM_STUB_LOG");
 }
+#endif // !_WIN32
 
 SCENARIO("A run that goes to the farm is described by the window's settings and treatments", "[farm]") {
   GIVEN("values written the way the --part option reads them") {
@@ -342,6 +351,8 @@ SCENARIO("Where a run goes is remembered in the farm folder, and the client role
   unsetEnv("EMFDTD_FARM_HOME");
 }
 
+// Needs /bin/sh, /bin/sleep or the .sh stub tool; the real tool is tested in plugin/tests.
+#if !defined(_WIN32)
 SCENARIO("The window's submit and fetch run the tool and keep its answers", "[farm]") {
   setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
   farm::Client client;
@@ -370,6 +381,7 @@ SCENARIO("The window's submit and fetch run the tool and keep its answers", "[fa
   }
   unsetEnv("EMFDTD_FARM_COMMAND");
 }
+#endif // !_WIN32
 
 SCENARIO("The window reads what this computer's own GPU offers the farm", "[farm]") {
   GIVEN("the tool's `local-worker status --json` output") {
