@@ -16,6 +16,14 @@ using Catch::Matchers::ContainsSubstring;
 
 namespace {
 // MSVC has no setenv/unsetenv; _putenv_s with an empty value removes the variable.
+// A file in the test scratch folder, which the folder's first user must create: a stand-in tool that appends
+// to a log in a folder that does not exist yet prints a shell error before its JSON (seen on a fresh CI
+// runner).
+[[maybe_unused]] std::string tmpPath(const char* name) {
+  std::filesystem::create_directories(FDTD_TEST_TMP);
+  return std::string(FDTD_TEST_TMP) + "/" + name;
+}
+
 [[maybe_unused]] void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)
   _putenv_s(name, value);
@@ -144,7 +152,7 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
          "[farm]") {
   GIVEN("a stand-in for the farm tool") {
     setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
-    const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_calls.log";
+    const std::string log = tmpPath("farm_stub_calls.log");
     std::remove(log.c_str());
     setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
     farm::Client client;
@@ -202,7 +210,7 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
 SCENARIO("A client that nobody touches does not call the tool", "[farm]") {
   GIVEN("a client that nobody touches and a stand-in tool that logs every call") {
     setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
-    const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_idle.log";
+    const std::string log = tmpPath("farm_stub_idle.log");
     std::remove(log.c_str());
     setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
     {
@@ -330,7 +338,7 @@ SCENARIO("Running jobs show how long they have run, and fetched results get a st
 
 SCENARIO("Where a run goes is remembered in the farm folder, and the client role is read from a file",
          "[farm]") {
-  const std::string home = std::string(FDTD_TEST_TMP) + "/farm_runon_home";
+  const std::string home = tmpPath("farm_runon_home");
   std::filesystem::remove_all(home);
   setEnv("EMFDTD_FARM_HOME", home.c_str());
   THEN("the default is this GPU and the client role is off") {
@@ -375,7 +383,7 @@ SCENARIO("The window's submit and fetch run the tool and keep its answers", "[fa
     }
   }
   WHEN("results are fetched into a folder") {
-    const std::string dest = std::string(FDTD_TEST_TMP) + "/farm_fetch_dest";
+    const std::string dest = tmpPath("farm_fetch_dest");
     std::filesystem::remove_all(dest);
     client.run({"results", "9cf37054e5064a39b9298f6ec19fe720", "--dest", dest}, "Fetch results");
     REQUIRE(waitFor([&] { return !client.action().running && !client.action().text.empty(); }, 10));
