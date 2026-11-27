@@ -49,7 +49,9 @@ def submit(args):
         cmd = FARM + ["submit", path, "--profile", "bluetooth", "--label", label_for(dx, args.box, args.suffix)]
         for k, v in sets.items():
             cmd += ["--set", "%s=%s" % (k, v)]
-        for x0, y0, x1, y1, cell in BOXES:
+        for k, (x0, y0, x1, y1, cell) in enumerate(BOXES):
+            if cell is None:  # the whole-board box: --pad grows it by this much on every side (air refined around the board)
+                x0, y0, x1, y1 = x0 - args.pad, y0 - args.pad, x1 + args.pad, y1 + args.pad
             cmd += ["--refine"] + ["%g" % (v + (dx if i in (0, 2) else 0)) for i, v in enumerate((x0, y0, x1, y1))]
             cmd += ["%g" % (cell or args.cell)]
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -80,6 +82,7 @@ def main():
     s.add_argument("--box", type=float, default=0.5, help="boundary_distance_wavelengths")
     s.add_argument("--cell", type=float, default=0.5, help="whole-board refinement cell (mm)")
     s.add_argument("--set", action="append", default=[], help="extra KEY=VALUE (overrides the defaults)")
+    s.add_argument("--pad", type=float, default=0.0, help="grow the whole-board refinement box by this much (mm) on every side")
     s.add_argument("--suffix", default="", help="added to the job label")
     s.set_defaults(fn=submit)
     c = sub.add_parser("collect")
