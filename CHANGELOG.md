@@ -5,6 +5,9 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Changed (farm worker: one status entry per job)
+- A worker that runs two jobs at once (two GPUs of one machine with their own locks) reported only the last job it started and no job once either ended. The status file now has `job` (the newest) and `jobs` (all). The Radeon Pro 555X of the Windows box is on the farm on its own lock.
+
 ### Added (farm: its own CPU and GPU lock queue)
 - The coordinator now has a turn manager: named locks (`cpu:MACHINE`, `gpu:MACHINE[:GPU]`), first come first served, a turn ends by itself after its time and the moment the holder's connection drops. `gates.json` entries can name a lock (`{"lock": ...}`) and a key `worker:GPU` guards one GPU of a machine, so two GPUs of one machine take separate turns. `emfdtd-farm lock NAME [--max-minutes N] (-- COMMAND | --hold)` waits for a turn from any enrolled machine and runs the command inside it; `queue` lists every lock. New `lock` grant (default for workers and clients). See `docs/farm.md`.
 
