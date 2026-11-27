@@ -68,3 +68,21 @@ Feature: The farm hands out GPU turns itself
   Scenario: The command line takes options before the command and everything after -- as the command
     Given a clean command line parser
     Then "lock cpu:mac --max-minutes 5 --label x -- prog --flag 1" parses as lock cpu:mac, 5 minutes, label x and the command prog --flag 1
+
+  Scenario: Two GPUs of one machine with their own locks run two jobs at the same time
+    Given a farm with a coordinator
+    And a client "alice"
+    And the coordinator keeps each GPU of "gpu-box" in its own lock
+    And a worker "gpu-box" offering "stub gpu" that relies on the coordinator's turn
+    When "alice" submits 2 slow jobs
+    Then both jobs run at once on "gpu-box" on two different GPUs holding two different locks
+    And both jobs finish and no lock stays held
+
+  Scenario: Two GPUs of one machine that share one lock never run two jobs at once
+    Given a farm with a coordinator
+    And a client "alice"
+    And the coordinator keeps both GPUs of "gpu-box" in one shared lock
+    And a worker "gpu-box" offering "stub gpu" that relies on the coordinator's turn
+    When "alice" submits 2 slow jobs
+    Then at most one job ever holds a turn at a time on "gpu-box"
+    And both jobs finish and no lock stays held

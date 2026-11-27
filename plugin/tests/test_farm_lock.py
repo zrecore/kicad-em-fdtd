@@ -5,7 +5,7 @@ import time
 
 from pytest_bdd import given, parsers, scenarios, then, when
 
-from emfdtd_plugin.farm import cli, config, gpulock
+from emfdtd_plugin.farm import cli, client, config, gpulock
 from emfdtd_plugin.farm.worker import Worker, parse_devices
 from farm_stub.paths import STUB
 
@@ -294,3 +294,63 @@ def _parse_lock(monkeypatch, line, name, mins, label, command):
     monkeypatch.setattr(cli.config, "enabled", lambda role: True)
     assert cli.main(line.split()) == 0
     assert seen == {"name": name, "label": label, "mins": mins, "cmd": command.split()}
+
+
+# --- two GPUs of one machine ------------------------------------------------------------------------------
+
+
+@given(parsers.parse('the coordinator keeps each GPU of "{name}" in its own lock'))
+def _own_locks(farm, name):
+    farm.coord.gates = {f"{name}:stub gpu a": {"lock": "gpu:a"}, f"{name}:stub gpu b": {"lock": "gpu:b"}}
+
+
+@given(parsers.parse('the coordinator keeps both GPUs of "{name}" in one shared lock'))
+def _shared_lock(farm, name):
+    farm.coord.gates = {name: {"lock": "gpu:shared"}}
+
+
+def _running(farm):
+    return [j for j in farm.call(client.status, farm.who)["jobs"] if j["state"] == "running"]
+
+
+@then(parsers.parse('both jobs run at once on "{name}" on two different GPUs holding two different locks'))
+def _two_at_once(farm, name):
+    end = time.time() + 30
+    while time.time() < end:
+        running = _running(farm)
+        if len(running) == 2:
+            assert {j["worker"] for j in running} == {name}
+            assert len({j["device"] for j in running}) == 2
+            held = {lk["lock"] for lk in farm.coord.locks.status() if lk["holder"]}
+            assert held == {"gpu:a", "gpu:b"}, held
+            return
+        time.sleep(0.05)
+    raise AssertionError("two jobs were never running together on one worker")
+
+
+@then(parsers.parse('at most one job ever holds a turn at a time on "{name}"'))
+def _one_at_a_time(farm, name):
+    # a job shows as running while it waits for its lock, so count the turns that are actually held
+    most, end = 0, time.time() + 60
+    while time.time() < end:
+        most = max(most, len(farm.coord.turns))
+        jobs_ = farm.call(client.status, farm.who)["jobs"]
+        if all(j["state"] in ("done", "failed") for j in jobs_):
+            break
+        time.sleep(0.02)
+    assert most == 1, most
+
+
+@then("both jobs finish and no lock stays held")
+def _both_done(farm):
+    end = time.time() + 60
+    while time.time() < end:
+        jobs_ = farm.call(client.status, farm.who)["jobs"]
+        if all(j["state"] in ("done", "failed") for j in jobs_):
+            break
+        time.sleep(0.1)
+    assert [j["state"] for j in jobs_] == ["done", "done"], jobs_
+    end = time.time() + 10
+    while time.time() < end and (farm.coord.turns or any(lk["holder"] for lk in farm.coord.locks.status())):
+        time.sleep(0.1)
+    assert not farm.coord.turns and not any(lk["holder"] for lk in farm.coord.locks.status())
