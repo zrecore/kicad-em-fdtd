@@ -137,5 +137,19 @@ check("the KiCad board has one zone per copper shape, one via per via, the outli
       text.count("(zone ") == len(snap["copper"]) and text.count("(via ") == len(snap["vias"])
       and text.count("Edge.Cuts") >= 2 and text.count('(type "copper")') == 2 and text.count('"dielectric ') == 1,
       "zones %d vias %d" % (text.count("(zone "), text.count("(via ")))
+four = json.loads(json.dumps(snap))
+four["stackup"] = [
+    {"name": "F.Cu", "kind": "copper", "thickness": 35e-6},
+    {"name": "d1", "kind": "dielectric", "thickness": 3e-4, "epsilon_r": 4.5},
+    {"name": "In1.Cu", "kind": "copper", "thickness": 35e-6},
+    {"name": "d2", "kind": "dielectric", "thickness": 3e-4, "epsilon_r": 4.5},
+    {"name": "In2.Cu", "kind": "copper", "thickness": 35e-6},
+    {"name": "d3", "kind": "dielectric", "thickness": 3e-4, "epsilon_r": 4.5},
+    {"name": "B.Cu", "kind": "copper", "thickness": 35e-6},
+]
+t4 = snapshot_to_kicad.board_text(four, "selftest")
+order = [t4.index('"%s" signal' % n) for n in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")]
+check("a four-layer board lists its copper layers F.Cu, In1, In2, B.Cu (KiCad counts the layers from that order)",
+      order == sorted(order), "positions %s" % order)
 shutil.rmtree(OUT, ignore_errors=True)
 print("gerber tools: ok")

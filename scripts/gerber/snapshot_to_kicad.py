@@ -107,7 +107,9 @@ def board_text(snap, source_name):
     total = sum(s.get("thickness", 35e-6 if s["kind"] == "copper" else 0.0) for s in stack)
     lines = ["(kicad_pcb\n\t(version 20260206)\n\t(generator \"kicad-em-fdtd\")\n\t(generator_version \"0\")\n"]
     lines.append("\t(general (thickness %.6f) (legacy_teardrops no))\n\t(paper \"A4\")\n\t(layers\n" % (total * 1e3))
-    for name in sorted(copper, key=lambda n: ids[n]):
+    # KiCad reads the copper count from this order: F.Cu, the inner layers top to bottom, B.Cu last (B.Cu earlier
+    # makes it count a copper layer short and drops the last inner layer's zones onto B.Cu).
+    for name in sorted(copper, key=lambda n: (n == "B.Cu", n != "F.Cu", ids[n])):
         lines.append('\t\t(%d "%s" signal)\n' % (ids[name], name))
     lines.append(TECH_LAYERS + "\t)\n")
     lines.append("\t(setup\n\t\t(stackup\n")
