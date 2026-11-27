@@ -149,7 +149,7 @@ your jobs:
 | `running` | on a worker; the percent is how far the signal has decayed, so it is not linear and the last few percent are slow: the step count keeps rising | wait |
 | `paused` | stopped at the worker's time ceiling with a checkpoint | `resume JOB --max-minutes N` (section 4) |
 | `done` | finished | fetch the results |
-| `failed`, `cancelled` | the reason is shown on the line | read it; `cancel` never needs a reason |
+| `failed`, `cancelled` | the reason is shown on the line | read it; resubmit if it was a time limit or a lost worker |
 
 **3. Fetch results.** `emfdtd-farm results JOB --dest DIR` copies `s11.s1p`, `summary.txt`, `settings.json` and `run.log` into `DIR`.
 `emfdtd-farm cancel JOB` stops a job (a running one is killed, a paused one drops its checkpoint).
@@ -185,7 +185,7 @@ Details: "Pausing and resuming" below.
 - `needs about N min; the online workers allow M`: the job is bigger than a ceiling. Pin it to a longer-ceiling worker, split it, or send it
   with `--no-estimate` and resume it at each ceiling.
 - A step count that moves but a percent that does not: normal at the end of a run (see the table).
-- Never restart the coordinator while a job runs: it asks workers for their jobs again and a restart makes them start from step 0.
+- Restart the coordinator when nothing runs if you can. A job that has a checkpoint waits for its worker and continues from the last checkpoint (at most one checkpoint interval is lost, 5 minutes by default); one without a checkpoint (a worker that is too old to checkpoint, or a job that had not written one yet) starts again from step 0.
 
 ## Setting up a worker on another machine
 
