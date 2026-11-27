@@ -62,7 +62,7 @@ void Solver<T>::setMaterials(std::vector<Material> table, std::vector<std::uint8
       throw std::invalid_argument("material id out of range");
   table_ = std::move(table);
   cellMaterial_ = std::move(cellMaterial);
-  buildCoefficients(table_, cellMaterial_);
+  buildCoefficients();
 }
 
 template <class T> void Solver<T>::forcePecEdges(std::vector<PecEdge> edges) {
@@ -70,7 +70,10 @@ template <class T> void Solver<T>::forcePecEdges(std::vector<PecEdge> edges) {
     if (e.node >= grid_.nodeCount())
       throw std::invalid_argument("PEC edge outside the grid");
   pecEdges_ = std::move(edges);
-  buildCoefficients(table_, cellMaterial_);
+  pecKeys_.clear();
+  for (const PecEdge& e : pecEdges_)
+    pecKeys_.insert(edgeKey(e.axis, e.node));
+  buildCoefficients();
 }
 
 template <class T> double Solver<T>::portArea(const LumpedPort& p) const {
@@ -88,56 +91,60 @@ template <class T> void Solver<T>::addLumpedPort(LumpedPort p) {
     throw std::invalid_argument("port resistance must be positive");
   if (!(p.inductance >= 0) || !(p.capacitance >= 0))
     throw std::invalid_argument("port inductance and capacitance must not be negative");
+  const Axis component = p.component;
+  const std::array<std::size_t, 3> at{p.i, p.j, p.k};
+  portsAt_[edgeKey(component, portNode(p))].push_back(ports_.size());
   ports_.push_back(std::move(p));
   portState_.emplace_back();
   portEOld_.push_back(T(0));
-  buildCoefficients(table_, cellMaterial_); // the port adds conductivity to its edge
+  setEdgeCoefficients(component, at[X], at[Y], at[Z]); // the port adds conductivity to its edge only
 }
 
-template <class T>
-void Solver<T>::buildCoefficients(const std::vector<Material>& table,
-                                  const std::vector<std::uint8_t>& cellMaterial) {
+template <class T> void Solver<T>::buildCoefficients() {
   for (Axis a : {X, Y, Z}) {
     ca_[a].assign(grid_.nodeCount(), T(0));
     cb_[a].assign(grid_.nodeCount(), T(0));
     for (std::size_t k = 0; k < grid_.nodes(Z); ++k)
       for (std::size_t j = 0; j < grid_.nodes(Y); ++j)
-        for (std::size_t i = 0; i < grid_.nodes(X); ++i) {
-          double eps = 0, sigma = 0;
-          int count = 0;
-          bool pec = false;
-          forEdgeCells(grid_, a, i, j, k, [&](std::size_t cell) {
-            const Material& m = table[cellMaterial[cell]];
-            eps += m.epsR;
-            sigma += m.sigma;
-            pec = pec || m.pec;
-            ++count;
-          });
-          if (count == 0 || pec)
-            continue; // not a real sample, or inside a conductor: stays zero
-          eps = eps / count * kEps0;
-          sigma /= count;
-          for (const LumpedPort& p : ports_)
-            if (p.component == a && portNode(p) == grid_.nodeIndex(i, j, k)) {
-              const double dl = grid_.cellSize(a, std::array<std::size_t, 3>{i, j, k}[a]);
-              sigma += dl / (p.resistance * portArea(p));
-              eps += p.capacitance * dl / portArea(p); // a lumped capacitor is extra permittivity on the edge
-              // a lumped inductor, trapezoidal in time (I^(n+1/2) = I^(n-1/2) + dt dl / (2 L) (E^n +
-              // E^(n+1))): the E^(n+1) part is an effective conductivity dt dl / (2 L A), the rest a current
-              // state
-              if (p.inductance > 0)
-                sigma += dt_ * dl / (2 * p.inductance * portArea(p));
-            }
-          const double loss = sigma * dt_ / (2 * eps);
-          const std::size_t n = grid_.nodeIndex(i, j, k);
-          ca_[a][n] = static_cast<T>((1 - loss) / (1 + loss));
-          cb_[a][n] = static_cast<T>(dt_ / eps / (1 + loss));
-        }
+        for (std::size_t i = 0; i < grid_.nodes(X); ++i)
+          setEdgeCoefficients(a, i, j, k);
   }
-  for (const PecEdge& e : pecEdges_) {
-    ca_[e.axis][e.node] = T(0);
-    cb_[e.axis][e.node] = T(0);
-  }
+}
+
+template <class T> void Solver<T>::setEdgeCoefficients(Axis a, std::size_t i, std::size_t j, std::size_t k) {
+  const std::size_t n = grid_.nodeIndex(i, j, k);
+  ca_[a][n] = T(0);
+  cb_[a][n] = T(0); // not a real sample, inside a conductor or forced PEC: stays zero
+  if (pecKeys_.count(edgeKey(a, n)))
+    return;
+  double eps = 0, sigma = 0;
+  int count = 0;
+  bool pec = false;
+  forEdgeCells(grid_, a, i, j, k, [&](std::size_t cell) {
+    const Material& m = table_[cellMaterial_[cell]];
+    eps += m.epsR;
+    sigma += m.sigma;
+    pec = pec || m.pec;
+    ++count;
+  });
+  if (count == 0 || pec)
+    return;
+  eps = eps / count * kEps0;
+  sigma /= count;
+  if (const auto it = portsAt_.find(edgeKey(a, n)); it != portsAt_.end())
+    for (const std::size_t q : it->second) {
+      const LumpedPort& p = ports_[q];
+      const double dl = grid_.cellSize(a, std::array<std::size_t, 3>{i, j, k}[a]);
+      sigma += dl / (p.resistance * portArea(p));
+      eps += p.capacitance * dl / portArea(p); // a lumped capacitor is extra permittivity on the edge
+      // a lumped inductor, trapezoidal in time (I^(n+1/2) = I^(n-1/2) + dt dl / (2 L) (E^n + E^(n+1))): the
+      // E^(n+1) part is an effective conductivity dt dl / (2 L A), the rest a current state
+      if (p.inductance > 0)
+        sigma += dt_ * dl / (2 * p.inductance * portArea(p));
+    }
+  const double loss = sigma * dt_ / (2 * eps);
+  ca_[a][n] = static_cast<T>((1 - loss) / (1 + loss));
+  cb_[a][n] = static_cast<T>(dt_ / eps / (1 + loss));
 }
 
 template <class T>

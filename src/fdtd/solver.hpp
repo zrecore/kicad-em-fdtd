@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <functional>
 #include <span>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/bytes.hpp"
@@ -103,12 +105,17 @@ public:
   }
 
 private:
-  void buildCoefficients(const std::vector<Material>& table, const std::vector<std::uint8_t>& cellMaterial);
+  void buildCoefficients(); // every edge, from table_, cellMaterial_, ports_ and pecKeys_
 
   struct PortState {
     double vs = 0, current = 0;
     double inductorCurrent = 0; // I_L at n - 1/2: the inductor's state (docs/PLAN.md, References [29])
   };
+  // One edge's update coefficients from the materials around it, the lumped parts on it and the PEC override.
+  // A part changes only its own edge, so addLumpedPort calls this once instead of rebuilding every
+  // coefficient.
+  void setEdgeCoefficients(Axis a, std::size_t i, std::size_t j, std::size_t k);
+  static std::uint64_t edgeKey(Axis a, std::size_t node) { return static_cast<std::uint64_t>(node) * 3 + a; }
   void checkInteriorSample(Axis component, std::size_t i, std::size_t j, std::size_t k) const;
   void applyCpmlH();
   void applyCpmlE();
@@ -120,6 +127,9 @@ private:
   std::vector<std::uint8_t> cellMaterial_;
   std::vector<LumpedPort> ports_;
   std::vector<PecEdge> pecEdges_;
+  std::unordered_map<std::uint64_t, std::vector<std::size_t>>
+      portsAt_;                               // edgeKey -> indices into ports_ (in order of addition)
+  std::unordered_set<std::uint64_t> pecKeys_; // edgeKey of every forced PEC edge
   std::vector<PortState> portState_;
   std::vector<T> portEOld_; // port edge E before the step's update
   bool cpml_ = false;

@@ -1,7 +1,11 @@
 // Numerical BDD scenarios for the CPU reference solver. Each states its tolerance in the THEN.
+#include <algorithm>
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cmath>
+#include <vector>
 
 #include "core/units.hpp"
 #include "fdtd/dft.hpp"
@@ -102,6 +106,50 @@ SCENARIO("Compensated summation keeps long accumulations accurate") {
       dft.add(0.0, 0.1);
     THEN("the compensated float sum is within 1e-6 relative (a naive float sum would be off by 1e-3)") {
       REQUIRE(dft.at(0).real() == Approx(1e8 + 1e5).epsilon(1e-6));
+    }
+  }
+}
+
+SCENARIO("Adding many lumped loads costs time in proportion to the loads, and gives the same coefficients",
+         "[solver][lumped]") {
+  GIVEN("a 40-cell cubic vacuum grid and 200 lumped parts on distinct edges (resistors, with capacitors and "
+        "inductors on some, two parts on one edge)") {
+    const auto grid = Grid::uniform({40, 40, 40}, {0.04, 0.04, 0.04});
+    Solver<float> s(grid, 0.9);
+    const auto quiet = [](double) { return 0.0; };
+    auto make = [&](std::size_t i, std::size_t j, std::size_t k, int n) {
+      LumpedPort p{i, j, k, Z, 20.0 + n, quiet};
+      if (n % 3 == 0)
+        p.capacitance = 1e-13 * (1 + n % 5);
+      if (n % 7 == 0)
+        p.inductance = 2e-9 * (1 + n % 4);
+      return p;
+    };
+    WHEN("they are added one by one") {
+      const auto t0 = std::chrono::steady_clock::now();
+      int n = 0;
+      for (std::size_t j = 5; j < 15; ++j)
+        for (std::size_t i = 5; i < 25; ++i)
+          s.addLumpedPort(make(i, j, 12, n++));
+      s.addLumpedPort(make(5, 5, 12, n++)); // a second part on the first edge: the contributions add up
+      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      const std::array<std::vector<float>, 3> ca{{{s.ca(X).begin(), s.ca(X).end()},
+                                                  {s.ca(Y).begin(), s.ca(Y).end()},
+                                                  {s.ca(Z).begin(), s.ca(Z).end()}}};
+      const std::array<std::vector<float>, 3> cb{{{s.cb(X).begin(), s.cb(X).end()},
+                                                  {s.cb(Y).begin(), s.cb(Y).end()},
+                                                  {s.cb(Z).begin(), s.cb(Z).end()}}};
+      THEN("it takes under 2 s (it was a full rebuild of the coefficients per part: about 9 s in a release "
+           "build)") {
+        REQUIRE(seconds < 2.0);
+      }
+      AND_THEN("every update coefficient equals what one full rebuild gives, bit for bit") {
+        s.forcePecEdges({}); // rebuilds every coefficient from the materials and all ports
+        for (Axis a : {X, Y, Z}) {
+          REQUIRE(std::equal(ca[a].begin(), ca[a].end(), s.ca(a).begin(), s.ca(a).end()));
+          REQUIRE(std::equal(cb[a].begin(), cb[a].end(), s.cb(a).begin(), s.cb(a).end()));
+        }
+      }
     }
   }
 }
