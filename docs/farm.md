@@ -115,6 +115,78 @@ Turn a role off with `emfdtd-farm disable ROLE`; `emfdtd-farm status` shows what
 `emfdtd-farm members` lists enrolled devices on the coordinator and `emfdtd-farm revoke worker NAME` removes one
 for good (its certificate stops working at once, even for an open connection).
 
+## Daily use
+
+Everything below runs on the machine you submit from, with the farm tool (`emfdtd-farm`, or `python3 plugin/tools/emfdtd_farm.py` in a
+checkout, with the plugin's Python that has TLS 1.3). Job ids are the long hex strings at the start of each line of `queue`.
+
+**1. Submit a job.** A job is a board snapshot plus the same settings you would give `emfdtd`:
+
+```
+emfdtd-farm submit BOARD.json --profile bluetooth \
+    --set mesh_preset=medium --set boundary_distance_wavelengths=0.5 --set copper_model=slab \
+    --refine 40 32 90 133 0.5 --label my-run
+```
+
+It prints the job id. `--refine X0 Y0 X1 Y1 CELL` (mm) can be repeated; `--part`, `--body`, `--nets` and `--sweep KEY=a,b,c` (one job per
+value) work as in `emfdtd`. Before sending, the tool asks the local solver for a dry run, so the farm knows the size and the time
+the job will need (a big model can take a minute or more here). Add `--device WORKER[:GPU]` to pin the job to one worker (for
+example `--device mac-m1`), and `--wait DEST` to wait for the result and save it there.
+
+**2. Watch it.** `emfdtd-farm queue` lists the farm's devices and your jobs (`queue --json` is the same for scripts):
+
+```
+devices:
+  win-egpu   NVIDIA GeForce RTX 4060 Ti   idle    1928 Mcells/s
+  mac-m1     Apple M1 Pro                 busy     974 Mcells/s
+your jobs:
+  9cf37054e5064a39...  running  45%  my-run  progress: 70560 steps, about 45%, 1881 s
+```
+
+| State | What it means | What to do |
+|---|---|---|
+| `queued`, with a reason | waiting: `waiting for mac-m1 (busy)`, or `needs about 49 min; the online workers allow 45 (win)` | wait; for a time problem pin the job to a worker with a longer ceiling, or accept a pause (below) |
+| `running` | on a worker; the percent is how far the signal has decayed, so it is not linear and the last few percent are slow: the step count keeps rising | wait |
+| `paused` | stopped at the worker's time ceiling with a checkpoint | `resume JOB --max-minutes N` (section 4) |
+| `done` | finished | fetch the results |
+| `failed`, `cancelled` | the reason is shown on the line | read it; `cancel` never needs a reason |
+
+**3. Fetch results.** `emfdtd-farm results JOB --dest DIR` copies `s11.s1p`, `summary.txt`, `settings.json` and `run.log` into `DIR`.
+`emfdtd-farm cancel JOB` stops a job (a running one is killed, a paused one drops its checkpoint).
+
+**4. A job that outruns a worker's ceiling.** Every worker has a time ceiling per run (the worker's own setting; the coordinator can only
+lower it; the `queue` device listing shows it as `ceiling_minutes` in `--json`). The scheduler keeps a job off a worker whose ceiling it
+would exceed. If you send it anyway (`--device WORKER --no-estimate`), the worker writes a checkpoint at the ceiling and the job is
+`paused`. Continue it with:
+
+```
+emfdtd-farm resume JOB --max-minutes 45
+```
+
+It goes back to the same worker, which loads the checkpoint and carries on. **Each continuation rebuilds the model first** (the checkpoint
+holds the fields, not the prepared model), so the preparation time is paid again in every segment; a job whose preparation alone is close to the
+ceiling makes no progress. A resumed result matches an uninterrupted one on the same machine. `restart JOB` starts again from step 0.
+Details: "Pausing and resuming" below.
+
+**5. Check and control the agent** on a worker machine (`emfdtd-farm agent ...`):
+
+| Command | Use |
+|---|---|
+| `agent status` | running or not, connected or not, the current job and percent, the GPU, the last error (`--json` for scripts) |
+| `agent logs` | the agent's log |
+| `agent doctor` | checks the solver, disk space for checkpoints (4 GiB), TLS and settings |
+| `agent stop`, `start`, `restart` | `stop` is polite: it pauses a running job at a checkpoint (waits up to 90 s). Prefer it to killing the process |
+
+**6. When something looks stuck.**
+- A job is `queued` for a long time with `waiting for X (busy)`, but X shows `idle` in `agent status` or no solver is running there: the
+  coordinator's view of X is stale. Run `emfdtd-farm agent restart` on X. A job that holds a checkpoint on X resumes from it. (Seen once,
+  after a job's second pause in a row on the same worker; being investigated.)
+- `queue` shows a worker `busy` and no job anywhere: same cure.
+- `needs about N min; the online workers allow M`: the job is bigger than a ceiling. Pin it to a longer-ceiling worker, split it, or send it
+  with `--no-estimate` and resume it at each ceiling.
+- A step count that moves but a percent that does not: normal at the end of a run (see the table).
+- Never restart the coordinator while a job runs: it asks workers for their jobs again and a restart makes them start from step 0.
+
 ## Setting up a worker on another machine
 
 A worker needs only the farm's Python package (standard library, no installs), a launcher that finds a Python with TLS 1.3,
