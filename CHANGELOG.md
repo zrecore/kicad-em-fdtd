@@ -5,6 +5,22 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (solver: lumped loads)
+- Adding a lumped part (a resistor, capacitor or inductor from `--part`) rebuilt every update coefficient on the grid after each of its edges, and each node scanned all ports, so preparation grew with the square of the load edges: 238 load edges on 11 M cells took about 40 minutes before the first step (383 s against 7.7 s on a 3.5 M cell case, the same S11 byte for byte). Each load now updates only its own edge. A resume pays the preparation again, so this mattered most on the farm.
+
+### Fixed (farm worker, Windows build)
+- A worker offers checkpoints (`features: ["checkpoint"]`) only if its solver's usage text names `--checkpoint-dir`, so a solver built before checkpoints existed is not sent checkpoint jobs it would fail on.
+- The farm client builds under MSVC (the Windows branch has a stand-in for the child-process calls), and its test uses portable environment helpers.
+
+### Added (validation tools)
+- `docs/trust.md`: the one-page ledger of what the solver and the antenna model are trusted for (established, provisional, open, refuted), with the evidence.
+- `scripts/gerber/snapshot_to_kicad.py`: a snapshot back into a KiCad board (copper zones, vias, outline, stackup), checked by reading it back (copper area per layer equal).
+- `scripts/antenna/grid_offset.py` (the board moved by a fraction of a cell, through the farm), `known_answer.py` (a probe-fed patch and a closed cavity with exact answers), `slope.py`.
+- `docs/farm.md`: a "Daily use" section (submit, read the queue, fetch results, pauses, agent commands, when stuck).
+
+### Tests (CI)
+- The farm client test waits 90 s and says what the client saw when its first read fails (it failed in 3 of 9 CI runs, never locally).
+
 ### Fixed (solver: sheet copper edges)
 - Zero-thickness (sheet) copper now uses the same robust edge test as slab copper. With grid lines snapped onto a copper edge the old ray cast decided a whole row of PEC edges by rounding, so the patch's resonance jumped by up to 6 % with the domain size and a 2 nm shift of the copper moved it 2.8 %. Results of earlier sheet-copper runs can change.
 

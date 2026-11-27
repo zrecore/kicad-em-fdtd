@@ -227,7 +227,9 @@ worker is then started with `--turn-from-coordinator`. Details, limits and the r
 - **Update the bundle:** stop the worker; unpack the new bundle into a **new** folder (do not overwrite the old one);
   run `emfdtd-farm status` from the new folder (your identity in the farm folder is picked up unchanged); start the worker
   again from the new folder (`emfdtd-farm agent doctor` first checks everything and `agent start` runs it itself).
-  Update `emfdtd` itself the same way: stop, replace the program, run `emfdtd --version`, start.
+  Update `emfdtd` itself the same way: stop, replace the program, run `emfdtd --version`, start. Update the bundle and the program together:
+  a worker offers checkpoints (pause and resume at the time ceiling) only if its `emfdtd` lists `--checkpoint-dir` in the usage text
+  (`emfdtd` with no arguments prints it), and a solver older than the voxelizer fix of 2026-11-26 gives different results for sheet copper.
 - **Pause:** stop the worker. Nothing else needs to change.
 - **Leave the farm:** stop the worker; run `emfdtd-farm disable worker`; ask the coordinator owner to run
   `emfdtd-farm revoke worker NAME`; delete the bundle folder; if you want your key gone too, delete the farm folder

@@ -42,6 +42,10 @@ Values are in the machine's own byte order. The **run hash** (128 bits, a change
 
 A resume fails with exit status 1 and one of these, per file: `is damaged: ...` (not a checkpoint, a checksum does not match, cut short), `was written by emfdtd X, this is Y`, `was written by the cpu backend, this run uses the gpu backend`, `was written on DEVICE (uuid), this run uses DEVICE (uuid): a checkpoint resumes only on the device that wrote it`, `was written with the driver ...`, `was written for other inputs (the board, the settings or the options differ)`, `is missing`.
 
+## What a resume costs
+
+A resume reads the checkpoint (the fields, the CPML state, the ports, the host's decay state: about 600 MB for a 22 M cell board, written in about 2 s), but it **rebuilds the model first**: voxelizing, the grid, the update coefficients and the GPU buffers are prepared again, because the checkpoint holds the state and not the prepared model. For a normal board that is seconds to a minute or two; a model with many lumped-load edges used to take 40 minutes (fixed 2026-11-26), and a job whose preparation is close to the farm worker's time ceiling makes no progress. Real use: the 0.25 mm board run paused twice at the RTX's 45 minute ceiling and finished in a third segment; the checkpoint interval is 5 minutes by default, so a crash loses at most that.
+
 ## Not covered (yet)
 
 Another machine or device (needs a backend-neutral layout: the CPML layouts differ between CPU and GPU, and float results differ slightly between GPUs), animation views and the window's own runs, sweeps (each point would need its own folder), and the farm side (a paused job state, `resume` and automatic resume after a worker restart: `docs/PLAN.md`, "Checkpoint and resume").
