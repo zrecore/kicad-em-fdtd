@@ -573,7 +573,7 @@ class Worker:
         await writer.drain()
         return reader, writer
 
-    async def _run_offer(self, offer, ctl):
+    async def _run_offer(self, offer, ctl):  # noqa: C901  (complexity ratchet: split when next touched)
         job, lease, device = offer["job"], offer["lease"], offer["device"]
         work = self.work_root / "jobs" / store.job_dir(job).name
         fail = {"type": "fail", "job": job, "lease": lease, "retry": False}

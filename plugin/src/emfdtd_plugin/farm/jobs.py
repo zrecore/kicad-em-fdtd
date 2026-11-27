@@ -58,7 +58,7 @@ def _net(value):
     return value
 
 
-def validate(spec, tiers, limits):
+def validate(spec, tiers, limits):  # noqa: C901  (complexity ratchet: split when next touched)
     """The normalised job, or JobError. `tiers` is parse_list_settings() of the worker's solver."""
     if not isinstance(spec, dict):
         raise JobError("a job must be an object")

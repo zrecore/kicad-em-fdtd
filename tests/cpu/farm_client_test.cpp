@@ -200,18 +200,22 @@ SCENARIO("The client polls the tool only while the tab is showing, and runs acti
 // Needs /bin/sh, /bin/sleep or the .sh stub tool; the real tool is tested in plugin/tests.
 #if !defined(_WIN32)
 SCENARIO("A client that nobody touches does not call the tool", "[farm]") {
-  setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
-  const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_idle.log";
-  std::remove(log.c_str());
-  setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
-  {
-    farm::Client client;
-    std::this_thread::sleep_for(std::chrono::milliseconds(2200));
-    std::ifstream in(log);
-    REQUIRE_FALSE(in.good()); // the tool was never run
+  GIVEN("a client that nobody touches and a stand-in tool that logs every call") {
+    setEnv("EMFDTD_FARM_COMMAND", FDTD_FARM_STUB);
+    const std::string log = std::string(FDTD_TEST_TMP) + "/farm_stub_idle.log";
+    std::remove(log.c_str());
+    setEnv("EMFDTD_FARM_STUB_LOG", log.c_str());
+    {
+      farm::Client client;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+      THEN("the tool was never run") {
+        std::ifstream in(log);
+        REQUIRE_FALSE(in.good());
+      }
+    }
+    unsetEnv("EMFDTD_FARM_COMMAND");
+    unsetEnv("EMFDTD_FARM_STUB_LOG");
   }
-  unsetEnv("EMFDTD_FARM_COMMAND");
-  unsetEnv("EMFDTD_FARM_STUB_LOG");
 }
 #endif // !_WIN32
 

@@ -1,0 +1,11 @@
+{
+ "plugin/tests/test_farm_checkpoint_sched.py": 15,
+ "plugin/tests/test_farm_estimate.py": 1,
+ "plugin/tests/test_farm_fit.py": 1,
+ "plugin/tests/test_farm_gui_controller.py": 7,
+ "plugin/tests/test_farm_gui_view.py": 1,
+ "plugin/tests/test_farm_turn.py": 1,
+ "plugin/tests/test_snapshot.py": 3,
+ "tests/cpu/boundary_test.cpp": 2,
+ "tests/cpu/ntff_test.cpp": 1
+}

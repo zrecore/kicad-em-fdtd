@@ -57,6 +57,16 @@ std::vector<std::string> split(const std::string& text) {
 // ---- parsing
 // -----------------------------------------------------------------------------------------------
 
+// What the tool printed, for an error message: a stand-in tool that failed to start prints a shell error
+// instead of JSON, and "parse error at column 1" alone does not say what it was.
+std::string sample(const std::string& text) {
+  std::string head = text.substr(0, 160);
+  for (char& c : head)
+    if (c == '\n' || c == '\r')
+      c = ' ';
+  return " [output began: '" + head + "']";
+}
+
 bool parseStatus(const std::string& json, Snapshot& out, std::string& error) {
   try {
     const auto j = nlohmann::json::parse(json);
@@ -69,7 +79,7 @@ bool parseStatus(const std::string& json, Snapshot& out, std::string& error) {
     out.statusError.clear();
     return true;
   } catch (const std::exception& ex) {
-    error = std::string("the farm tool's status was not understood: ") + ex.what();
+    error = std::string("the farm tool's status was not understood: ") + ex.what() + sample(json);
     return false;
   }
 }
@@ -101,7 +111,7 @@ bool parseQueue(const std::string& json, Snapshot& out, std::string& error) {
     out.queueError.clear();
     return true;
   } catch (const std::exception& ex) {
-    error = std::string("the queue was not understood: ") + ex.what();
+    error = std::string("the queue was not understood: ") + ex.what() + sample(json);
     return false;
   }
 }
@@ -261,7 +271,7 @@ bool parseMembers(const std::string& json, Snapshot& out, std::string& error) {
     out.membersError.clear();
     return true;
   } catch (const std::exception& ex) {
-    error = std::string("the member list was not understood: ") + ex.what();
+    error = std::string("the member list was not understood: ") + ex.what() + sample(json);
     return false;
   }
 }

@@ -376,7 +376,7 @@ def _args_from_agent(args):
     return ns
 
 
-def _farm_command(args, say):
+def _farm_command(args, say):  # noqa: C901  (complexity ratchet: split when next touched)
     cmd = args.cmd
     if cmd in ("init", "invite", "serve", "members", "revoke"):
         _need("coordinator")

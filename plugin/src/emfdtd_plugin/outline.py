@@ -196,7 +196,7 @@ def _slot_corners(ring, d, centre, seed):
     return corners
 
 
-def board_proper(outer, cuts, seed, mm=1e6):
+def board_proper(outer, cuts, seed, mm=1e6):  # noqa: C901  (complexity ratchet: split when next touched)
     """Remove a panel frame: (board ring, remaining cutouts, notes) or None when the loops form no panel.
 
     A slot is a thin, long cutout. Each slot end is bridged to the nearest end of another slot within a tab's

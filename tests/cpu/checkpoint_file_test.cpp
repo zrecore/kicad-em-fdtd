@@ -57,9 +57,13 @@ void flipByte(const fs::path& file, std::streamoff at) {
 } // namespace
 
 SCENARIO("CRC-32C matches the standard check value", "[checkpoint]") {
-  const std::string text = "123456789";
-  const std::vector<std::uint8_t> bytes(text.begin(), text.end());
-  REQUIRE(crc32c(bytes) == 0xE3069283u);
+  GIVEN("the ASCII digits 123456789, the standard check input") {
+    const std::string text = "123456789";
+    const std::vector<std::uint8_t> bytes(text.begin(), text.end());
+    THEN("the CRC-32C is exactly 0xE3069283, the published check value") {
+      REQUIRE(crc32c(bytes) == 0xE3069283u);
+    }
+  }
 }
 
 SCENARIO("A saved checkpoint comes back exactly", "[checkpoint]") {

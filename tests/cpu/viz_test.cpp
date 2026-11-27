@@ -317,12 +317,16 @@ SCENARIO("The accessibility tree names every control and keeps ids stable betwee
 
 SCENARIO("The text size follows the system unless the user picks one, within safe limits") {
   using viz::resolveTextScale;
-  REQUIRE(resolveTextScale("follow", 1.0) == Catch::Approx(1.0));
-  REQUIRE(resolveTextScale("follow", 1.4) == Catch::Approx(1.4));
-  REQUIRE(resolveTextScale("150%", 1.0) == Catch::Approx(1.5));
-  REQUIRE(resolveTextScale("nonsense", 1.25) == Catch::Approx(1.25));
-  REQUIRE(resolveTextScale("follow", 9.0) == Catch::Approx(3.0)); // clamped
-  REQUIRE(resolveTextScale("10%", 1.0) == Catch::Approx(0.75));
+  GIVEN("a system text scale and a user choice") {
+    THEN("follow keeps the system scale, a percentage replaces it, nonsense falls back, limits clamp") {
+      REQUIRE(resolveTextScale("follow", 1.0) == Catch::Approx(1.0));
+      REQUIRE(resolveTextScale("follow", 1.4) == Catch::Approx(1.4));
+      REQUIRE(resolveTextScale("150%", 1.0) == Catch::Approx(1.5));
+      REQUIRE(resolveTextScale("nonsense", 1.25) == Catch::Approx(1.25));
+      REQUIRE(resolveTextScale("follow", 9.0) == Catch::Approx(3.0)); // clamped
+      REQUIRE(resolveTextScale("10%", 1.0) == Catch::Approx(0.75));
+    }
+  }
 }
 
 SCENARIO("UI draw data respects the clip rectangle on a high-density (Retina) display") {

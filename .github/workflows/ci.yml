@@ -39,3 +39,4 @@ jobs:
           ruff check .
           ruff format --check .
           pytest -q
+      - run: python3 scripts/bdd_check.py # BDD conformance: every scenario has a Then, no new bare tests

@@ -42,6 +42,7 @@ find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs "$FMT" --dry-run --We
 if [ -x plugin/.venv/bin/pytest ]; then
   (cd plugin && .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/pytest -q)
 fi
+python3 scripts/bdd_check.py # BDD conformance: every scenario has a Then, no new bare tests (ratchet)
 python3 scripts/antenna/selftest.py >/dev/null # closed-form checks of the antenna helper scripts
 python3 scripts/gerber/selftest.py >/dev/null # Gerber and Excellon tools (skipped without numpy)
 if [ "$FAST" = 1 ]; then echo "check: ok (fast: the [slow] solver suite was not run)"; else echo "check: ok"; fi

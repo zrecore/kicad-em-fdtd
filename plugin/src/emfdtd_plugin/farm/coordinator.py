@@ -232,7 +232,7 @@ class Coordinator:
             await self._send(writer, reply)
             msg = await asyncio.wait_for(protocol.read_message(reader), 300)
 
-    def _client_msg(self, ident, der, msg):
+    def _client_msg(self, ident, der, msg):  # noqa: C901  (complexity ratchet: split when next touched)
         owner = f"{ident[0]}:{ident[1]}"
         kind = msg["type"]
         if kind not in ("submit", "status", "cancel", "results", "resume", "restart"):
@@ -688,7 +688,7 @@ class Coordinator:
 
     # --- bulk transfers -----------------------------------------------------------------------
 
-    async def _transfer(self, ident, der, first, reader, writer):
+    async def _transfer(self, ident, der, first, reader, writer):  # noqa: C901  (complexity ratchet: split when next touched)
         what = first["what"]
         action = {"input_in": "submit", "result_out": "results", "input_out": "run", "result_in": "run"}.get(
             what
