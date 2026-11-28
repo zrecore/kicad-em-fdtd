@@ -64,6 +64,8 @@ SCENARIO("A sweep runs one point per value, keeps each S11 and each results fold
     base.set("backend", std::string("cpu"));
     base.set("boundary_distance_wavelengths",
              0.05); // a small domain: the board is 10 mm and the band 2.4 GHz
+    base.set("refine_copper_edges_mm",
+             0.0); // the test checks the sweep's structure on a cut-short run: keep its small, coarse grid
     base.set("max_steps",
              150.0); // structure only: the physics is checked on the GPU (tests/gpu/sweep_gpu_test.cpp)
     app::SweepEnv env{snap,           (dir / "board" / "board.json").string(),
