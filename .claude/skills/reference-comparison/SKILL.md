@@ -8,10 +8,14 @@ description: Compare this project's solver with another solver (openEMS) or with
 Read `docs/lessons.md` entries 1 to 4 first. The rules:
 
 1. **Same inputs.** Same snapshot (sha256), same band, same dielectric constants; write the flags and cell counts next to every number. A different quantity is not a comparison: a reactance zero crossing is not an S11 minimum.
-2. **Vary every axis separately, for both codes.** x, y and z each at two or more resolutions; the case script prints the per-axis mesh line counts (`mesh lines X x Y x Z`): if one of them does not change when you change a flag, that axis was not refined. openEMS: `scripts/antenna/openems_case.py` flags `--cell`, `--fine`, `--coarse`, `--margin` refine x and y only unless it has a z option.
+2. **Vary every axis separately, for both codes.** x, y and z each at two or more resolutions; the case script prints the per-axis mesh line counts (`mesh lines X x Y x Z`): if one of them does not change when you change a flag, that axis was not refined. openEMS: `openems_case.py` (moved to the separate repository `/Volumes/CrucialX9/Projects/openEMS-check`, shim `openems_case.py` keeps the command line) flags `--cell`, `--fine`, `--coarse`, `--margin` refine x and y only unless it has a z option.
 3. **Rerun the reference on the current build** before comparing (`docs/lessons.md` 2). Record commit, driver or version (openEMS v0.37.0 on the Windows PC; Mac master `ccb4472`, one commit behind upstream, CSXCAD identical, checked 2026-11-27).
 4. **Do not claim a trend until both codes are refined**, to the same kind of step; say "one-sided" otherwise.
 5. **Look at the sign of the gap on more than one structure.** The same sign on all of them suggests one cause (a port or feed model); different signs suggest mesh or edge treatment.
 6. **Use a second pair of eyes.** An independent session (the `powershell` agent running the case cold) found the unrefined z axis by reading the mesh line; ask for the cell counts before a long run.
 7. **Where to run:** CPU openEMS runs go through `emfdtd-farm lock cpu:MACHINE --max-minutes N -- COMMAND` (Mac: `scripts/with_cpu_lock.sh`); our solver on the farm GPUs (`docs/farm.md`), and use both machines at once.
 8. **Record the result** in `docs/trust.md` with its status (established, provisional, open) the same day.
+
+## How to run a long openEMS run
+
+The openEMS tooling lives in the separate repository `/Volumes/CrucialX9/Projects/openEMS-check` (README there). Never start a long run bare: wrap it in the guard, which smoke-tests the case for about 3000 steps and then kills a run whose port is not excited (energy 0, unused `port_*` primitive), that goes NaN or unstable, stalls, or never peaks (exit 3, 4, 5; a warning if the -33 dB end lies beyond the step cap or `--max-minutes`). Under the farm lock: `emfdtd-farm lock cpu:MACHINE --max-minutes N -- python openems_guard.py -- python -I openems_case.py SNAP OUT --cell ... --threads 6`. Still read the first minutes of the log yourself.

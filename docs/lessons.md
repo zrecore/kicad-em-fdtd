@@ -16,7 +16,7 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
 3. **The reference was refined on one axis only (2026-11-27).** All openEMS runs had 83 mesh lines in z while x and y
    changed, so its vertical convergence was never tested; the Windows session saw the repeated 83 by reading the mesh
    line before a long run. *Rule:* vary every axis separately for each code and print per-axis counts. *Enforced:*
-   `.claude/skills/reference-comparison`; `scripts/antenna/openems_case.py` prints them.
+   `.claude/skills/reference-comparison`; `openems_case.py` (repository `/Volumes/CrucialX9/Projects/openEMS-check`) prints them.
 4. **A trend claimed from one refined code (2026-11-27).** "The gap shrinks 3.0, 2.3, 2.0 %" compared our refined
    runs with an unrefined openEMS run; refining openEMS moved it up 0.96 % and the gap stayed near 3 %. *Rule:* no
    convergence statement until both codes are refined; label a one-sided trend as such. *Enforced:* `docs/trust.md`
@@ -60,10 +60,10 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     untested with the test that would refute it, and is not given a name or a headline until that test has run.
     *Enforced:* `docs/trust.md` wording; review.
 14. **A run that could not work was found by reading its log after 2 h 40 (2026-11-27).** `thin()` in
-    `scripts/antenna/openems_case.py` dropped the port's own mesh line when a snapped copper line lay within 0.07 mm,
+    `openems_case.py` (repository `/Volumes/CrucialX9/Projects/openEMS-check`) dropped the port's own mesh line when a snapped copper line lay within 0.07 mm,
     so openEMS ran 200 000 steps with the port never excited (energy exactly 0 on every line, a warning "unused primitive
     ... port_excite_1"). *Rule:* a script that builds a model checks that the model can do its job before a long run
     (the port is on the mesh), and an operator reads the first minutes of a long run's log for warnings and for a
-    nonzero energy. *Enforced:* `openems_case.py` now exits before the solve if a port line is missing; `powershell`
+    nonzero energy. *Enforced:* the guard `openems_guard.py` in the separate repository `/Volumes/CrucialX9/Projects/openEMS-check` (smoke run, then live checks on the console; usage in its README) and `openems_case.py` now exits before the solve if a port line is missing; `powershell`
     found it by reading the log and reported it with the evidence.
 

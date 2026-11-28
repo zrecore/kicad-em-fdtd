@@ -70,6 +70,7 @@ KiCAD PCB editor -> thin Python IPC plugin (kipy) -> board snapshot -> native C+
 
 ## Licensing and sources
 
+- **openEMS tooling lives outside this repository** (the user's decision, 2026-11-27): the case builder (`openems_case.py`) and the run guard that stops a run which cannot finish are in `/Volumes/CrucialX9/Projects/openEMS-check` (its own git repository, `../openEMS-check`). Nothing here imports or runs openEMS; results stay in git-ignored `out/openems-case/`. Use the guard for every long run: `emfdtd-farm lock cpu:MACHINE --max-minutes N -- python openems_guard.py -- python -I openems_case.py ...`.
 - The project is MIT. **Clean-room rule:** the mature FDTD/EM codes (openEMS, MEEP, gprMax) are GPL. Run them for validation and read their docs for behavior, but never copy, translate or use their source as an implementation template. Write kernels from the papers in `docs/PLAN.md` References.
 - When adding a dependency, check its LICENSE file, add it to the Licensing table in `docs/PLAN.md` and to `CREDITS.md`, and install its license text in `cmake/Package.cmake`. Build-time-only tools are noted as such.
 - When choosing a numerical method, cite a peer-reviewed source in References (with a verified DOI), and say if its contents have not been read.
