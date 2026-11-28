@@ -151,6 +151,15 @@ open(os.path.join(run, "summary.txt"), "w").write(
     + "\n"
     + (f"resumed at step {resumed_at}\n" if resumed_at is not None else "")
 )
+if "--keep-fields" in opts:  # what the real solver leaves for --keep-fields (docs/ux.md, "Saved runs")
+    size = int(stub.get("field_bytes", 64))
+    os.makedirs(os.path.join(run, "fields"), exist_ok=True)
+    for name in ("slice_e.f16", "volume_e.f16"):
+        open(os.path.join(run, "fields", name), "wb").write(b"\0" * size)
+    open(os.path.join(run, "fields", "farfield.json"), "w").write("[]")
+    open(os.path.join(run, "run.json"), "w").write(json.dumps({"schema": 1, "fields": True}))
+    open(os.path.join(run, "board.json"), "w").write("{}")
+    open(os.path.join(run, "summary.txt"), "a").write(f"fields: kept, {2 * size} bytes\n")
 open(os.path.join(run, "settings.json"), "w").write(json.dumps({"set": opts.get("--set", [])}))
 print("12448 steps of 1.03 ps in 3.2 s (1185 Mcells/s)", flush=True)
 print("best match -6.043 dB at 2.2195 GHz", flush=True)

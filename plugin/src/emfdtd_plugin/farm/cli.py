@@ -219,6 +219,13 @@ def _parser():
         help="do not ask the local solver for a dry run (the estimate keeps a long job off a worker "
         "whose time ceiling it would outrun)",
     )
+    s.add_argument(
+        "--keep-fields",
+        action="store_true",
+        help="also bring back the field data (3D view, slice, current, power, far field) so "
+        "`emfdtd --open-run` can show the job; tens to hundreds of MB, refused if it would not fit the "
+        "result limit; off unless you ask",
+    )
     s.add_argument("--json", action="store_true", help='print {"jobs": [ids]} instead of one id per line')
     s.add_argument("--wait", metavar="DEST", help="wait for the jobs and save their results in DEST")
     sub.add_parser("queue", help="client: my jobs and the farm's devices").add_argument(
@@ -283,6 +290,8 @@ def _spec(args):
         spec["ground_nets"] = args.ground_nets.split(",")
     if getattr(args, "device", None):
         spec["pin"] = args.device
+    if getattr(args, "keep_fields", False):
+        spec["keep_fields"] = True
     return spec
 
 
@@ -699,6 +708,8 @@ def _farm_command(args, say):  # noqa: C901  (complexity ratchet: split when nex
                 sp["estimate"] = est
         else:
             print(f"no time estimate for the job ({why}); it is placed without one", file=sys.stderr)
+            if spec.get("keep_fields"):
+                print("the size of the field data was not checked against the result limit", file=sys.stderr)
     ids = []
     for sp in specs:
         ids.append(_run(client.submit(bundle, host, port, sp, args.snapshot, args.label, group)))

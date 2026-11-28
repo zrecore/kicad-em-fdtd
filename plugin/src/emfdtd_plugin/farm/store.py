@@ -7,6 +7,14 @@ from . import config
 
 JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 RESULT_NAMES = ("s11.s1p", "summary.txt", "settings.json", "run.log")
+# a --keep-fields job also returns what makes the folder a saved run: the manifest, the board, and the field
+# files, flattened (a blob name is a plain file name): fields.NAME stands for fields/NAME
+FIELD_RESULT_NAMES = ("run.json", "board.json")
+FIELD_FILE = re.compile(r"^fields\.[a-z0-9_]{1,24}\.(f16|json)$")
+
+
+def is_result_name(name):
+    return name in RESULT_NAMES or name in FIELD_RESULT_NAMES or bool(FIELD_FILE.match(name))
 
 
 def root():

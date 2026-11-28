@@ -251,6 +251,9 @@ class Coordinator:
                 if not 0 < msg["input_bytes"] <= limits["max_input_bytes"]:
                     return {"type": "refused", "reason": "input size is outside the allowed range"}
                 spec = jobs.validate(msg["spec"], None, limits)
+                why = self._fields_too_big(spec, limits)
+                if why:
+                    return {"type": "refused", "reason": why}
                 pin = spec.get("pin")
                 if pin and f"worker:{pin.partition(':')[0]}" not in policy.load()["devices"]:
                     return {
@@ -293,6 +296,20 @@ class Coordinator:
             return {"type": "result_info", "job": job.id, "files": job.files}
         except (jobs.JobError, SchedulerError) as e:
             return {"type": "refused", "reason": str(e)}
+
+    @staticmethod
+    def _fields_too_big(spec, limits):
+        """The reason a job that asks for its field data is refused: the solver's estimate of those files
+        alone is over the result limit. Never a silent drop: the submitter learns it now."""
+        need = (spec.get("estimate") or {}).get("field_bytes")
+        limit = limits["max_result_bytes"]
+        if spec.get("keep_fields") and need and need > limit:
+            return (
+                f"the field data of this job would be about {jobs.megabytes(need)}, over the result limit "
+                f"of {jobs.megabytes(limit)}: submit without --keep-fields, or ask for a higher limit "
+                "for your device (policy)"
+            )
+        return ""
 
     # --- workers ------------------------------------------------------------------------------
 
@@ -449,7 +466,7 @@ class Coordinator:
                 raise ValueError("no such job")
             for fname, info in msg["files"].items():
                 protocol.safe_name(fname)
-                if fname not in store.RESULT_NAMES:
+                if not store.is_result_name(fname):
                     raise ValueError(f"unexpected result file {fname}")
                 path = store.result_dir(job.id) / fname
                 if (
@@ -727,7 +744,7 @@ class Coordinator:
                     m = await asyncio.wait_for(protocol.read_message(reader), READ_TIMEOUT)
                     if m is None or m["type"] == "blob_end":
                         break
-                    if m["type"] != "blob_header" or m["name"] not in store.RESULT_NAMES:
+                    if m["type"] != "blob_header" or not store.is_result_name(m["name"]):
                         raise protocol.ProtocolError("unexpected result file")
                     _, size, _ = await protocol.recv_blob(
                         reader, store.result_dir(job.id), remaining, header=m

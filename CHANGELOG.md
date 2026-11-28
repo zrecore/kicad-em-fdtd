@@ -5,6 +5,10 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
+### Added (field data of a command-line or farm job, only when asked)
+- `emfdtd BOARD.json ... --keep-fields` makes a headless run keep the field data of the window's views (3D, slice, surface current, power flow, far field) and a `run.json`, so `--open-run` and Open run show the job. Without the flag nothing changes: a headless run writes the same four files and costs the same time. The window's `save_fields` setting is untouched. The accumulators are shared with the window (`src/app/field_recorder.cpp`); a run resumed from a checkpoint keeps none and says so (`docs/checkpoint.md`). `--dry-run --json` reports `estimate.field_bytes`; a run's JSON has `fields`.
+- `emfdtd-farm submit ... --keep-fields` (job field `keep_fields`): the worker runs the solver with the flag and returns `run.json`, `board.json` and the field files with the result; `results JOB --dest DIR` puts them in `DIR/fields/` so the folder opens with `emfdtd --open-run`. A job whose estimated field data is over the submitter's result limit (default 256 MB) is refused at submission with the size and the limit; if the real result is over the worker's limit the S11 is still delivered and `summary.txt` says `fields requested but not kept: N MB over the result limit of M MB`. Nothing raises a limit. An older worker refuses the job (unknown field); the coordinator and workers must be updated together.
+
 ### Added (farm: jobs are kept off a GPU whose memory they would exceed)
 - The dry run's memory estimate travels with the job and the scheduler refuses a GPU for a job that needs more than 80 percent of its memory with a 1.5 margin; the queue says why a job waits (`needs about 5.0 GiB of GPU memory ...`). Unknown memory or no estimate is not refused. Not yet checked against real GPU use (`docs/trust.md`, Open).
 

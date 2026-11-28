@@ -92,6 +92,9 @@ def estimate_job(solver, snapshot, spec, timeout=DRY_RUN_TIMEOUT_S):
     memory = doc["estimate"].get("memory_bytes")  # the solver's own estimate of the device memory it needs
     if isinstance(memory, (int, float)) and not isinstance(memory, bool) and memory > 0:
         est["memory_bytes"] = float(memory)
+    fields = doc["estimate"].get("field_bytes")  # what --keep-fields would add to the result
+    if isinstance(fields, (int, float)) and not isinstance(fields, bool) and fields > 0:
+        est["field_bytes"] = float(fields)
     return est, ""
 
 

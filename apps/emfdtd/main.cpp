@@ -27,6 +27,7 @@
 
 #include "app/checkpoint.hpp"
 #include "app/cli_json.hpp"
+#include "app/field_recorder.hpp"
 #include "app/paths.hpp"
 #include "app/phasor_feed.hpp"
 #include "app/prepare.hpp"
@@ -102,6 +103,10 @@ void usage() {
       "  --view                   open a window and animate the field while the solve runs\n"
       "  --frames N               write N animation frames into the run folder\n"
       "  --dry-run                prepare and print the plan and estimate, do not solve\n"
+      "  --keep-fields            keep the field data of the run (3D and slice views, surface current, "
+      "power\n"
+      "                           flow, far field) so `--open-run` can show it; costs time and disk (see\n"
+      "                           the estimate's field_bytes in --dry-run --json); off unless asked\n"
       "  --checkpoint-dir DIR     write checkpoints of the run into DIR (docs/checkpoint.md); a file "
       "DIR/stop or\n"
       "                           SIGTERM writes one and ends the run with exit status 75 (not with --ui, "
@@ -353,7 +358,7 @@ int main(int argc, char** argv) {
     int frameCount = 0;
     std::string checkpointDir;
     double checkpointEvery = 300;
-    bool resumeRun = false;
+    bool resumeRun = false, keepFields = false;
     bool view = false, dryRun = false, uiMode = false, autorun = false;
     std::string shotFile, shotQuery, shotExpand, shotTab;
     bool shotRun = false, showSettings = false, hideControls = false;
@@ -497,6 +502,8 @@ int main(int argc, char** argv) {
         frameCount = std::atoi(next());
       else if (a == "--dry-run")
         dryRun = true;
+      else if (a == "--keep-fields")
+        keepFields = true;
       else if (a == "--checkpoint-dir")
         checkpointDir = next();
       else if (a == "--checkpoint-every")
@@ -556,6 +563,9 @@ int main(int argc, char** argv) {
                   "--json covers --list-settings, --list-devices, --run-info, --dry-run and a headless run, "
                   "not the window, --view, --sweep or --prune-runs");
 
+    if (keepFields && (uiMode || !shotFile.empty() || !sweepSpec.key.empty() || pruneKeep >= 0))
+      return fail(2, "--keep-fields is for a headless run: the window keeps its field data by the setting "
+                     "'save_fields', and a sweep does not keep fields");
     if (resumeRun && checkpointDir.empty())
       return fail(2, "--resume needs --checkpoint-dir DIR (the folder the checkpoints are in)");
     if (!checkpointDir.empty() && (uiMode || !shotFile.empty() || view || frameCount > 0 ||
@@ -892,7 +902,13 @@ int main(int argc, char** argv) {
     for (const auto& n : refineNotes)
       std::printf("note: %s\n", n.c_str());
     const std::string deviceName = ctx ? ctx->properties().deviceName : "";
-    const auto facts = app::clijson::runFacts(settings, prepared, est, gpu, deviceName, refineNotes);
+    auto facts = app::clijson::runFacts(settings, prepared, est, gpu, deviceName, refineNotes);
+    try {
+      facts.fieldBytes = app::estimateFieldBytes(snap, prepared);
+    } catch (const std::exception&) { // an estimate only: the run itself reports what it could not do
+    }
+    if (keepFields)
+      std::printf("field data: about %.0f MB on disk with --keep-fields\n", facts.fieldBytes * 1e-6);
     if (dryRun) {
       if (jsonMode)
         emitJson(app::clijson::dryRun(FDTD_VERSION, facts));
@@ -1018,6 +1034,23 @@ int main(int argc, char** argv) {
       };
       opt.onFinish = [&](sim::Engine& eng) { feed->sync(eng, phasorMutex); };
     }
+    // --keep-fields (docs/ux.md, "Saved runs"): the same field data a window run keeps. The accumulators are
+    // not part of a checkpoint (the solver refuses phasor lists with checkpoints), so a run that uses
+    // --checkpoint-dir, fresh or resumed, keeps none and says why.
+    app::FieldRecorder recorder;
+    std::mutex fieldMutex;
+    std::string fieldsNote; // why requested fields were not kept
+    const bool recordFields = keepFields && !store;
+    if (keepFields && store)
+      fieldsNote = std::string("fields requested but not kept: ") +
+                   (loaded ? "the run was resumed from a checkpoint, " : "the run writes checkpoints, ") +
+                   "and the field accumulators are not part of a checkpoint (the solver refuses both); run "
+                   "without --checkpoint-dir to keep fields";
+    if (recordFields) {
+      recorder.layout(snap, prepared);
+      recorder.allocate();
+      recorder.attach(opt, g, fieldMutex, nullptr);
+    }
     std::atomic<bool> done{false}, stop{false};
     opt.shouldStop = [&] { return stop.load(); };
     auto lastCheckpoint = std::chrono::steady_clock::now();
@@ -1124,6 +1157,42 @@ int main(int argc, char** argv) {
     for (std::size_t i = 1; i < r.s.s11.size(); ++i)
       if (std::abs(r.s.s11[i]) < std::abs(r.s.s11[best]))
         best = i;
+    std::uint64_t fieldsBytes = 0;
+    bool fieldsKept = false;
+    if (recordFields) {
+      try {
+        recorder.farResults = recorder.computeFar(r, plan.portImpedanceOhm);
+        recorder.save(runDir);
+        fieldsKept = true;
+        fieldsBytes = app::folderBytes(runDir / "fields");
+      } catch (const std::exception& e) {
+        fs::remove_all(runDir / "fields");
+        fieldsNote = std::string("fields requested but not kept: could not save them: ") + e.what();
+      }
+    }
+    if (keepFields) { // the manifest is what makes the folder a saved run that --open-run accepts
+      app::RunManifest man;
+      man.id = runDir.filename().string();
+      man.board = snap.boardName;
+      man.profile = settings.text("profile");
+      man.backend = gpu ? "GPU" : "CPU reference";
+      man.steps = r.steps;
+      man.wallSeconds = secs;
+      if (!r.s.s11.empty()) {
+        man.bestDb = 20 * std::log10(std::max(std::abs(r.s.s11[best]), 1e-6));
+        man.bestHz = r.s.frequenciesHz[best];
+      }
+      man.fields = fieldsKept;
+      app::writeManifest(runDir, man);
+      std::ofstream sum(runDir / "summary.txt", std::ios::app);
+      if (fieldsKept)
+        sum << "fields: kept, " << fieldsBytes << " bytes\n";
+      else
+        sum << "note: " << fieldsNote << "\n";
+      std::printf("%s\n", fieldsKept
+                              ? ("fields: kept, " + std::to_string(fieldsBytes / 1000000) + " MB").c_str()
+                              : fieldsNote.c_str());
+    }
     std::printf("best match %.4g dB at %.4f GHz (band %.4g to %.4g GHz)\n",
                 20 * std::log10(std::abs(r.s.s11[best])), r.s.frequenciesHz[best] * 1e-9,
                 plan.bandHz[0] * 1e-9, plan.bandHz[1] * 1e-9);
@@ -1157,6 +1226,10 @@ int main(int argc, char** argv) {
       outcome.mcellsPerSecond = mcells;
       outcome.resumedFromStep = r.resumedFromStep;
       outcome.gpuBytesAllocated = gpuBytes;
+      outcome.fieldsRequested = keepFields;
+      outcome.fieldsKept = fieldsKept;
+      outcome.fieldsBytes = fieldsBytes;
+      outcome.fieldsNote = fieldsNote;
       if (!r.s.s11.empty()) {
         outcome.bestHz = r.s.frequenciesHz[best];
         outcome.bestDb = 20 * std::log10(std::abs(r.s.s11[best]));

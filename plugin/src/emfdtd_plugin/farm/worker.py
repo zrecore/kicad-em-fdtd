@@ -677,6 +677,8 @@ class Worker:
         plan = offer.get("checkpoint")
         if not isinstance(plan, dict):
             return None
+        if (offer.get("spec") or {}).get("keep_fields") is True:
+            return None  # field accumulators are not in a checkpoint: the solver refuses the two together
         every = plan.get("every")
         if isinstance(every, bool) or not isinstance(every, (int, float)):
             every = 300.0
@@ -799,10 +801,11 @@ class Worker:
                 ctl, {**fail, "reason": f"the solver exited with {code}: " + " | ".join(last[-3:])[:200]}
             )
             return
-        files = self._collect(work)
+        files = self._collect(work, "--keep-fields" in argv)
         if not files:
             await self._send(ctl, {**fail, "reason": "the solver finished but wrote no results"})
             return
+        files = self._fit_fields(files, limits["max_result_bytes"])
         if sum(Path(p).stat().st_size for p in files.values()) > limits["max_result_bytes"]:
             await self._send(ctl, {**fail, "reason": "the results are over this worker's size limit"})
             return
@@ -811,16 +814,43 @@ class Worker:
             self._note_speed(device, state["speed"], state["seconds"], resumed)
 
     @staticmethod
-    def _collect(work):
+    def _collect(work, keep_fields=False):
         runs = sorted((work / "run" / "em-fdtd" / "results").glob("run-*"))
         files = {}
         if runs:
             for name in ("s11.s1p", "summary.txt", "settings.json"):
                 if (runs[-1] / name).exists():
                     files[name] = runs[-1] / name
+            if keep_fields:  # what makes the folder a saved run: the manifest, the board and the field files
+                for name in store.FIELD_RESULT_NAMES:
+                    if (runs[-1] / name).exists():
+                        files[name] = runs[-1] / name
+                for f in sorted((runs[-1] / "fields").glob("*")) if (runs[-1] / "fields").is_dir() else []:
+                    if store.is_result_name("fields." + f.name):
+                        files["fields." + f.name] = f
         if (work / "run.log").exists():
             files["run.log"] = work / "run.log"
         return files if "s11.s1p" in files else {}
+
+    @staticmethod
+    def _fit_fields(files, limit):
+        """The field data was asked for, so it is never dropped silently: when the whole result is over the
+        limit the S11 is still delivered and summary.txt says what was not kept and why."""
+        extra = [n for n in files if n.startswith("fields.") or n in store.FIELD_RESULT_NAMES]
+        total = sum(Path(p).stat().st_size for p in files.values())
+        if not extra or total <= limit:
+            return files
+        kept = {n: p for n, p in files.items() if n not in extra}
+        if "summary.txt" in kept:
+            text = Path(kept["summary.txt"]).read_text()
+            text = "".join(x for x in text.splitlines(True) if not x.startswith("fields: kept"))
+            with open(kept["summary.txt"], "w") as f:
+                f.write(text)
+                f.write(
+                    f"note: fields requested but not kept: {jobs.megabytes(total)} over the result limit of "
+                    f"{jobs.megabytes(limit)}\n"
+                )
+        return kept
 
     async def _upload(self, job, lease, files, ctl):
         reader, writer = await self._transfer(job, "result_in")

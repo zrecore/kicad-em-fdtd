@@ -41,7 +41,8 @@ struct RunFacts {
   std::size_t cellCount = 0, estimatedSteps = 0;
   double smallestCellM = 0, timeStepS = 0, estimatedMemoryBytes = 0, estimatedSeconds = 0;
   bool exceedsMemory = false;
-  std::string backend, device; // backend: "gpu" or "cpu"; device: the GPU's name, empty on the CPU
+  std::uint64_t fieldBytes = 0; // size of the saved field data a --keep-fields run would write; 0: not known
+  std::string backend, device;  // backend: "gpu" or "cpu"; device: the GPU's name, empty on the CPU
   std::vector<std::string> changedSettings, notes;
 };
 RunFacts runFacts(const Settings& settings, const Prepared& prepared, const Estimate& estimate, bool gpu,
@@ -60,6 +61,10 @@ struct RunOutcome {
   // peak kernel-bound buffer bytes (0 on the CPU: the document then has null)
   std::uint64_t gpuBytesAllocated = 0;
   std::size_t resumedFromStep = 0; // 0: not a resumed run (the document then has "resumed_from_step": null)
+  // --keep-fields: asked for, and whether the field data was kept (with its size, or the reason it was not)
+  bool fieldsRequested = false, fieldsKept = false;
+  std::uint64_t fieldsBytes = 0;
+  std::string fieldsNote;
 };
 // `emfdtd SNAPSHOT --json` after a headless run.
 std::string run(const std::string& version, const RunFacts& facts, const RunOutcome& outcome);

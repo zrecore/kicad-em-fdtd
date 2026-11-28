@@ -46,6 +46,10 @@ A resume fails with exit status 1 and one of these, per file: `is damaged: ...` 
 
 A resume reads the checkpoint (the fields, the CPML state, the ports, the host's decay state: about 600 MB for a 22 M cell board, written in about 2 s), but it **rebuilds the model first**: voxelizing, the grid, the update coefficients and the GPU buffers are prepared again, because the checkpoint holds the state and not the prepared model. For a normal board that is seconds to a minute or two; a model with many lumped-load edges used to take 40 minutes (fixed 2026-11-26), and a job whose preparation is close to the farm worker's time ceiling makes no progress. Real use: the 0.25 mm board run paused twice at the RTX's 45 minute ceiling and finished in a third segment; the checkpoint interval is 5 minutes by default, so a crash loses at most that.
 
+## Field data (`--keep-fields`)
+
+`--keep-fields` (docs/ux.md, "Saved runs") accumulates the field data of the views during the solve. Those accumulators are not part of a checkpoint, and the solver refuses phasor lists together with checkpoints, so a run that uses `--checkpoint-dir` (fresh or resumed) keeps no field data and does not accumulate: `run.json` says `fields: false`, `summary.txt` says `note: fields requested but not kept: the run was resumed from a checkpoint, and the field accumulators are not part of a checkpoint ...`, and `--json` has `fields.kept: false` with the same text. To get the fields of a job, run it without `--checkpoint-dir`. The farm worker therefore does not checkpoint a job submitted with `--keep-fields`: it cannot be paused or resumed, and a job that outruns the worker's time ceiling fails as before.
+
 ## Not covered (yet)
 
 Another machine or device (needs a backend-neutral layout: the CPML layouts differ between CPU and GPU, and float results differ slightly between GPUs), animation views and the window's own runs, sweeps (each point would need its own folder), and the farm side (a paused job state, `resume` and automatic resume after a worker restart: `docs/PLAN.md`, "Checkpoint and resume").

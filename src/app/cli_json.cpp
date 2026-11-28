@@ -54,6 +54,8 @@ Json facts(const RunFacts& f) {
                    {"memory_bytes", f.estimatedMemoryBytes},
                    {"seconds", f.estimatedSeconds},
                    {"exceeds_memory", f.exceedsMemory}};
+  if (f.fieldBytes)
+    j["estimate"]["field_bytes"] = f.fieldBytes;
   j["backend"] = f.backend;
   j["device"] = f.device;
   j["changed_settings"] = f.changedSettings;
@@ -236,6 +238,10 @@ std::string run(const std::string& version, const RunFacts& f, const RunOutcome&
     j["resumed_from_step"] = o.resumedFromStep;
   else
     j["resumed_from_step"] = nullptr;
+  if (o.fieldsRequested)
+    j["fields"] = {{"kept", o.fieldsKept}, {"bytes", o.fieldsBytes}, {"note", o.fieldsNote}};
+  else
+    j["fields"] = nullptr;
   return j.dump(2);
 }
 

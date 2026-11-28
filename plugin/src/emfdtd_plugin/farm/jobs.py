@@ -24,6 +24,12 @@ class JobError(Exception):
     pass
 
 
+def megabytes(n):
+    """A size for a message, in MB of 2^20 bytes (the unit of the policy's limits): 256 MB, 0.2 MB."""
+    mb = n / (1 << 20)
+    return f"{mb:.1f} MB" if mb < 10 else f"{mb:.0f} MB"
+
+
 def parse_list_settings(text):
     """{key: tier} from the solver's own `--list-settings` (the allow-list cannot drift from the solver)."""
     out = {}
@@ -62,7 +68,7 @@ def validate(spec, tiers, limits):  # noqa: C901  (complexity ratchet: split whe
     """The normalised job, or JobError. `tiers` is parse_list_settings() of the worker's solver."""
     if not isinstance(spec, dict):
         raise JobError("a job must be an object")
-    known = {"profile", "sets", "geoms", "refine", "parts", "bodies", "nets", "ground_nets"}
+    known = {"profile", "sets", "geoms", "refine", "parts", "bodies", "nets", "ground_nets", "keep_fields"}
     known |= set(SCHEDULING_HINTS)
     extra = set(spec) - known
     if extra:
@@ -108,6 +114,11 @@ def validate(spec, tiers, limits):  # noqa: C901  (complexity ratchet: split whe
     }
     out["nets"] = [_net(n) for n in spec.get("nets") or []]
     out["ground_nets"] = [_net(n) for n in spec.get("ground_nets") or []]
+    if "keep_fields" in spec:  # asked for per job: the field data comes back with the result (docs/farm.md)
+        if not isinstance(spec["keep_fields"], bool):
+            raise JobError("keep_fields must be true or false")
+        if spec["keep_fields"]:  # false is the default and is not recorded: a job without it is unchanged
+            out["keep_fields"] = True
     if "estimate" in spec:
         out["estimate"] = _estimate(spec["estimate"])
     if "pin" in spec:
@@ -118,7 +129,13 @@ def validate(spec, tiers, limits):  # noqa: C901  (complexity ratchet: split whe
 def _estimate(value):
     """{"cells", "steps"}: how big the job is expected to be, for placement only (the worker enforces its own
     ceilings whatever this says)."""
-    if not isinstance(value, dict) or set(value) - {"cells", "steps", "bound_steps", "memory_bytes"}:
+    if not isinstance(value, dict) or set(value) - {
+        "cells",
+        "steps",
+        "bound_steps",
+        "memory_bytes",
+        "field_bytes",
+    }:
         raise JobError("an estimate is {cells, steps}")
     out = {}
     for key, cap in (
@@ -126,6 +143,7 @@ def _estimate(value):
         ("steps", MAX_ESTIMATE_STEPS),
         ("bound_steps", MAX_ESTIMATE_STEPS),
         ("memory_bytes", 1 << 46),
+        ("field_bytes", 1 << 46),
     ):
         if key in value:
             n = _number(value[key], "estimate " + key)
@@ -164,6 +182,8 @@ def build_argv(solver, snapshot, job, project_dir, device, checkpoint=None):
         argv += ["--nets", ",".join(job["nets"])]
     if job["ground_nets"]:
         argv += ["--ground-nets", ",".join(job["ground_nets"])]
+    if job.get("keep_fields"):
+        argv.append("--keep-fields")
     argv += ["--gpu", "--device", str(device), "--project-dir", str(project_dir)]
     if checkpoint:
         folder, every, resume = checkpoint

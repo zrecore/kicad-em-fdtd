@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "app/farm_client.hpp"
+#include "app/field_recorder.hpp"
 #include "app/paths.hpp"
 #include "app/prepare.hpp"
 #include "app/probes.hpp"
@@ -269,11 +270,11 @@ private:
   // the run (worker thread) and what the screens read from it, under mu_
   std::thread worker_;
   std::mutex mu_;
+  // the field data a run records (src/app/field_recorder.hpp): layout, accumulators, far-field results
+  app::FieldRecorder rec_;
   std::atomic<bool> stop_{false}, finished_{false};
   std::atomic<std::size_t> steps_{0};
   fdtd::SParam1 liveS11_;
-  std::unique_ptr<viz::PhasorAccumulator> phasors_;
-  viz::Plane plane_{};
   std::vector<std::uint8_t> mask_;
   sim::RunResult result_;
   std::string runError_;
@@ -282,8 +283,6 @@ private:
   double runSeconds_ = 0;
 
   // 3D volume view (display grid, phasors at display resolution, camera)
-  viz::DisplayVolume dv_;
-  std::unique_ptr<viz::PhasorAccumulator> volPhasors_;
   std::vector<float> volScratch_;
   viz::Camera cam_;
   double density_ = 5, volBrightness_ = -0.3;
@@ -297,16 +296,12 @@ private:
   // Layers of the animated views, each switched on its own so they can be seen alone or overlaid.
   bool showFieldSlice_ = true, showCurrentSlice_ = false, currentBottom_ = false; // slice tab
   bool showField3d_ = true, showCurrent3d_ = false;                               // 3D tab
-  fdtd::SurfaceCurrentList
-      currentList_; // copper cells and their two H channels (see fdtd/surface_current.hpp)
-  std::unique_ptr<viz::PhasorAccumulator> currentH_; // 2 channels per cell
-  std::vector<std::complex<double>> currentJ_;       // J_s phasor per cell at freq_
-  double currentScale_ = 0;                          // |J_s| at the 92nd percentile, A/m
+  std::vector<std::complex<double>> currentJ_; // J_s phasor per cell at freq_
+  double currentScale_ = 0;                    // |J_s| at the 92nd percentile, A/m
   std::uint64_t currentVersion_ = ~0ull;
   std::size_t currentFreq_ = ~std::size_t(0);
   void refreshCurrent();
   // Power flow in the slice plane: E and H phasors (6 channels per plane node) -> time-averaged S
-  std::unique_ptr<viz::PhasorAccumulator> poyntingH_;
   std::vector<std::array<float, 3>> poyntingS_; // per plane node, at freq_
   double poyntingScale_ = 0;                    // |S lateral| at the 95th percentile, W/m^2 per unit source
   std::uint64_t poyntingVersion_ = ~0ull;
@@ -317,11 +312,6 @@ private:
   // Far field (docs/PLAN.md, Next steps 11f): a Huygens box around the board, accumulated at a few
   // frequencies of the sweep, transformed after the run.
   using FarResult = app::FarResult;
-  fdtd::NtffPlan ntffPlan_;
-  std::unique_ptr<viz::PhasorAccumulator> ntffAcc_;
-  std::vector<double> ntffFreqs_;
-  std::string ntffNote_; // why there is no far field, or empty
-  std::vector<FarResult> farResults_;
   int farFreq_ = 0;
   bool farRealised_ = true; // plot the realised gain (else the directivity)
   void animationControl();
@@ -391,7 +381,6 @@ private:
   bool adaptive_ = true;
   std::optional<viz::Pose> viewGoal_; // glide target set by the axis triad or keys 0-6
   bool autoFit_ = true;               // camera follows the activity until the user moves it
-  fdtd::Axis fieldAxis_ = fdtd::Z;
   struct VolRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool dragging = false;

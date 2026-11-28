@@ -142,6 +142,18 @@ async def restart(bundle, host, port, job):
     await _ask(bundle, host, port, {"type": "restart", "job": job})
 
 
+def _place(dest, name):
+    """Where a received file lives: a field file arrives flattened as fields.NAME and goes into fields/, so
+    the folder opens with `emfdtd --open-run`."""
+    path = dest / name
+    if name.startswith("fields."):
+        (dest / "fields").mkdir(exist_ok=True)
+        target = dest / "fields" / name[len("fields.") :]
+        path.replace(target)
+        return target
+    return path
+
+
 async def fetch(bundle, host, port, job, dest):
     """Download a finished job's result files into dest. Returns {name: path}."""
     info = (await _ask(bundle, host, port, {"type": "results", "job": job}))["files"]
@@ -159,7 +171,7 @@ async def fetch(bundle, host, port, job, dest):
             name, _, sha = await protocol.recv_blob(reader, str(dest), 1 << 31, header=m)
             if info.get(name, {}).get("sha256") != sha:
                 raise ClientError(f"{name} does not match what the coordinator announced")
-            got[name] = str(Path(dest) / name)
+            got[name] = str(_place(Path(dest), name))
     except (protocol.ProtocolError, ConnectionError, ssl.SSLError, asyncio.TimeoutError) as e:
         raise ClientError(f"fetching results failed: {e}") from None
     finally:

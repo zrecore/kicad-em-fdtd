@@ -500,19 +500,19 @@ bool Ui::setSnapshot(board::Snapshot s) {
     worker_.join();
   snapshot_ = std::move(s);
   groundGuessed_ = false; // the nets may have changed: guess again, keep the user's picks
-  phasors_.reset();
-  volPhasors_.reset();
+  rec_.phasors.reset();
+  rec_.volPhasors.reset();
   volRenderer_.reset(); // sized for the old display volume
   sliceRenderer_.reset();
   sliceTried_ = false;
   renderTried_ = false;
   renderVersion_ = ~0ull;
-  currentH_.reset();
-  poyntingH_.reset();
-  ntffAcc_.reset();
-  farResults_.clear();
+  rec_.currentH.reset();
+  rec_.poyntingH.reset();
+  rec_.ntffAcc.reset();
+  rec_.farResults.clear();
   probeAcc_.reset();
-  currentList_ = {};
+  rec_.currentList = {};
   volImg_.clear();
   statsVersion_ = ~0ull;
   screen_ = Screen::Preview;
@@ -555,88 +555,14 @@ void Ui::refreshPrepared(double now) {
 
 // The viewer's accumulators and masks for the prepared model: filled by a run, or loaded from a saved one.
 void Ui::setupViewer() {
-  // Animation: Ez on a plane mid-way between the outer copper layers, at 25 frequencies across the sweep.
+  rec_.layout(snapshot_, *prepared_);
+  rec_.allocate();
   const fdtd::Grid& g = prepared_->model.grid;
-  std::size_t kTop = 0, kBottom = g.nodes(fdtd::Z);
-  for (std::size_t i = 0; i < snapshot_.stackup.size(); ++i)
-    if (snapshot_.stackup[i].copper) {
-      kTop = std::max(kTop, prepared_->model.copperPlaneNode[i]);
-      kBottom = std::min(kBottom, prepared_->model.copperPlaneNode[i]);
-    }
-  plane_ = viz::makePlane(g, fdtd::Z, (kTop + kBottom) / 2);
+  const std::size_t kTop = rec_.kTop;
   const auto& sweep = prepared_->plan.sweepHz;
-  std::vector<double> freqs(std::max<std::size_t>(2, prepared_->plan.animationFrequencies));
-  for (std::size_t i = 0; i < freqs.size(); ++i)
-    freqs[i] = sweep[0] + (sweep[1] - sweep[0]) * static_cast<double>(i) / (freqs.size() - 1);
-  phasors_ = std::make_unique<viz::PhasorAccumulator>(freqs, plane_.nu * plane_.nv);
-  fieldAxis_ = prepared_->plan.fieldComponent == "ex"   ? fdtd::X
-               : prepared_->plan.fieldComponent == "ey" ? fdtd::Y
-                                                        : fdtd::Z;
-  {
-    // the volume covers the board and a margin around it: 30 % sideways, and as far up and down
-    const auto& m = prepared_->model;
-    double bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
-    for (const auto& pt : snapshot_.outline) {
-      bx0 = std::min(bx0, pt.x - m.originX);
-      bx1 = std::max(bx1, pt.x - m.originX);
-      by0 = std::min(by0, pt.y - m.originY);
-      by1 = std::max(by1, pt.y - m.originY);
-    }
-    const double side = std::max(bx1 - bx0, by1 - by0), zc = g.edge(fdtd::Z, (kTop + kBottom) / 2);
-    viz::VolumeBox box;
-    box.lo = {std::max(0.0, bx0 - 0.3 * side), std::max(0.0, by0 - 0.3 * side),
-              std::max(0.0, zc - 0.4 * side)};
-    box.hi = {std::min(g.length(fdtd::X), bx1 + 0.3 * side), std::min(g.length(fdtd::Y), by1 + 0.3 * side),
-              std::min(g.length(fdtd::Z), zc + 0.4 * side)};
-    dv_ = viz::makeDisplayVolume(g, prepared_->plan.volumeResolution, box);
-    volPhasors_ = std::make_unique<viz::PhasorAccumulator>(freqs, dv_.voxels());
-  }
-  currentList_ = fdtd::surfaceCurrentList(g, prepared_->model.pecEdges);
-  currentH_ = currentList_.channels.empty()
-                  ? nullptr
-                  : std::make_unique<viz::PhasorAccumulator>(freqs, currentList_.channels.size());
+  const std::vector<double>& freqs = rec_.frequencies;
   currentJ_.clear();
   currentVersion_ = ~0ull;
-  poyntingH_ = std::make_unique<viz::PhasorAccumulator>(freqs, 6 * plane_.nu * plane_.nv);
-  // Far field: a box in free space inside the absorbing layer, at up to five frequencies of the sweep
-  ntffAcc_.reset();
-  farResults_.clear();
-  ntffNote_.clear();
-  {
-    const auto& m = prepared_->model;
-    const std::size_t pml = prepared_->plan.pmlCells + 2;
-    std::array<std::size_t, 3> lo{}, hi{};
-    bool ok = true;
-    for (int a = 0; a < 3; ++a) {
-      lo[static_cast<std::size_t>(a)] = pml;
-      hi[static_cast<std::size_t>(a)] = g.nodes(static_cast<fdtd::Axis>(a)) - 1 - pml;
-      ok = ok && hi[static_cast<std::size_t>(a)] > lo[static_cast<std::size_t>(a)] + 4;
-    }
-    // the box must clear the board and the dielectric: laterally the outline, vertically the copper planes
-    double bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
-    for (const auto& pt : snapshot_.outline) {
-      bx0 = std::min(bx0, pt.x - m.originX);
-      bx1 = std::max(bx1, pt.x - m.originX);
-      by0 = std::min(by0, pt.y - m.originY);
-      by1 = std::max(by1, pt.y - m.originY);
-    }
-    if (ok)
-      ok = g.edge(fdtd::X, lo[0]) < bx0 && g.edge(fdtd::X, hi[0]) > bx1 && g.edge(fdtd::Y, lo[1]) < by0 &&
-           g.edge(fdtd::Y, hi[1]) > by1 && g.edge(fdtd::Z, lo[2]) < g.edge(fdtd::Z, kBottom) &&
-           g.edge(fdtd::Z, hi[2]) > g.edge(fdtd::Z, kTop);
-    if (!ok) {
-      ntffNote_ =
-          "No far field: the board fills the space inside the absorbing layer. Increase the air margin "
-          "(Settings) to get one.";
-    } else {
-      ntffPlan_ = fdtd::makeNtffPlan(g, lo, hi);
-      const std::size_t count = std::min<std::size_t>(5, freqs.size());
-      ntffFreqs_.clear();
-      for (std::size_t i = 0; i < count; ++i)
-        ntffFreqs_.push_back(freqs[count == 1 ? 0 : i * (freqs.size() - 1) / (count - 1)]);
-      ntffAcc_ = std::make_unique<viz::PhasorAccumulator>(ntffFreqs_, ntffPlan_.channels.size());
-    }
-  }
   poyntingS_.clear();
   poyntingVersion_ = ~0ull;
   // Probes: E at the chosen points, as a spectrum over the sweep's frequencies
@@ -658,16 +584,17 @@ void Ui::setupViewer() {
     probeAcc_ = std::make_unique<viz::PhasorAccumulator>(probeFreqs_, probes_.size());
   }
   freq_ = freqs.size() / 2;
-  mask_.assign(plane_.nu * plane_.nv, 0);
+  mask_.assign(rec_.plane.nu * rec_.plane.nv, 0);
   const std::size_t plate = g.nodes(fdtd::X) * g.nodes(fdtd::Y);
   for (const auto& e : prepared_->model.pecEdges)
     if (e.axis != fdtd::Z && e.node / plate == kTop)
       mask_[e.node % plate] = 1;
   const auto filled = mask_; // outline only, so the field under the copper stays visible
-  for (std::size_t j = 1; j + 1 < plane_.nv; ++j)
-    for (std::size_t i = 1; i + 1 < plane_.nu; ++i) {
-      const std::size_t n = i + plane_.nu * j;
-      if (filled[n] && filled[n - 1] && filled[n + 1] && filled[n - plane_.nu] && filled[n + plane_.nu])
+  for (std::size_t j = 1; j + 1 < rec_.plane.nv; ++j)
+    for (std::size_t i = 1; i + 1 < rec_.plane.nu; ++i) {
+      const std::size_t n = i + rec_.plane.nu * j;
+      if (filled[n] && filled[n - 1] && filled[n + 1] && filled[n - rec_.plane.nu] &&
+          filled[n + rec_.plane.nu])
         mask_[n] = 0;
     }
 }
@@ -700,45 +627,7 @@ void Ui::runWorker() {
     sim::RunOptions opt = prepared_->options;
     const fdtd::Grid& g = prepared_->model.grid;
     const double impedance = prepared_->plan.portImpedanceOhm;
-    // Slice and volume accumulate on the backend (one phasor list each); the viewer's copies refresh about
-    // once a second and at the end.
-    auto frequenciesOf = [](const viz::PhasorAccumulator& a) {
-      std::vector<double> f(a.frequencies());
-      for (std::size_t i = 0; i < f.size(); ++i)
-        f[i] = a.frequencyHz(i);
-      return f;
-    };
-    std::vector<fdtd::PhasorChannel> sliceChannels, volumeChannels;
-    for (std::size_t b = 0; b < plane_.nv; ++b)
-      for (std::size_t a = 0; a < plane_.nu; ++a) {
-        std::array<std::size_t, 3> idx{};
-        idx[plane_.normal] = plane_.index;
-        idx[plane_.u] = a;
-        idx[plane_.v] = b;
-        sliceChannels.push_back(
-            {fdtd::Kind::E, fieldAxis_, static_cast<std::uint32_t>(g.nodeIndex(idx[0], idx[1], idx[2]))});
-      }
-    for (std::size_t k = 0; k < dv_.dims[2]; ++k)
-      for (std::size_t j = 0; j < dv_.dims[1]; ++j)
-        for (std::size_t i = 0; i < dv_.dims[0]; ++i)
-          volumeChannels.push_back({fdtd::Kind::E, fieldAxis_,
-                                    static_cast<std::uint32_t>(
-                                        g.nodeIndex(dv_.nodeOf[0][i], dv_.nodeOf[1][j], dv_.nodeOf[2][k]))});
-    app::PhasorFeed sliceFeed(*phasors_, std::move(sliceChannels), frequenciesOf(*phasors_));
-    app::PhasorFeed volumeFeed(*volPhasors_, std::move(volumeChannels), frequenciesOf(*volPhasors_));
-    std::vector<fdtd::PhasorChannel> powerChannels; // E and H, all three components, at every slice node
-    for (std::size_t b = 0; b < plane_.nv; ++b)
-      for (std::size_t a = 0; a < plane_.nu; ++a) {
-        std::array<std::size_t, 3> idx{};
-        idx[plane_.normal] = plane_.index;
-        idx[plane_.u] = a;
-        idx[plane_.v] = b;
-        const auto node = static_cast<std::uint32_t>(g.nodeIndex(idx[0], idx[1], idx[2]));
-        for (fdtd::Kind kind : {fdtd::Kind::E, fdtd::Kind::H})
-          for (fdtd::Axis ax : {fdtd::X, fdtd::Y, fdtd::Z})
-            powerChannels.push_back({kind, ax, node});
-      }
-    app::PhasorFeed powerFeed(*poyntingH_, std::move(powerChannels), frequenciesOf(*poyntingH_));
+    rec_.attach(opt, g, mu_, [&] { ++phasorVersion_; });
     std::unique_ptr<app::PhasorFeed> probeFeed;
     if (probeAcc_) {
       std::vector<fdtd::PhasorChannel> pch;
@@ -748,39 +637,22 @@ void Ui::runWorker() {
         if (snapshot_.stackup[i].copper)
           kBottomNode = std::min(kBottomNode, m.copperPlaneNode[i]);
       for (const auto& p : probes_)
-        pch.push_back({fdtd::Kind::E, fieldAxis_,
+        pch.push_back({fdtd::Kind::E, rec_.fieldAxis,
                        app::probeNode(g, p, m.originX, m.originY, g.edge(fdtd::Z, kBottomNode))});
       probeFeed = std::make_unique<app::PhasorFeed>(*probeAcc_, std::move(pch), probeFreqs_);
-    }
-    std::unique_ptr<app::PhasorFeed> farFeed;
-    if (ntffAcc_)
-      farFeed = std::make_unique<app::PhasorFeed>(*ntffAcc_, ntffPlan_.channels, ntffFreqs_);
-    std::unique_ptr<app::PhasorFeed> currentFeed;
-    if (currentH_)
-      currentFeed =
-          std::make_unique<app::PhasorFeed>(*currentH_, currentList_.channels, frequenciesOf(*currentH_));
-    opt.onSample = [&](sim::Engine& eng, double, double dtSample) {
-      const bool a = sliceFeed.sample(eng, dtSample, mu_);
-      const bool b = volumeFeed.sample(eng, dtSample, mu_);
-      const bool c = currentFeed && currentFeed->sample(eng, dtSample, mu_);
-      const bool d = powerFeed.sample(eng, dtSample, mu_);
-      const bool e2 = farFeed && farFeed->sample(eng, dtSample, mu_, 4.0);
-      const bool e3 = probeFeed && probeFeed->sample(eng, dtSample, mu_);
-      if (a || b || c || d || e2 || e3)
-        ++phasorVersion_;
-    };
-    opt.onFinish = [&](sim::Engine& eng) {
-      sliceFeed.sync(eng, mu_);
-      volumeFeed.sync(eng, mu_);
-      if (currentFeed)
-        currentFeed->sync(eng, mu_);
-      powerFeed.sync(eng, mu_);
-      if (farFeed)
-        farFeed->sync(eng, mu_);
-      if (probeFeed)
+      auto fields = opt.onSample;
+      opt.onSample = [&, fields](sim::Engine& eng, double t, double dtSample) {
+        fields(eng, t, dtSample);
+        if (probeFeed->sample(eng, dtSample, mu_))
+          ++phasorVersion_;
+      };
+      auto finishFields = opt.onFinish;
+      opt.onFinish = [&, finishFields](sim::Engine& eng) {
+        finishFields(eng);
         probeFeed->sync(eng, mu_);
-      ++phasorVersion_;
-    };
+        ++phasorVersion_;
+      };
+    }
     double lastLive = -10;
     opt.onProgress = [&](const sim::RunResult& r) {
       steps_ = r.steps;
@@ -798,24 +670,11 @@ void Ui::runWorker() {
     };
     opt.shouldStop = [&] { return stop_.load(); };
     sim::RunResult r = sim::runOnePort(prepared_->model, opt, backend_.factory);
-    if (ntffAcc_ && !stop_) { // far field from the box phasors, S11 and the source at the same frequencies
-      std::vector<FarResult> out;
-      const auto s11 = fdtd::s11FromPort(r.portVoltage, r.portSource, r.dt, ntffFreqs_, impedance);
-      const auto vs = fdtd::sourceSpectrum(r.portSource, r.dt, ntffFreqs_);
-      const auto accepted =
-          fdtd::acceptedPower(r.stripVoltage, r.portSource, r.dt, r.stripResistance, ntffFreqs_);
-      for (std::size_t k = 0; k < ntffFreqs_.size(); ++k) {
-        FarResult fr;
-        fr.frequencyHz = ntffFreqs_[k];
-        fr.field = fdtd::farField(
-            ntffPlan_, [&](std::uint32_t ch) { return std::complex<double>(ntffAcc_->phasor(k, ch)); },
-            ntffFreqs_[k], 36, 72);
-        fr.figures = fdtd::antennaFigures(fr.field, vs[k], s11.s11[k], impedance, std::max(accepted[k], 0.0));
-        fr.s11Db = 20 * std::log10(std::max(std::abs(s11.s11[k]), 1e-6));
-        out.push_back(std::move(fr));
-      }
+    if (rec_.ntffAcc &&
+        !stop_) { // far field from the box phasors, S11 and the source at the same frequencies
+      auto out = rec_.computeFar(r, impedance);
       std::lock_guard<std::mutex> lock(mu_);
-      farResults_ = std::move(out);
+      rec_.farResults = std::move(out);
     }
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -845,13 +704,7 @@ void Ui::runWorker() {
       }
       if (env_.settings.text("save_fields") == "on" && !stop_) {
         try {
-          app::saveFields(runDir_,
-                          {{"slice_e", phasors_.get()},
-                           {"volume_e", volPhasors_.get()},
-                           {"current_h", currentH_.get()},
-                           {"power_eh", poyntingH_.get()},
-                           {"ntff", ntffAcc_.get()}},
-                          farResults_);
+          rec_.save(runDir_);
           m.fields = true;
         } catch (const std::exception& e) {
           std::fprintf(stderr, "emfdtd: could not save the field data: %s\n", e.what());
@@ -916,15 +769,15 @@ bool Ui::openRun(const fs::path& dir) {
                                                      "or the program version differs from the run's)");
       into = std::move(acc);
     };
-    take("slice_e", phasors_, plane_.nu * plane_.nv);
-    take("volume_e", volPhasors_, dv_.voxels());
-    if (currentH_)
-      take("current_h", currentH_, currentList_.channels.size());
-    take("power_eh", poyntingH_, 6 * plane_.nu * plane_.nv);
-    farResults_ = app::loadFar(dir);
-    ntffAcc_.reset(); // the far-field figures were computed at the end of the run and are kept as results
-    if (farResults_.empty())
-      ntffNote_ = "The run kept no far field (the board fills the space inside the absorbing layer).";
+    take("slice_e", rec_.phasors, rec_.plane.nu * rec_.plane.nv);
+    take("volume_e", rec_.volPhasors, rec_.dv.voxels());
+    if (rec_.currentH)
+      take("current_h", rec_.currentH, rec_.currentList.channels.size());
+    take("power_eh", rec_.poyntingH, 6 * rec_.plane.nu * rec_.plane.nv);
+    rec_.farResults = app::loadFar(dir);
+    rec_.ntffAcc.reset(); // the far-field figures were computed at the end of the run and are kept as results
+    if (rec_.farResults.empty())
+      rec_.ntffNote = "The run kept no far field (the board fills the space inside the absorbing layer).";
     result_ = {};
     result_.s = s11;
     liveS11_ = s11;
@@ -937,7 +790,7 @@ bool Ui::openRun(const fs::path& dir) {
     runDir_ = dir;
     runError_.clear();
     jumped_ = false;
-    freq_ = phasors_->frequencies() / 2;
+    freq_ = rec_.phasors->frequencies() / 2;
     ++phasorVersion_;
     finished_ = true;
     screen_ = Screen::Done;
@@ -2215,11 +2068,11 @@ void Ui::drawFarFieldTab(float w, float h) {
   std::vector<FarResult> results;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    results = farResults_;
+    results = rec_.farResults;
   }
   if (results.empty()) {
     ImGui::TextColored(ImColor(pal.dim), "%s",
-                       !ntffNote_.empty() ? ntffNote_.c_str()
+                       !rec_.ntffNote.empty() ? rec_.ntffNote.c_str()
                        : screen_ == Screen::Running
                            ? "The far-field pattern is computed when the run has finished."
                            : "The far-field pattern appears here after a run.");
@@ -3367,20 +3220,20 @@ void Ui::drawProbesTab(float w, float h) {
 // Writes the 3D view's volume for ParaView (legacy VTK, with the phasor's magnitude, real and imaginary
 // parts) and, if the isosurface is on, its mesh as OBJ, into the results folder.
 void Ui::exportVolume() {
-  if (!volPhasors_ || runDir_.empty()) {
+  if (!rec_.volPhasors || runDir_.empty()) {
     message_ = "Run the simulation first: there is no volume to export.";
     return;
   }
   try {
     const auto dir = runDir_ / "export";
     std::filesystem::create_directories(dir);
-    const double fGhz = volPhasors_->frequencyHz(freq_) * 1e-9;
+    const double fGhz = rec_.volPhasors->frequencyHz(freq_) * 1e-9;
     const std::string stem = strf("volume-%.4gGHz", fGhz);
-    std::vector<float> mag(dv_.voxels()), re(dv_.voxels()), im(dv_.voxels());
+    std::vector<float> mag(rec_.dv.voxels()), re(rec_.dv.voxels()), im(rec_.dv.voxels());
     {
       std::lock_guard<std::mutex> lock(mu_);
       for (std::size_t v = 0; v < mag.size(); ++v) {
-        const auto x = volPhasors_->phasor(freq_, v);
+        const auto x = rec_.volPhasors->phasor(freq_, v);
         mag[v] = std::abs(x);
         re[v] = x.real();
         im[v] = x.imag();
@@ -3393,7 +3246,7 @@ void Ui::exportVolume() {
         kBottomNode = std::min(kBottomNode, m.copperPlaneNode[i]);
     const std::array<double, 3> shift{m.originX, m.originY, -m.grid.edge(fdtd::Z, kBottomNode)};
     std::ofstream out(dir / (stem + ".vtk"));
-    viz::writeVtkVolume(out, dv_, {{"E_abs", mag}, {"E_re", re}, {"E_im", im}},
+    viz::writeVtkVolume(out, rec_.dv, {{"E_abs", mag}, {"E_re", re}, {"E_im", im}},
                         strf("kicad-em-fdtd %s field at %.4g GHz, metres: x and y in board coordinates, z "
                              "above the bottom copper",
                              env_.settings.text("field_component").c_str(), fGhz),
@@ -3411,26 +3264,26 @@ void Ui::exportVolume() {
 }
 
 void Ui::refreshIsosurface() {
-  if (!volPhasors_ || volMag_.size() != dv_.voxels())
+  if (!rec_.volPhasors || volMag_.size() != rec_.dv.voxels())
     return;
   if (isoVersion_ == statsVersion_ && isoFreq_ == freq_ && isoLevelBuilt_ == isoLevel_ && !isoMesh_.empty())
     return;
-  isoMesh_ = viz::isosurface(dv_, volMag_, static_cast<float>(isoLevel_ * volMagScale_));
+  isoMesh_ = viz::isosurface(rec_.dv, volMag_, static_cast<float>(isoLevel_ * volMagScale_));
   isoVersion_ = statsVersion_;
   isoFreq_ = freq_;
   isoLevelBuilt_ = isoLevel_;
 }
 
 void Ui::refreshCurrent() {
-  if (!currentH_ || (currentVersion_ == phasorVersion_ && currentFreq_ == freq_ && !currentJ_.empty()))
+  if (!rec_.currentH || (currentVersion_ == phasorVersion_ && currentFreq_ == freq_ && !currentJ_.empty()))
     return;
   std::lock_guard<std::mutex> lock(mu_);
-  currentJ_.resize(currentList_.cells.size());
+  currentJ_.resize(rec_.currentList.cells.size());
   std::vector<float> mags;
   mags.reserve(currentJ_.size());
   for (std::size_t c = 0; c < currentJ_.size(); ++c) {
-    currentJ_[c] = fdtd::surfaceCurrent(currentList_.cells[c], currentH_->phasor(freq_, 2 * c),
-                                        currentH_->phasor(freq_, 2 * c + 1));
+    currentJ_[c] = fdtd::surfaceCurrent(rec_.currentList.cells[c], rec_.currentH->phasor(freq_, 2 * c),
+                                        rec_.currentH->phasor(freq_, 2 * c + 1));
     mags.push_back(static_cast<float>(std::abs(currentJ_[c])));
   }
   const std::size_t nth = static_cast<std::size_t>(0.92 * static_cast<double>(mags.size() - 1));
@@ -3449,7 +3302,7 @@ void Ui::drawCurrent(ImDrawList* dl, const std::function<bool(double, double, do
   const viz::Rgb neg = fieldColour(light, false), pos = fieldColour(light, true);
   const std::complex<double> rot = std::polar(1.0, phase_);
   for (std::size_t c = 0; c < currentJ_.size(); ++c) {
-    const fdtd::SurfaceCurrentCell& cell = currentList_.cells[c];
+    const fdtd::SurfaceCurrentCell& cell = rec_.currentList.cells[c];
     if (onlyK != static_cast<std::size_t>(-1) && cell.k != onlyK)
       continue;
     const double mag = std::abs(currentJ_[c]) / currentScale_;
@@ -3507,23 +3360,24 @@ std::vector<viz::Rgb> Ui::volumeLut() const {
 }
 
 void Ui::refreshPoynting() {
-  if (!poyntingH_ || (poyntingVersion_ == phasorVersion_ && poyntingFreq_ == freq_ && !poyntingS_.empty()))
+  if (!rec_.poyntingH ||
+      (poyntingVersion_ == phasorVersion_ && poyntingFreq_ == freq_ && !poyntingS_.empty()))
     return;
   std::lock_guard<std::mutex> lock(mu_);
-  const std::size_t nodes = plane_.nu * plane_.nv;
+  const std::size_t nodes = rec_.plane.nu * rec_.plane.nv;
   poyntingS_.resize(nodes);
   std::vector<float> lateral;
   lateral.reserve(nodes);
   for (std::size_t n = 0; n < nodes; ++n) {
     viz::Phasor3 e, h;
     for (std::size_t k = 0; k < 3; ++k) {
-      e[k] = poyntingH_->phasor(freq_, 6 * n + k);
-      h[k] = poyntingH_->phasor(freq_, 6 * n + 3 + k);
+      e[k] = rec_.poyntingH->phasor(freq_, 6 * n + k);
+      h[k] = rec_.poyntingH->phasor(freq_, 6 * n + 3 + k);
     }
     const auto s = viz::poynting(e, h);
     poyntingS_[n] = {static_cast<float>(s[0]), static_cast<float>(s[1]), static_cast<float>(s[2])};
     // the in-plane components, along the plane's own axes u and v
-    lateral.push_back(std::hypot(static_cast<float>(s[plane_.u]), static_cast<float>(s[plane_.v])));
+    lateral.push_back(std::hypot(static_cast<float>(s[rec_.plane.u]), static_cast<float>(s[rec_.plane.v])));
   }
   const std::size_t nth = static_cast<std::size_t>(0.95 * static_cast<double>(lateral.size() - 1));
   std::nth_element(lateral.begin(), lateral.begin() + static_cast<std::ptrdiff_t>(nth), lateral.end());
@@ -3534,7 +3388,7 @@ void Ui::refreshPoynting() {
 
 void Ui::drawSliceTab(float w, float /*h*/) {
   const PanelColours panelColours(lightSlice_, dark_);
-  if (!phasors_) {
+  if (!rec_.phasors) {
     ImGui::TextColored(ImColor(pal.dim), "The field animation appears here once the run starts.");
     return;
   }
@@ -3544,13 +3398,14 @@ void Ui::drawSliceTab(float w, float /*h*/) {
   static float brightness =
       0.4f; // default gain: typical field is well below the 90th percentile used for the scale
   if (sliceControlsOpen_) {
-    const int n = static_cast<int>(phasors_->frequencies());
+    const int n = static_cast<int>(rec_.phasors->frequencies());
     int k = static_cast<int>(freq_);
     ImGui::SetNextItemWidth(fitW(px(260)));
     if (sliderInt("Frequency index", "##freq", &k, 0, n - 1, "frequency index %d"))
       freq_ = static_cast<std::size_t>(k);
     flowSameLine(px(80));
-    coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text), strf("%.4g GHz", phasors_->frequencyHz(freq_) * 1e-9));
+    coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text),
+             strf("%.4g GHz", rec_.phasors->frequencyHz(freq_) * 1e-9));
     flowSameLine(checkboxWidth("pause"));
     checkbox("pause", &paused_);
     flowSameLine(px(120));
@@ -3561,7 +3416,7 @@ void Ui::drawSliceTab(float w, float /*h*/) {
     checkbox("field", &showFieldSlice_);
     flowSameLine(checkboxWidth("power flow"));
     checkbox("power flow", &showPowerSlice_);
-    if (currentH_) {
+    if (rec_.currentH) {
       flowSameLine(checkboxWidth("surface current"));
       checkbox("surface current", &showCurrentSlice_);
       if (showCurrentSlice_) {
@@ -3573,7 +3428,8 @@ void Ui::drawSliceTab(float w, float /*h*/) {
     ImGui::SetNextItemWidth(fitW(px(160)));
     sliderFloat("Brightness", "##b", &brightness, -2.0f, 2.0f, "brightness %.1f");
   } else {
-    coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text), strf("%.4g GHz", phasors_->frequencyHz(freq_) * 1e-9));
+    coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text),
+             strf("%.4g GHz", rec_.phasors->frequencyHz(freq_) * 1e-9));
   }
   scaleFactor_ = std::pow(10.0, -brightness);
   const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -3592,7 +3448,7 @@ void Ui::drawSliceTab(float w, float /*h*/) {
          .name = strf("Field slice: the %s field through the board at %.4g GHz, animated. Positive and "
                       "negative values are drawn in the two colours of the legend, strength as "
                       "brightness. Drag to pan, scroll to zoom.",
-                      env_.settings.text("field_component").c_str(), phasors_->frequencyHz(freq_) * 1e-9),
+                      env_.settings.text("field_component").c_str(), rec_.phasors->frequencyHz(freq_) * 1e-9),
          .x = p.x,
          .y = p.y,
          .w = sliceRect_.w,
@@ -3652,7 +3508,7 @@ void Ui::drawSliceTab(float w, float /*h*/) {
     dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), pal.geoOutline, ImDrawFlags_Closed, 2.0f);
     dl->PopClipRect();
   }
-  if (showPowerSlice_ && poyntingH_ && sliceCrop_[1] > sliceCrop_[0]) {
+  if (showPowerSlice_ && rec_.poyntingH && sliceCrop_[1] > sliceCrop_[0]) {
     // Time-averaged power flow as arrows on a lattice about 18 points apart: direction is the in-plane
     // direction of S, length and opacity follow |S|, full length at the 95th percentile.
     refreshPoynting();
@@ -3666,18 +3522,18 @@ void Ui::drawSliceTab(float w, float /*h*/) {
                       {sliceRect_.x + sliceRect_.w, sliceRect_.y + sliceRect_.h}, true);
     const float spacing = px(18);
     double lastU = -1e30, lastV = -1e30;
-    for (std::size_t b = 0; b < plane_.nv; ++b) {
-      const double v = grid.edge(plane_.v, b);
+    for (std::size_t b = 0; b < rec_.plane.nv; ++b) {
+      const double v = grid.edge(rec_.plane.v, b);
       if (v < sliceCrop_[2] || v > sliceCrop_[3] || (v - lastV) * ppm < spacing)
         continue;
       lastV = v;
       lastU = -1e30;
-      for (std::size_t a = 0; a < plane_.nu; ++a) {
-        const double u = grid.edge(plane_.u, a);
+      for (std::size_t a = 0; a < rec_.plane.nu; ++a) {
+        const double u = grid.edge(rec_.plane.u, a);
         if (u < sliceCrop_[0] || u > sliceCrop_[1] || (u - lastU) * ppm < spacing)
           continue;
-        const auto& s = poyntingS_[a + plane_.nu * b];
-        const double su = s[plane_.u], sw = s[plane_.v];
+        const auto& s = poyntingS_[a + rec_.plane.nu * b];
+        const double su = s[rec_.plane.u], sw = s[rec_.plane.v];
         const double mag = std::hypot(su, sw) / poyntingScale_;
         if (mag < 0.05)
           continue;
@@ -3700,7 +3556,7 @@ void Ui::drawSliceTab(float w, float /*h*/) {
     }
     pdl->PopClipRect();
   }
-  if (showCurrentSlice_ && currentH_ && sliceCrop_[1] > sliceCrop_[0]) {
+  if (showCurrentSlice_ && rec_.currentH && sliceCrop_[1] > sliceCrop_[0]) {
     const double lenU = sliceCrop_[1] - sliceCrop_[0], lenV = sliceCrop_[3] - sliceCrop_[2];
     const double ppm = std::min(sliceRect_.w / lenU, sliceRect_.h / lenV);
     const double offX = sliceRect_.x + 0.5 * (sliceRect_.w - lenU * ppm),
@@ -3730,7 +3586,7 @@ void Ui::drawSliceTab(float w, float /*h*/) {
 
 void Ui::drawVolumeTab(float w, float /*h*/) {
   const PanelColours panelColours(lightVolume_, dark_);
-  if (!volPhasors_) {
+  if (!rec_.volPhasors) {
     ImGui::TextColored(ImColor(pal.dim), "The 3D volume appears here once the run starts.");
     return;
   }
@@ -3738,14 +3594,14 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
     volControlsOpen_ = !volControlsOpen_;
   ImGui::SameLine();
   if (volControlsOpen_) {
-    const int n = static_cast<int>(volPhasors_->frequencies());
+    const int n = static_cast<int>(rec_.volPhasors->frequencies());
     int k = static_cast<int>(freq_);
     ImGui::SetNextItemWidth(fitW(px(220)));
     if (sliderInt("Frequency index", "##vfreq", &k, 0, n - 1, "frequency index %d"))
       freq_ = static_cast<std::size_t>(k);
     ImGui::SameLine();
     coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text),
-             strf("%.4g GHz", volPhasors_->frequencyHz(freq_) * 1e-9));
+             strf("%.4g GHz", rec_.volPhasors->frequencyHz(freq_) * 1e-9));
     flowSameLine(checkboxWidth("pause"));
     checkbox("pause", &paused_);
     flowSameLine(px(120));
@@ -3756,7 +3612,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
     checkbox("copper", &showGeometry_);
     flowSameLine(checkboxWidth("field"));
     checkbox("field", &showField3d_);
-    if (currentH_) {
+    if (rec_.currentH) {
       flowSameLine(checkboxWidth("surface current"));
       checkbox("surface current", &showCurrent3d_);
     }
@@ -3781,7 +3637,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
       density_ = d;
   } else {
     coloured(ImGui::GetStyleColorVec4(ImGuiCol_Text),
-             strf("%.4g GHz", volPhasors_->frequencyHz(freq_) * 1e-9));
+             strf("%.4g GHz", rec_.volPhasors->frequencyHz(freq_) * 1e-9));
   }
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const char* volCaption =
@@ -3797,7 +3653,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
                       "opaque is stronger. Drag to rotate, right-drag or Shift-drag to pan, scroll to "
                       "zoom, double-click to refit. The axis triad in the top-left corner (or keys 1 to 6, 0 "
                       "for isometric) snaps to the +X, -X, +Y, -Y, +Z, -Z and isometric views.",
-                      volPhasors_->frequencyHz(freq_) * 1e-9),
+                      rec_.volPhasors->frequencyHz(freq_) * 1e-9),
          .x = p.x,
          .y = p.y,
          .w = volRect_.w,
@@ -3815,7 +3671,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
                      ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f) ||
                      (io.KeyShift && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f));
     if (pan) {
-      viz::panCamera(dv_, cam_, io.MouseDelta.x, io.MouseDelta.y, volRect_.h);
+      viz::panCamera(rec_.dv, cam_, io.MouseDelta.x, io.MouseDelta.y, volRect_.h);
       volRect_.dragging = true;
       autoFit_ = false;
     } else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
@@ -3899,13 +3755,14 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
     float ax, ay, bx, by;
     const auto w1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.w * sc)),
                h1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.h * sc));
-    if (viz::projectPoint(dv_, cam_, w1, h1, a, ax, ay) && viz::projectPoint(dv_, cam_, w1, h1, bpt, bx, by))
+    if (viz::projectPoint(rec_.dv, cam_, w1, h1, a, ax, ay) &&
+        viz::projectPoint(rec_.dv, cam_, w1, h1, bpt, bx, by))
       dl->AddLine({volRect_.x + ax / sc, volRect_.y + ay / sc}, {volRect_.x + bx / sc, volRect_.y + by / sc},
                   col, 1.0f);
   };
-  const std::array<double, 3> lo = dv_.origin,
-                              hi = {dv_.origin[0] + dv_.extent[0], dv_.origin[1] + dv_.extent[1],
-                                    dv_.origin[2] + dv_.extent[2]};
+  const std::array<double, 3> lo = rec_.dv.origin, hi = {rec_.dv.origin[0] + rec_.dv.extent[0],
+                                                         rec_.dv.origin[1] + rec_.dv.extent[1],
+                                                         rec_.dv.origin[2] + rec_.dv.extent[2]};
   for (int i = 0; i < 8; ++i)
     for (int a = 0; a < 3; ++a)
       if (!(i >> a & 1)) {
@@ -3930,7 +3787,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
       for (int v = 0; v < 3 && ok; ++v) {
         float qx, qy;
         const auto& vertex = isoMesh_[n].v[static_cast<std::size_t>(v)];
-        ok = viz::projectPoint(dv_, cam_, w1, h1, {vertex[0], vertex[1], vertex[2]}, qx, qy);
+        ok = viz::projectPoint(rec_.dv, cam_, w1, h1, {vertex[0], vertex[1], vertex[2]}, qx, qy);
         q[v] = {volRect_.x + qx / sc, volRect_.y + qy / sc};
       }
       if (!ok)
@@ -3939,16 +3796,16 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
       dl->AddTriangle(q[0], q[1], q[2], IM_COL32(col.r, col.g, col.b, 110), 1.0f);
     }
   }
-  if (showCurrent3d_ && currentH_) {
+  if (showCurrent3d_ && rec_.currentH) {
     const auto w1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.w * sc)),
                h1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.h * sc));
     drawCurrent(
         dl,
         [&](double gx, double gy, double gz, ImVec2& out) {
           float qx, qy;
-          if (gx < dv_.origin[0] || gx > dv_.origin[0] + dv_.extent[0] || gy < dv_.origin[1] ||
-              gy > dv_.origin[1] + dv_.extent[1] ||
-              !viz::projectPoint(dv_, cam_, w1, h1, {gx, gy, gz}, qx, qy))
+          if (gx < rec_.dv.origin[0] || gx > rec_.dv.origin[0] + rec_.dv.extent[0] ||
+              gy < rec_.dv.origin[1] || gy > rec_.dv.origin[1] + rec_.dv.extent[1] ||
+              !viz::projectPoint(rec_.dv, cam_, w1, h1, {gx, gy, gz}, qx, qy))
             return false;
           out = {volRect_.x + qx / sc, volRect_.y + qy / sc};
           return true;
@@ -3975,7 +3832,7 @@ void Ui::drawVolumeTab(float w, float /*h*/) {
       float px, py;
       const auto w1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.w * sc)),
                  h1 = static_cast<std::uint32_t>(std::max(1.0f, volRect_.h * sc));
-      if (!viz::projectPoint(dv_, cam_, w1, h1, {x - m.originX, y - m.originY, z}, px, py))
+      if (!viz::projectPoint(rec_.dv, cam_, w1, h1, {x - m.originX, y - m.originY, z}, px, py))
         return false;
       out = {volRect_.x + px / sc, volRect_.y + py / sc};
       return true;
@@ -4327,19 +4184,19 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     screen_ = Screen::Done;
   }
   refreshPrepared(now);
-  if (screen_ != Screen::Preview && phasors_ && !paused_)
+  if (screen_ != Screen::Preview && rec_.phasors && !paused_)
     phase_ += 2 * 3.14159265358979 * animCyclesPerSecond_ * std::max(0.0, now - lastFrame_);
   lastFrame_ = now;
   if (screen_ != Screen::Preview && !jumped_ && !result_.s.s11.empty() &&
-      phasors_) { // jump to the best match
+      rec_.phasors) { // jump to the best match
     jumped_ = true;
     std::size_t best = 0;
     for (std::size_t i = 1; i < result_.s.s11.size(); ++i)
       if (std::abs(result_.s.s11[i]) < std::abs(result_.s.s11[best]))
         best = i;
-    for (std::size_t i = 0; i < phasors_->frequencies(); ++i)
-      if (std::abs(phasors_->frequencyHz(i) - result_.s.frequenciesHz[best]) <
-          std::abs(phasors_->frequencyHz(freq_) - result_.s.frequenciesHz[best]))
+    for (std::size_t i = 0; i < rec_.phasors->frequencies(); ++i)
+      if (std::abs(rec_.phasors->frequencyHz(i) - result_.s.frequenciesHz[best]) <
+          std::abs(rec_.phasors->frequencyHz(freq_) - result_.s.frequenciesHz[best]))
         freq_ = i;
   }
 
@@ -4434,7 +4291,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     std::uint32_t* words = reinterpret_cast<std::uint32_t*>(rgba.data());
     std::fill(words, words + static_cast<std::size_t>(w) * h, bg);
   }
-  if (sliceRect_.w > 4 && sliceRect_.h > 4 && phasors_) { // the field image sits under the UI layer
+  if (sliceRect_.w > 4 && sliceRect_.h > 4 && rec_.phasors) { // the field image sits under the UI layer
     viz::FrameSpec spec;
     spec.lightTheme = lightSlice_;
     spec.negative = fieldColour(lightSlice_, false);
@@ -4476,11 +4333,11 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
       // Colour scale: the 90th percentile of |field| over the visible nodes, so the single cell that carries
       // the port current does not wash out the rest (the few brightest cells saturate instead).
       std::vector<float> mags;
-      for (std::size_t b = 0; b < plane_.nv; ++b)
-        for (std::size_t a = 0; a < plane_.nu; ++a) {
-          const double u = m.grid.edge(plane_.u, a), v = m.grid.edge(plane_.v, b);
+      for (std::size_t b = 0; b < rec_.plane.nv; ++b)
+        for (std::size_t a = 0; a < rec_.plane.nu; ++a) {
+          const double u = m.grid.edge(rec_.plane.u, a), v = m.grid.edge(rec_.plane.v, b);
           if (u >= spec.cropU0 && u <= spec.cropU1 && v >= spec.cropV0 && v <= spec.cropV1)
-            mags.push_back(std::abs(phasors_->phasor(freq_, a + plane_.nu * b)));
+            mags.push_back(std::abs(rec_.phasors->phasor(freq_, a + rec_.plane.nu * b)));
         }
       if (!mags.empty()) {
         const std::size_t nth = static_cast<std::size_t>(0.90 * static_cast<double>(mags.size() - 1));
@@ -4491,12 +4348,12 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
       if (headless_) { // a still image should show the field at its strongest moment, not at a zero crossing
         // dominant phase of the visible field: arg(sum X^2)/2, each cell's weight capped at the colour scale
         std::complex<double> sum = 0;
-        for (std::size_t b = 0; b < plane_.nv; ++b)
-          for (std::size_t a = 0; a < plane_.nu; ++a) {
-            const double u = m.grid.edge(plane_.u, a), v = m.grid.edge(plane_.v, b);
+        for (std::size_t b = 0; b < rec_.plane.nv; ++b)
+          for (std::size_t a = 0; a < rec_.plane.nu; ++a) {
+            const double u = m.grid.edge(rec_.plane.u, a), v = m.grid.edge(rec_.plane.v, b);
             if (u < spec.cropU0 || u > spec.cropU1 || v < spec.cropV0 || v > spec.cropV1)
               continue;
-            std::complex<double> x = phasors_->phasor(freq_, a + plane_.nu * b);
+            std::complex<double> x = rec_.phasors->phasor(freq_, a + rec_.plane.nu * b);
             const double mag = std::abs(x);
             if (mag > spec.colourScale)
               x *= spec.colourScale / mag;
@@ -4510,20 +4367,21 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
         sliceTried_ = true;
         if (vkcore::Context* rc = renderContext()) {
           try {
-            sliceRenderer_ = std::make_unique<viz::GpuSliceRenderer>(*rc, plane_.nu, plane_.nv);
+            sliceRenderer_ = std::make_unique<viz::GpuSliceRenderer>(*rc, rec_.plane.nu, rec_.plane.nv);
           } catch (const std::exception& e) {
             std::fprintf(stderr, "slice view on the CPU (GPU renderer not used: %s)\n", e.what());
           }
         }
       }
       if (sliceRenderer_) { // the pixel mapping on the CPU (cheap), the shading on the GPU
-        const viz::SliceMap map = viz::makeSliceMap(prepared_->model.grid, plane_, spec);
+        const viz::SliceMap map = viz::makeSliceMap(prepared_->model.grid, rec_.plane, spec);
         fw = map.width;
         fh = map.height;
-        sliceRenderer_->setPhasors(phasors_->re(freq_), phasors_->im(freq_), mask_);
+        sliceRenderer_->setPhasors(rec_.phasors->re(freq_), rec_.phasors->im(freq_), mask_);
         rgb = sliceRenderer_->render(map, spec, phase_);
       } else {
-        rgb = viz::renderFrame(prepared_->model.grid, plane_, *phasors_, freq_, phase_, spec, mask_, fw, fh);
+        rgb = viz::renderFrame(prepared_->model.grid, rec_.plane, *rec_.phasors, freq_, phase_, spec, mask_,
+                               fw, fh);
       }
     }
     const int ox = static_cast<int>(sliceRect_.x * scale), oy = static_cast<int>(sliceRect_.y * scale);
@@ -4537,7 +4395,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
       }
   }
   const auto tSlice = Clock::now();
-  if (volRect_.w > 4 && volRect_.h > 4 && volPhasors_) { // the volume image sits under the UI layer too
+  if (volRect_.w > 4 && volRect_.h > 4 && rec_.volPhasors) { // the volume image sits under the UI layer too
     viz::RenderSpec rs;
     rs.logRangeDb = 28;
     rs.density = density_;
@@ -4556,9 +4414,9 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
     if ((statsVersion_ != version || statsFreq_ != freq_) &&
         (screen_ == Screen::Done || statsFreq_ != freq_ || now_ - statsTime_ > 0.25)) {
       std::lock_guard<std::mutex> lock(mu_);
-      volMag_.resize(volPhasors_->voxels());
+      volMag_.resize(rec_.volPhasors->voxels());
       for (std::size_t v = 0; v < volMag_.size(); ++v)
-        volMag_[v] = std::abs(volPhasors_->phasor(freq_, v));
+        volMag_[v] = std::abs(rec_.volPhasors->phasor(freq_, v));
       auto sorted = volMag_;
       // dB scale: full colour at the 92nd percentile (the few strongest cells at the port would otherwise set
       // the scale 30 dB above the lobes), 28 dB of range below it; brightness slides that window
@@ -4566,11 +4424,11 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
       std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(nth), sorted.end());
       volMagScale_ = std::max(static_cast<double>(sorted[nth]), 1e-30);
       fitCam_ = cam_;
-      viz::fitCamera(dv_, volMag_, volMagScale_ / std::pow(10.0, volBrightness_), 22, fitCam_);
+      viz::fitCamera(rec_.dv, volMag_, volMagScale_ / std::pow(10.0, volBrightness_), 22, fitCam_);
       if (headless_) { // a still image at the field's dominant phase
         std::complex<double> sum = 0;
-        for (std::size_t v = 0; v < volPhasors_->voxels(); ++v) {
-          std::complex<double> x = volPhasors_->phasor(freq_, v);
+        for (std::size_t v = 0; v < rec_.volPhasors->voxels(); ++v) {
+          std::complex<double> x = rec_.volPhasors->phasor(freq_, v);
           const double m = std::abs(x);
           if (m > sorted[nth])
             x *= sorted[nth] / m;
@@ -4631,7 +4489,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
         std::string why;
         if (vkcore::Context* rc = renderContext()) {
           try {
-            volRenderer_ = viz::makeVolumeRenderer(rc, dv_, &why);
+            volRenderer_ = viz::makeVolumeRenderer(rc, rec_.dv, &why);
           } catch (const std::exception& e) {
             why = e.what();
           }
@@ -4646,7 +4504,7 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
         {
           std::lock_guard<std::mutex> lock(mu_);
           if (renderVersion_ != statsVersion_ || renderFreq_ != freq_) { // new phasors: upload once
-            volRenderer_->setPhasors(volPhasors_->re(freq_), volPhasors_->im(freq_));
+            volRenderer_->setPhasors(rec_.volPhasors->re(freq_), rec_.volPhasors->im(freq_));
             renderVersion_ = statsVersion_;
             renderFreq_ = freq_;
           }
@@ -4656,11 +4514,11 @@ void Ui::frame(double now, std::uint32_t w, std::uint32_t h, std::vector<std::ui
         {
           std::lock_guard<std::mutex> lock(mu_);
           if (!staticMag)
-            viz::reconstruct(*volPhasors_, freq_, phase_, volField_);
+            viz::reconstruct(*rec_.volPhasors, freq_, phase_, volField_);
           else
             volField_ = volMag_; // the magnitude of the phasor: no sign, no phase
         }
-        volImg_ = viz::renderVolume(dv_, volField_, cam_, rs);
+        volImg_ = viz::renderVolume(rec_.dv, volField_, cam_, rs);
       }
       volImgW_ = rs.width;
       volImgH_ = rs.height;

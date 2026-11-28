@@ -50,7 +50,7 @@ The plan and the estimate, no solve (no GPU time beyond opening the device to re
   "changed_settings": ["mesh_preset"], "notes": ["..."] }
 ```
 
-`backend` is `gpu` or `cpu`; `device` is empty on the CPU. `estimate` is the same rough figure the text prints (it is labeled rough in the window too).
+`backend` is `gpu` or `cpu`; `device` is empty on the CPU. `estimate` is the same rough figure the text prints (it is labeled rough in the window too). `estimate.field_bytes` (added 2026-11-27, additive) is the size of the saved field data (`fields/`) that a run with `--keep-fields` would write, from the grid and the settings alone (the files hold half-float phasors, so the figure is exact for the `.f16` files and approximate, about 0.6 MB, for the far-field table); it is absent when the solver could not work it out. Without `--keep-fields` a headless run writes none of it.
 
 ## `emfdtd SNAPSHOT.json [options] --json` (a headless run)
 
@@ -62,6 +62,8 @@ The same document with `"mode": "run"` and:
   "best_match": { "freq_hz": 2.3664e9, "db": -33.2 }, "exit_status": 0,
   "gpu_bytes_allocated": 1.9e9 }
 ```
+
+`fields` (added 2026-11-27, additive) is `null` unless the run was given `--keep-fields`; then it is `{"kept": true|false, "bytes": N, "note": "..."}`: `bytes` is the size of `fields/` and `note` says why nothing was kept (for example a resumed run, `docs/checkpoint.md`), empty otherwise.
 
 `gpu_bytes_allocated` is the most kernel-bound buffer memory (the VRAM copy of every solver and accumulator buffer; staging copies and the driver's own overhead excluded) alive at once during the run, counted in `vkcore`; `null` on the CPU. It is the figure to set against `estimate.memory_bytes` (see `docs/trust.md`). `best_match` is `null` if the run produced no S11. `best_match` is the deepest point of the sweep; it is not a resonance estimate (the sweep resolution limits it; see `--run-info` and `scripts/antenna/subbin.py`).
 
