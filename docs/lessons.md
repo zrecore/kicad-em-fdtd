@@ -59,3 +59,11 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     test it, and the test (a 30 um shift of the strip) refuted it. *Rule:* a suspect goes in the ledger labeled as
     untested with the test that would refute it, and is not given a name or a headline until that test has run.
     *Enforced:* `docs/trust.md` wording; review.
+14. **A run that could not work was found by reading its log after 2 h 40 (2026-11-27).** `thin()` in
+    `scripts/antenna/openems_case.py` dropped the port's own mesh line when a snapped copper line lay within 0.07 mm,
+    so openEMS ran 200 000 steps with the port never excited (energy exactly 0 on every line, a warning "unused primitive
+    ... port_excite_1"). *Rule:* a script that builds a model checks that the model can do its job before a long run
+    (the port is on the mesh), and an operator reads the first minutes of a long run's log for warnings and for a
+    nonzero energy. *Enforced:* `openems_case.py` now exits before the solve if a port line is missing; `powershell`
+    found it by reading the log and reported it with the evidence.
+

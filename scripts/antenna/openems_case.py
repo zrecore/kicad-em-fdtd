@@ -63,11 +63,17 @@ def axis_lines(lo, hi, boxes, edges, fixed):
     return sorted(lines)
 
 
-def thin(lines, tol):
+def thin(lines, tol, keep=()):
+    """Merge lines closer than tol, the first in sorted order surviving, except that a line in `keep` (the port,
+    the board edges) always survives: it replaces a neighbor that is not kept, and two kept lines both stay.
+    (Dropping the port's own line left the port off the mesh: openEMS ran 200 000 steps with no excitation.)"""
+    protected = set(keep)
     out = []
     for v in sorted(lines):
-        if not out or v - out[-1] > tol:
+        if not out or v - out[-1] > tol or (v in protected and out[-1] in protected):
             out.append(v)
+        elif v in protected:
+            out[-1] = v
     return out
 
 
@@ -172,8 +178,8 @@ def main():
     # A snapped edge a few microns from another line makes a micro-cell that sets the time step: merge lines
     # closer than half the finest cell (the first in sorted order is kept).
     mtol = 0.5 * min(a.cell, fcell)
-    X = thin(X, mtol)
-    Y = thin(Y, mtol)
+    X = thin(X, mtol, [bx0, bx1, px - pw / 2, px + pw / 2])
+    Y = thin(Y, mtol, [by0, by1, py])
     # z: every slab edge, at most --zstep (default 0.16 mm) in the dielectric.
     zl = {-a.margin - 8 * a.coarse, top + a.margin + 8 * a.coarse}
     for lo, hi in layers.values():
@@ -193,6 +199,9 @@ def main():
         print("%s: %d cells below 0.04 mm, at %s" % (ax, int((d < 0.04).sum()), np.round(lines[:-1][d < 0.04], 4)[:12]), flush=True)
     nx, ny, nz = (len(grid.GetLines(i)) for i in range(3))
     print("mesh lines %d x %d x %d = %.2f M cells" % (nx, ny, nz, nx * ny * nz / 1e6), flush=True)
+    for name, lines, want in (("x", grid.GetLines(0), px), ("y", grid.GetLines(1), py)):
+        if float(np.abs(np.asarray(lines) - want).min()) > 1e-6:
+            sys.exit("the port's %s line (%.4f mm) is not on the mesh: the port would never be excited" % (name, want))
     print("smallest cell (mm): x %.4f y %.4f z %.4f" % tuple(float(np.diff(grid.GetLines(i)).min()) for i in range(3)), flush=True)
     # Copper that spans no mesh line in x or y gets no cells (openEMS reports it as an unused primitive).
     gx, gy = grid.GetLines(0), grid.GetLines(1)
