@@ -17,3 +17,4 @@ imgui.ini
 .Spotlight-V100
 .Trashes
 boards/ifa-coupon/
+.coverage
