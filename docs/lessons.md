@@ -54,3 +54,8 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     check. *Rule:* while any agent works in the tree, stage by path (`git add docs/trust.md`), and read `git status`
     before every commit; code that was never built does not ride along with a docs change. *Enforced:* habit; CI
     caught it in 22 s because the format check runs first.
+13. **A plausible mechanism was written into the ledger before it was tested (2026-11-27).** The strip-width
+    explanation for the coarse-cell scatter was recorded as the "leading suspect" an hour before a single run could
+    test it, and the test (a 30 um shift of the strip) refuted it. *Rule:* a suspect goes in the ledger labeled as
+    untested with the test that would refute it, and is not given a name or a headline until that test has run.
+    *Enforced:* `docs/trust.md` wording; review.
