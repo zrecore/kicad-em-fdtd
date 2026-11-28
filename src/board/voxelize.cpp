@@ -275,7 +275,8 @@ Model voxelize(const Snapshot& s, const Selection& sel, const GridPlan& plan, do
     }
     edges[0] = gradedEdges(minX - plan.airMargin, maxX + plan.airMargin, plan.lateralCell, rx,
                            plan.lateralGrowth, sx);
-    edges[1] = gradedEdges(minY - plan.airMargin, maxY + plan.airMargin, plan.lateralCell, ry, 1.3, sy);
+    edges[1] = gradedEdges(minY - plan.airMargin, maxY + plan.airMargin, plan.lateralCell, ry,
+                           plan.lateralGrowth, sy);
   }
   edges[2] = z.edges;
   const double originX = edges[0].front(), originY = edges[1].front();

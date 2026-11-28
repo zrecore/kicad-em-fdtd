@@ -200,6 +200,46 @@ SCENARIO("Refinement boxes grade the lateral grid") {
   }
 }
 
+SCENARIO("The lateral growth ratio limits the cell-to-cell jump along both horizontal axes") {
+  GIVEN("the fixture board with a 0.25 mm refinement box around a port and 1 mm coarse cells") {
+    const auto snap = board::parseSnapshot(fixture(
+        1,
+        R"({"name":"P1","layer":"F.Cu","a":[0.002,0.005],"b":[0.0036,0.005],"width":0.002,"impedance":50})"));
+    auto gradedPlan = [&](double growth) {
+      auto plan = kPlan;
+      plan.refine = board::refineAroundPorts(snap, 0.25e-3, 1e-3);
+      plan.lateralGrowth = growth;
+      return plan;
+    };
+    // largest ratio between neighbouring cells along an axis, except the last cell, which is stretched to
+    // land on the domain end
+    auto maxJump = [](const fdtd::Grid& g, fdtd::Axis axis) {
+      double worst = 1;
+      for (std::size_t i = 1; i + 1 < g.cells(axis); ++i) {
+        const double a = g.cellSize(axis, i - 1), b = g.cellSize(axis, i);
+        worst = std::max(worst, std::max(a / b, b / a));
+      }
+      return worst;
+    };
+    constexpr double kTolerance = 0.10; // the realised ratio may exceed the setting by this much (snapping)
+    WHEN("lateral_growth_ratio is 1.1") {
+      const auto model = board::voxelize(snap, board::Selection{}, gradedPlan(1.1), kF0);
+      THEN("neighbouring cells differ by at most 1.1 + 0.10 in x and in y") {
+        REQUIRE(maxJump(model.grid, fdtd::X) <= 1.1 + kTolerance);
+        REQUIRE(maxJump(model.grid, fdtd::Y) <= 1.1 + kTolerance);
+      }
+    }
+    WHEN("lateral_growth_ratio is 1.3 instead") {
+      const auto fast = board::voxelize(snap, board::Selection{}, gradedPlan(1.3), kF0);
+      const auto slow = board::voxelize(snap, board::Selection{}, gradedPlan(1.1), kF0);
+      THEN("the y axis changes with the setting: more cells at 1.1 than at 1.3") {
+        REQUIRE(slow.grid.cells(fdtd::Y) > fast.grid.cells(fdtd::Y));
+        REQUIRE(slow.grid.cells(fdtd::X) > fast.grid.cells(fdtd::X));
+      }
+    }
+  }
+}
+
 namespace {
 // the antenna footprint's body: a 2.8 mm square over the pad, 1.8 mm tall (two 1 mm air cells above the
 // board)

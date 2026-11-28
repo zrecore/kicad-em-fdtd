@@ -285,8 +285,9 @@ void Settings::build() {
       "the tallest body.",
       "Mesh", "mm", Tier::Advanced, 0, 50, {"body", "height", "vertical", "z", "air"});
   num("lateral_growth_ratio", "Mesh growth away from refined areas",
-      "How fast the cells along the board grow from a refined box (the antenna, a port) out to the coarse "
-      "size: each cell is at most this much larger than the one before. Smaller is smoother and slower. "
+      "How fast the cells along the board (both horizontal axes, x and y) grow from a refined box (the "
+      "antenna, a port) out to the coarse size: each cell is at most this much larger than the one before. "
+      "Smaller is smoother and slower. "
       "Measured on the TI antenna board: 1.1 gave 0.2 percent scatter in the resonance between 0.2 and 0.1 "
       "mm "
       "cells, 1.3 about 1.3 percent.",
