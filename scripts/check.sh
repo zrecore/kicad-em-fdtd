@@ -3,7 +3,7 @@
 # tests take a slot of the CPU queue (scripts/with_cpu_lock.sh).
 #   scripts/check.sh          CPU tests only (runs anywhere)
 #   scripts/check.sh --gpu    also GPU tests, under the shared GPU lock
-#   scripts/check.sh --fast   skip the [slow] solver suite (about 6 minutes): for changes that do not touch the
+#   scripts/check.sh --fast   skip the [slow] solver suite (about 6 minutes) and clang-tidy: for changes that do not touch the
 #                             solver (UI, farm, plugin, docs, CLI output). Everything else still runs. The
 #                             flags can be combined; the default, CI and releases run everything.
 set -eu
@@ -36,6 +36,10 @@ scripts/with_cpu_lock.sh -l "check.sh: builds and CPU tests" sh -ec '
   scripts/ui_font_check.sh # the same tabs with the system font at 100 % and 150 % text size
 '
 if [ "$GPU" = 1 ]; then "$LOCK" nice -n 10 ctest --preset ci -L gpu; fi
+
+if [ "$FAST" = 1 ]; then echo "check.sh --fast: clang-tidy is skipped"; else
+  scripts/with_cpu_lock.sh -l "check.sh: clang-tidy" scripts/tidy.sh # needs build/ci from the build above
+fi
 
 find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs "$FMT" --dry-run --Werror
 

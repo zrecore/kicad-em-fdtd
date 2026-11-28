@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
-        run: brew install ninja shaderc vulkan-headers vulkan-loader molten-vk clang-format
+        run: brew install ninja shaderc vulkan-headers vulkan-loader molten-vk clang-format llvm
       - name: Version
         run: scripts/version.sh check
       - name: Format
@@ -30,6 +30,8 @@ jobs:
         run: |
           cmake --preset ci
           cmake --build --preset ci
+      - name: clang-tidy (bugprone, performance and analyzer findings are errors; see .clang-tidy)
+        run: scripts/tidy.sh # canary, file count and the ratchet are inside the script
       - name: CPU tests
         timeout-minutes: 15
         run: ctest --preset ci -L '^cpu$' --timeout 600 # the whole CPU suite is one ctest test (about 5 minutes): 10 minutes is the ceiling

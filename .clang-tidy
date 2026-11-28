@@ -1,6 +1,49 @@
+# clang-tidy for src/ and apps/ (scripts/tidy.sh; step in scripts/check.sh and CI). Counts below are warnings in
+# OUR code (src/, apps/) from the first full run, 2026-11-27 (out/checks/clang-tidy-20261127.log), not tests.
+#
+# Two-level ratchet. Fail at once (WarningsAsErrors): every bugprone-* and performance-* check except the ones that still have findings
+# (those stay plain warnings, counted below; fix a check, then delete it from the exclusions so it cannot come
+# back) plus clang-analyzer-*. The rest are counted per check in scripts/tidy_baseline.json (scripts/tidy_counts.py): a count may fall, never rise.
+#
+# Disabled on purpose (project style, not defects):
+#   readability-braces-around-statements (1600): one-line braceless ifs are the house style (.clang-format keeps them).
+#   modernize-use-designated-initializers (239): positional aggregate init is used throughout (and is C++20-only churn).
+#   modernize-avoid-c-arrays (92): constexpr tables, GLSL push-constant blocks and Vulkan APIs want plain arrays.
+#   modernize-use-trailing-return-type, modernize-use-nodiscard: noise.
+#   bugprone-easily-swappable-parameters: noise (x, y, z and dimension lists).
+#   bugprone-exception-escape: the solver is built to terminate on error.
+#   clang-analyzer-optin.performance.Padding: an opt-in layout hint (the UI class reports 151 padding bytes), not a defect.
+# Analyzer findings in the baseline (look at these): core.NonNullParamChecker src/app/farm_client.cpp:807,
+#   unix.StdCLibraryFunctions apps/emfdtd/main.cpp:253 (fdopen with fd < 0), security.FloatLoopCounter (an alias of
+#   bugprone-float-loop-counter).
+# Still warnings (counts in our code): bugprone-signed-bitwise 163, bugprone-narrowing-conversions 40,
+#   performance-inefficient-vector-operation 22, performance-enum-size 18, bugprone-unchecked-string-to-number-
+#   conversion 16, performance-inefficient-string-concatenation 10, bugprone-float-loop-counter 7,
+#   bugprone-invalid-enum-default-initialization 6, bugprone-incorrect-roundings 5,
+#   bugprone-implicit-widening-of-multiplication-result 5, bugprone-empty-catch 5, performance-use-std-move 2,
+#   bugprone-nondeterministic-pointer-iteration-order 2, bugprone-assignment-in-if-condition 2, and one each of
+#   performance-unnecessary-value-param, performance-unnecessary-copy-initialization, performance-faster-string-find,
+#   performance-prefer-single-char-overloads, bugprone-unused-local-non-trivial-variable,
+#   bugprone-throwing-static-initialization, bugprone-suspicious-memory-comparison, bugprone-command-processor,
+#   bugprone-branch-clone. Other modernize-* findings (use-ranges 52, use-emplace 43, use-scoped-lock 42, use-auto 26,
+#   ...) stay warnings and are never errors.
 Checks: >
-  -*,bugprone-*,performance-*,modernize-*,readability-braces-around-statements,
+  -*,bugprone-*,performance-*,modernize-*,clang-analyzer-*,
+  -readability-braces-around-statements,-modernize-use-designated-initializers,-modernize-avoid-c-arrays,
   -modernize-use-trailing-return-type,-modernize-use-nodiscard,-bugprone-easily-swappable-parameters,
-  -bugprone-exception-escape
-WarningsAsErrors: ''
-HeaderFilterRegex: 'src/.*'
+  -bugprone-exception-escape,-clang-analyzer-optin.performance.Padding
+WarningsAsErrors: >
+  bugprone-*,performance-*,clang-analyzer-*,
+  -bugprone-signed-bitwise,-bugprone-narrowing-conversions,-performance-inefficient-vector-operation,
+  -performance-enum-size,-bugprone-unchecked-string-to-number-conversion,
+  -performance-inefficient-string-concatenation,-bugprone-float-loop-counter,
+  -bugprone-invalid-enum-default-initialization,-bugprone-incorrect-roundings,
+  -bugprone-implicit-widening-of-multiplication-result,-bugprone-empty-catch,-performance-use-std-move,
+  -bugprone-nondeterministic-pointer-iteration-order,-bugprone-assignment-in-if-condition,
+  -performance-unnecessary-value-param,-performance-unnecessary-copy-initialization,
+  -performance-faster-string-find,-performance-prefer-single-char-overloads,
+  -bugprone-unused-local-non-trivial-variable,-bugprone-throwing-static-initialization,
+  -bugprone-suspicious-memory-comparison,-bugprone-command-processor,-bugprone-branch-clone,
+  -clang-analyzer-security.FloatLoopCounter,-clang-analyzer-core.NonNullParamChecker,
+  -clang-analyzer-unix.StdCLibraryFunctions
+# Header filter: set by scripts/tidy.sh from the checkout's root (not from its folder name), and proven by the canary.
