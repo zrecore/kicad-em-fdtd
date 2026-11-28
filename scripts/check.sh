@@ -44,7 +44,7 @@ fi
 find src apps tests -name '*.cpp' -o -name '*.hpp' | xargs "$FMT" --dry-run --Werror
 
 if [ -x plugin/.venv/bin/pytest ]; then
-  (cd plugin && .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/pytest -q)
+  (cd plugin && .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/pytest -q --cov=emfdtd_plugin --cov-fail-under=72)
 fi
 python3 scripts/bdd_check.py # BDD conformance: every scenario has a Then, no new bare tests (ratchet)
 python3 scripts/antenna/selftest.py >/dev/null # closed-form checks of the antenna helper scripts

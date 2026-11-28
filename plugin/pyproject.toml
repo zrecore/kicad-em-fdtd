@@ -7,7 +7,7 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-bdd", "ruff"]
+dev = ["pytest", "pytest-bdd", "pytest-cov", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

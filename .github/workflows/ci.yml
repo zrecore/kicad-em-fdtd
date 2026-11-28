@@ -44,10 +44,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9" # KiCAD's bundled interpreter
-      - run: pip install pytest pytest-bdd ruff "kicad-python==0.8.0" # the tests import kipy through kicad_reader
+      - run: pip install pytest pytest-bdd pytest-cov ruff "kicad-python==0.8.0" # the tests import kipy through kicad_reader
       - working-directory: plugin
         run: |
           ruff check .
           ruff format --check .
-          pytest -q
+          pytest -q --cov=emfdtd_plugin --cov-fail-under=72 # measured 74 percent on 2026-11-27: a floor, not a goal
       - run: python3 scripts/bdd_check.py # BDD conformance: every scenario has a Then, no new bare tests
