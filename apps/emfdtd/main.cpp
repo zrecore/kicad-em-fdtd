@@ -20,6 +20,7 @@
 #define getpid _getpid
 #define dup _dup
 #define dup2 _dup2
+#define close _close
 #define fdopen _fdopen
 #else
 #include <unistd.h>
@@ -250,7 +251,14 @@ FILE* jsonOut = nullptr;
 
 void startJson() {
   std::fflush(stdout);
-  jsonOut = fdopen(dup(1), "w");
+  const int copy = dup(1);
+  if (copy < 0) // no descriptor to spare: leave stdout alone, the document goes where it always went
+    return;
+  jsonOut = fdopen(copy, "w");
+  if (!jsonOut) {
+    close(copy);
+    return;
+  }
   dup2(2, 1);
 }
 

@@ -804,7 +804,9 @@ void Client::run(std::vector<std::string> args, std::string label, double timeou
     argv.insert(argv.end(), args.begin(), args.end());
     const Output o = runCapture(argv, timeoutSeconds, &quit_);
     {
-      std::lock_guard<std::mutex> lock(mu_);
+      // False positive: `this` is captured by the lambda and cannot be null (the analyzer loses that in the
+      // std::thread/function boundary and reports a reference to a null mu_).
+      std::lock_guard<std::mutex> lock(mu_); // NOLINT(clang-analyzer-core.NonNullParamChecker)
       action_.running = false;
       action_.code = o.timedOut ? -1 : o.code;
       action_.text = o.timedOut ? "the farm tool did not finish in time" : o.text;
