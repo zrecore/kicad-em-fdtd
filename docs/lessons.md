@@ -73,4 +73,10 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     and may only act in a regime the log tells it has begun (here the end of the excitation signal); when in doubt it
     warns and does not kill. *Enforced:* a replay test of all healthy logs in `../openEMS-check`; the comparison of a guarded
     with an unguarded run on the same inputs, which is how it was found.
+16. **A check that could not run reported "0 warnings" (2026-11-27).** `run-clang-tidy` did not find `clang-tidy` in
+    its PATH, analyzed nothing, and the script printed a clean result after 7.5 hours in the CPU queue. It is the same
+    failure as the void coupon controls (entry 1): silence read as success. *Rule:* every automated check proves it can
+    fail before its pass is believed: it fails when the tool is missing or has analyzed zero files, and it runs a
+    canary with a known problem that must be reported. *Enforced:* `scripts/tidy.sh` (canary and file count);
+    `docs/lessons.md` entry 1 for controls.
 
