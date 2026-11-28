@@ -179,7 +179,8 @@ void FieldRecorder::attach(sim::RunOptions& opt, const fdtd::Grid& g, std::mutex
   };
 }
 
-std::vector<FarResult> FieldRecorder::computeFar(const sim::RunResult& r, double impedanceOhm) const {
+std::vector<FarResult> FieldRecorder::computeFar(const sim::RunResult& r, double impedanceOhm, int nTheta,
+                                                 int nPhi) const {
   if (!ntffAcc)
     return {};
   const auto s11 = fdtd::s11FromPort(r.portVoltage, r.portSource, r.dt, ntffFreqs, impedanceOhm);
@@ -191,7 +192,7 @@ std::vector<FarResult> FieldRecorder::computeFar(const sim::RunResult& r, double
     fr.frequencyHz = ntffFreqs[k];
     fr.field = fdtd::farField(
         ntffPlan, [&](std::uint32_t ch) { return std::complex<double>(ntffAcc->phasor(k, ch)); },
-        ntffFreqs[k], 36, 72);
+        ntffFreqs[k], nTheta, nPhi);
     fr.figures = fdtd::antennaFigures(fr.field, vs[k], s11.s11[k], impedanceOhm, std::max(accepted[k], 0.0));
     fr.s11Db = 20 * std::log10(std::max(std::abs(s11.s11[k]), 1e-6));
     out.push_back(std::move(fr));

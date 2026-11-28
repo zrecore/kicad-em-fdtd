@@ -55,7 +55,8 @@ struct FieldRecorder {
               const std::function<void()>& refreshed);
   // After the solve: the far-field figures from the box phasors (needs the S11 and the source). The caller
   // stores them in `farResults` (under its own lock if a viewer reads them).
-  std::vector<FarResult> computeFar(const sim::RunResult& r, double impedanceOhm) const;
+  std::vector<FarResult> computeFar(const sim::RunResult& r, double impedanceOhm, int nTheta = 36,
+                                    int nPhi = 72) const;
   // fields/ in the run folder; throws on a write error.
   void save(const std::filesystem::path& runDir) const;
 

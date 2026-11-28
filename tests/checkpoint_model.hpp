@@ -9,8 +9,8 @@
 
 namespace checkpoint_test {
 
-inline board::Model loadModel() {
-  const auto snap = board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,
+inline board::Snapshot snapshot() {
+  return board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,
     "board":{"name":"load"},
     "outline":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],
     "stackup":[{"name":"F.Cu","kind":"copper"},
@@ -20,6 +20,10 @@ inline board::Model loadModel() {
     "vias":[],"components":[],
     "ports":[{"name":"P1","layer":"F.Cu","a":[0.003,0.004],"b":[0.005,0.004],"width":0.0022,"impedance":50},
              {"name":"load","layer":"F.Cu","a":[0.003,0.007],"b":[0.005,0.007],"width":0.0022,"impedance":100}]})");
+}
+
+inline board::Model loadModel() {
+  const auto snap = snapshot();
   const board::GridPlan plan{
       .lateralCell = 1e-3, .maxDielectricCell = 0.4e-3, .airMargin = 8e-3, .airCell = 1e-3};
   return board::voxelize(snap, board::Selection{}, plan, 0.45e9);
