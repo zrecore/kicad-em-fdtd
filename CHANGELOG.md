@@ -5,8 +5,8 @@ major version is 0, anything may change in a minor release. Format: [Keep a Chan
 
 ## [Unreleased]
 
-### Added (fine cells at open copper ends, off by default)
-- Setting `refine_copper_edges_mm` (advanced, Mesh; 0 is off): puts 3 mm deep boxes of this cell at each open end of the copper a port feeds (a patch's four edges), where a coarse cell reads the resonance low. On the 60 mm air patch 0.12 mm moves the resonance from 4.5561 to 4.6728 GHz (openEMS 4.6899) at 18 times the cells. The run notes list each box. Implementation: `board::suggestCopperEnds`.
+### Added (fine cells at open copper ends, on by default)
+- Setting `refine_copper_edges_mm` (advanced, Mesh; default 0.12; 0 is off, and a run then prints a WARNING naming the accuracy cost): puts 3 mm deep boxes of this cell at each open end of the copper a port feeds (a patch's four edges), where a coarse cell reads the resonance low. On the 60 mm air patch 0.12 mm moves the resonance from 4.5561 to 4.6728 GHz (openEMS 4.6899) at 18 times the cells, so default runs of boards with open copper ends now carry more cells and take longer than before. The run notes list each box. Implementation: `board::suggestCopperEnds`.
 
 ### Changed (lateral growth ratio applies to both horizontal axes)
 - `lateral_growth_ratio` was applied to x only; y always grew by 1.3 (`src/board/voxelize.cpp`). It now applies to x and y. The default is unchanged (1.3), so default runs produce the same grid; a run that sets a smaller ratio (1.1 for antenna boxes) now also grades y more gently, which makes y finer near fine boxes and adds cells (see `out/validation/ygrowth/` for counts). Results of earlier runs with a ratio below 1.3 do not reproduce exactly.

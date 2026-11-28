@@ -701,3 +701,64 @@ SCENARIO("The copper model is a setting that keeps sheets unless the user asks f
     }
   }
 }
+
+SCENARIO("Open copper ends are refined by default, and switching that off prints the trade-off") {
+  GIVEN("a 10 mm square patch fed by a probe port on a 30 mm board") {
+    const auto snap =
+        board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t"},
+      "outline":[[0,0],[0.03,0],[0.03,0.03],[0,0.03]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0016,"epsilon_r":4.5,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"B.Cu","owner":"","net":"G","polygon":[[-0.001,-0.001],[0.031,-0.001],[0.031,0.031],[-0.001,0.031]]},
+                {"layer":"F.Cu","owner":"","net":"S","polygon":[[0.010,0.010],[0.020,0.010],[0.020,0.020],[0.010,0.020]]}],
+      "vias":[],"components":[],
+      "ports":[{"name":"P1","layer":"F.Cu","layer_b":"B.Cu","a":[0.015,0.012],"width":0,"impedance":50}]})");
+    auto noteWith = [](const app::Prepared& p, const std::string& text) {
+      for (const auto& n : p.model.notes)
+        if (n.find(text) != std::string::npos)
+          return true;
+      return false;
+    };
+    WHEN("the settings are left at their defaults") {
+      app::Settings s(catalog());
+      const auto p = app::prepare(snap, s, board::Selection{});
+      THEN("the default cell at the ends is 0.12 mm, the ends are refined and there is no warning") {
+        REQUIRE(s.number("refine_copper_edges_mm") == Approx(0.12));
+        REQUIRE(noteWith(p, "refinement (refine_copper_edges_mm)"));
+        REQUIRE_FALSE(noteWith(p, "WARNING"));
+      }
+    }
+    WHEN("refine_copper_edges_mm is set to 0") {
+      app::Settings s(catalog());
+      s.set("refine_copper_edges_mm", 0.0);
+      const auto p = app::prepare(snap, s, board::Selection{});
+      THEN("nothing is refined at the ends and a warning says what that costs in accuracy") {
+        REQUIRE_FALSE(noteWith(p, "refinement (refine_copper_edges_mm)"));
+        REQUIRE(noteWith(p, "WARNING: refine_copper_edges_mm is 0"));
+        REQUIRE(noteWith(p, "3 percent"));
+      }
+    }
+  }
+  GIVEN("a board without ports and refinement switched off") {
+    THEN("there is nothing to warn about") {
+      const auto snap =
+          board::parseSnapshot(R"({"format":"kicad-em-fdtd.snapshot","version":1,"board":{"name":"t"},
+      "outline":[[0,0],[0.03,0],[0.03,0.03],[0,0.03]],
+      "stackup":[{"name":"F.Cu","kind":"copper"},
+                 {"name":"core","kind":"dielectric","thickness":0.0016,"epsilon_r":4.5,"loss_tangent":0.02},
+                 {"name":"B.Cu","kind":"copper"}],
+      "copper":[{"layer":"F.Cu","owner":"","net":"S","polygon":[[0.010,0.010],[0.020,0.010],[0.020,0.020],[0.010,0.020]]}],
+      "vias":[],"components":[],"ports":[]})");
+      app::Settings s(catalog());
+      s.set("refine_copper_edges_mm", 0.0);
+      bool warned = false;
+      try {
+        for (const auto& n : app::prepare(snap, s, board::Selection{}).model.notes)
+          warned = warned || n.find("WARNING: refine_copper_edges_mm") != std::string::npos;
+      } catch (const std::exception&) { // a board without a port may not be preparable: that is also fine
+      }
+      REQUIRE_FALSE(warned);
+    }
+  }
+}

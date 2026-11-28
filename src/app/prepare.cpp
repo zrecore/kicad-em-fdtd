@@ -146,11 +146,20 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
   std::vector<board::RefineBox> refine =
       board::refineAroundPorts(snapshot, plan.fineCell, 2 * plan.coarseCell);
   std::vector<std::string> endNotes;
-  if (const double endCell = settings.number("refine_copper_edges_mm"); endCell > 0)
-    for (const board::RefineSuggestion& g : board::suggestCopperEnds(snapshot, selection, endCell)) {
+  const double endCell = settings.number("refine_copper_edges_mm");
+  const auto ends = board::suggestCopperEnds(snapshot, selection, endCell > 0 ? endCell : 0.12);
+  if (endCell > 0)
+    for (const board::RefineSuggestion& g : ends) {
       refine.push_back(g.box);
       endNotes.push_back("refinement (refine_copper_edges_mm): " + g.reason);
     }
+  else if (!ends.empty())
+    endNotes.push_back(
+        "WARNING: refine_copper_edges_mm is 0 (off), so " + std::to_string(ends.size()) +
+        " open copper end(s) of the copper a port feeds use the coarse cell. That is faster and far smaller, "
+        "but an open end meshed coarsely reads its resonance low (about 3 percent on a 60 mm patch, "
+        "docs/trust.md); "
+        "set refine_copper_edges_mm to 0.1 to 0.15 for the accurate result.");
   refine.insert(refine.end(), extraRefine.begin(), extraRefine.end());
   refine.insert(refine.end(), selection.refine.begin(),
                 selection.refine.end()); // the user's switched-on boxes

@@ -278,8 +278,9 @@ void Settings::build() {
       10, {"refine", "gap", "feature", "local"});
   num("refine_copper_edges_mm", "Fine cell at open copper ends",
       "Cell size within 3 mm of every open end of the copper a port feeds (a patch's edges, an antenna's "
-      "tips), where the field piles up. A coarse cell there reads the resonance low (a 60 mm patch: 3 "
-      "percent). 0 is off; 0.1 to 0.15 is typical. Costs cells: the preview shows them.",
+      "tips), where the field piles up. With a coarse cell there the resonance reads low (a 60 mm patch: 3 "
+      "percent). Refining costs many more cells (about 18 times on that patch): the preview shows them. 0 "
+      "turns it off, and a run then warns that open ends use the coarse cell.",
       "Mesh", "mm", Tier::Advanced, 0, 10, {"refine", "edge", "end", "tip", "patch", "open"});
   num("air_near_cell_mm", "Fine air cell next to the board",
       "Vertical cell size in the air layer next to the board, so a part body thinner than the coarse cells "
@@ -522,9 +523,11 @@ Value Settings::defaultValue(const std::string& key) const {
     return m.portImpedanceOhm;
   if (key == "boundary_distance_wavelengths")
     return m.boundaryDistanceWavelengths;
-  if (key == "cells_per_wavelength" || key == "fine_cell_mm" || key == "refine_copper_edges_mm" ||
-      key == "air_near_cell_mm" || key == "air_near_height_mm")
+  if (key == "cells_per_wavelength" || key == "fine_cell_mm" || key == "air_near_cell_mm" ||
+      key == "air_near_height_mm")
     return 0.0;
+  if (key == "refine_copper_edges_mm")
+    return 0.12;
   if (key == "dielectric_cells_min")
     return 3.0;
   if (key == "mesh_growth_ratio" || key == "lateral_growth_ratio")
