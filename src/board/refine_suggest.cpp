@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <limits>
 #include <map>
 #include <set>
 #include <tuple>
@@ -206,12 +207,12 @@ std::vector<RefineSuggestion> suggestCopperEnds(const Snapshot& s, const Selecti
     while (!todo.empty()) {
       const auto [i, j] = todo.front();
       todo.pop_front();
-      cells.push_back({i, j});
+      cells.emplace_back(i, j);
       for (const auto& [di, dj] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
         const int a = i + di, b = j + dj;
         if (raster.at(a, b) && !in[raster.index(a, b)]) {
           in[raster.index(a, b)] = 1;
-          todo.push_back({a, b});
+          todo.emplace_back(a, b);
         }
       }
     }
@@ -231,7 +232,8 @@ std::vector<RefineSuggestion> suggestCopperEnds(const Snapshot& s, const Selecti
       const int lim = xSide ? raster.nu : raster.nv;
       if (ext <= 0 || ext >= lim - 1)
         continue; // the copper reaches the edge of the neighbourhood: it goes on, so this is no end
-      int lo = 1 << 30, hi = -1; // extent across, among the copper within `depth` of the end
+      int lo = std::numeric_limits<int>::max(),
+          hi = -1; // extent across, among the copper within `depth` of the end
       for (const auto& [i, j] : cells) {
         const int along = xSide ? i : j, across = xSide ? j : i;
         if (std::abs(along - ext) <= depth) {
