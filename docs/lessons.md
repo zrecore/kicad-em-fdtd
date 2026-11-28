@@ -66,4 +66,11 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     (the port is on the mesh), and an operator reads the first minutes of a long run's log for warnings and for a
     nonzero energy. *Enforced:* the guard `openems_guard.py` in the separate repository `/Volumes/CrucialX9/Projects/openEMS-check` (smoke run, then live checks on the console; usage in its README) and `openems_case.py` now exits before the solve if a port line is missing; `powershell`
     found it by reading the log and reported it with the evidence.
+15. **Thresholds fitted to one log killed a healthy run (2026-11-27).** The run guard's instability rule was tuned
+    on one healthy log (`c05`, whose excitation had ended long before) and stopped a healthy Windows run at step 18 270
+    because the source was still on and the energy swings freely then. The unguarded run with identical inputs
+    finished normally. *Rule:* a rule that kills a run is tested on every healthy log we have, from different cases,
+    and may only act in a regime the log tells it has begun (here the end of the excitation signal); when in doubt it
+    warns and does not kill. *Enforced:* a replay test of all healthy logs in `../openEMS-check`; the comparison of a guarded
+    with an unguarded run on the same inputs, which is how it was found.
 
