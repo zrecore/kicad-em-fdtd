@@ -79,4 +79,11 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     fail before its pass is believed: it fails when the tool is missing or has analyzed zero files, and it runs a
     canary with a known problem that must be reported. *Enforced:* `scripts/tidy.sh` (canary and file count);
     `docs/lessons.md` entry 1 for controls.
+17. **A new test that took seconds in a release build took 7 minutes under the CI sanitizers (2026-11-27).** The
+    keep-fields scenario ran the full board pipeline on a real sample; with ASan and UBSan that is about 50 times
+    slower, and the suite hit its 600 s limit (`main` was red for hours; and my own rapid pushes cancelled the
+    runs that would have shown it). *Rule:* time every new test once under the CI preset (`build/ci`, sanitizers) before it
+    is pushed; build tests on a tiny grid like the other solver scenarios (`checkpoint_test.cpp`) and leave the real-board
+    run to a release CLI check; and do not push again while the CI run you are waiting for is still going
+    (a new push cancels it). *Enforced:* the CI timeouts (`docs/lessons.md` 9); the habit.
 
