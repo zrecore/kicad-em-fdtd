@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <map>
 #include <set>
 #include <tuple>
@@ -142,6 +143,124 @@ std::vector<RefineSuggestion> suggestRefinement(const Snapshot& s, const Selecti
         g.gapMm / g.cellMm);
     g.reason = buf;
     out.push_back(std::move(g));
+  }
+  return out;
+}
+
+std::vector<RefineSuggestion> suggestCopperEnds(const Snapshot& s, const Selection& sel, double cellMm,
+                                                double depthMm, double reachMm, double groundShare) {
+  constexpr double mm = 1e-3;
+  const double cell = 0.1 * mm;
+  double ox0 = 1e300, oy0 = 1e300, ox1 = -1e300, oy1 = -1e300;
+  for (const Point& p : s.outline) {
+    ox0 = std::min(ox0, p.x);
+    ox1 = std::max(ox1, p.x);
+    oy0 = std::min(oy0, p.y);
+    oy1 = std::max(oy1, p.y);
+  }
+  const double boardArea = std::max(0.0, ox1 - ox0) * std::max(0.0, oy1 - oy0);
+  std::vector<RefineSuggestion> out;
+  std::set<std::string> seen;
+  for (const PortDef& port : s.ports) {
+    const double reach = reachMm * mm;
+    const double px = port.a.x, py = port.a.y;
+    Raster raster(px - reach, py - reach, px + reach, py + reach, cell);
+    for (const CopperShape& c : s.copper) {
+      if (c.layer != port.layer || c.outer.size() < 3 || !sel.includes(c.owner) || !sel.netIncluded(c.net))
+        continue;
+      double x0 = 1e300, y0 = 1e300, x1 = -1e300, y1 = -1e300;
+      for (const Point& p : c.outer) {
+        x0 = std::min(x0, p.x);
+        x1 = std::max(x1, p.x);
+        y0 = std::min(y0, p.y);
+        y1 = std::max(y1, p.y);
+      }
+      if (boardArea > 0 && (x1 - x0) * (y1 - y0) >= groundShare * boardArea)
+        continue; // a pour or plane: no ends
+      std::vector<const Ring*> rings{&c.outer};
+      for (const Ring& h : c.holes)
+        rings.push_back(&h);
+      raster.paint(rings);
+    }
+    // the copper under the port: the nearest painted cell within 1 mm, then everything touching it
+    int si = -1, sj = -1;
+    double best = 1e300;
+    const int look = static_cast<int>(std::ceil(1.0 * mm / cell));
+    const int ci = raster.nu / 2, cj = raster.nv / 2;
+    for (int j = cj - look; j <= cj + look; ++j)
+      for (int i = ci - look; i <= ci + look; ++i)
+        if (raster.at(i, j)) {
+          const double d = std::hypot(i - ci, j - cj);
+          if (d < best) {
+            best = d;
+            si = i;
+            sj = j;
+          }
+        }
+    if (si < 0)
+      continue;
+    std::vector<char> in(raster.on.size(), 0);
+    std::deque<std::pair<int, int>> todo{{si, sj}};
+    in[raster.index(si, sj)] = 1;
+    std::vector<std::pair<int, int>> cells;
+    while (!todo.empty()) {
+      const auto [i, j] = todo.front();
+      todo.pop_front();
+      cells.push_back({i, j});
+      for (const auto& [di, dj] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+        const int a = i + di, b = j + dj;
+        if (raster.at(a, b) && !in[raster.index(a, b)]) {
+          in[raster.index(a, b)] = 1;
+          todo.push_back({a, b});
+        }
+      }
+    }
+    int imin = raster.nu, imax = -1, jmin = raster.nv, jmax = -1;
+    for (const auto& [i, j] : cells) {
+      imin = std::min(imin, i);
+      imax = std::max(imax, i);
+      jmin = std::min(jmin, j);
+      jmax = std::max(jmax, j);
+    }
+    const int depth = static_cast<int>(std::ceil(depthMm * mm / cell));
+    const double pad = 0.5 * mm;
+    // side: 0 left, 1 right, 2 bottom, 3 top
+    for (int side = 0; side < 4; ++side) {
+      const bool xSide = side < 2;
+      const int ext = side == 0 ? imin : side == 1 ? imax : side == 2 ? jmin : jmax;
+      const int lim = xSide ? raster.nu : raster.nv;
+      if (ext <= 0 || ext >= lim - 1)
+        continue; // the copper reaches the edge of the neighbourhood: it goes on, so this is no end
+      int lo = 1 << 30, hi = -1; // extent across, among the copper within `depth` of the end
+      for (const auto& [i, j] : cells) {
+        const int along = xSide ? i : j, across = xSide ? j : i;
+        if (std::abs(along - ext) <= depth) {
+          lo = std::min(lo, across);
+          hi = std::max(hi, across);
+        }
+      }
+      const double edge = (xSide ? raster.u0 : raster.v0) + (side % 2 == 0 ? ext : ext + 1) * cell;
+      const double a0 = (xSide ? raster.v0 : raster.u0) + lo * cell - pad;
+      const double a1 = (xSide ? raster.v0 : raster.u0) + (hi + 1) * cell + pad;
+      RefineSuggestion g;
+      g.layer = port.layer;
+      g.cellMm = cellMm;
+      g.box = xSide ? RefineBox{edge - depthMm * mm, a0, edge + depthMm * mm, a1, cellMm * mm}
+                    : RefineBox{a0, edge - depthMm * mm, a1, edge + depthMm * mm, cellMm * mm};
+      char buf[512];
+      static const char* const names[] = {"left", "right", "bottom", "top"};
+      std::snprintf(buf, sizeof buf, "end|%s|%s|%.1f|%.1f", g.layer.c_str(), names[side],
+                    std::round(0.5 * (g.box.x0 + g.box.x1) / mm * 2) / 2,
+                    std::round(0.5 * (g.box.y0 + g.box.y1) / mm * 2) / 2);
+      g.id = buf;
+      if (!seen.insert(g.id).second)
+        continue;
+      std::snprintf(buf, sizeof buf,
+                    "open copper end (%s side) on %s at %.1f mm: %.3g mm cells within %.3g mm of the edge",
+                    names[side], g.layer.c_str(), edge / mm, cellMm, depthMm);
+      g.reason = buf;
+      out.push_back(std::move(g));
+    }
   }
   return out;
 }

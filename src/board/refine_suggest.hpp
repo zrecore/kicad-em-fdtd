@@ -29,4 +29,16 @@ std::vector<RefineSuggestion> suggestRefinement(const Snapshot& s, const Selecti
                                                 double maxGapMm = 1.0, double nearPortMm = 4.0,
                                                 std::size_t limit = 4);
 
+// The open ends of the copper a port feeds: where a conductor stops, the field piles up at the edge (a
+// patch's radiating edges, an antenna's tips) and a coarse cell there reads the resonance low (a 60 mm patch:
+// 3 percent at the default mesh, docs/trust.md). The copper is everything that touches the copper under a
+// port on the port's layer, in the model, except shapes covering `groundShare` of the board's bounding box (a
+// pour has no ends); within `reachMm` of the port. For each side (left, right, bottom, top) of that copper
+// that ends inside the reach, one box of `depthMm` each side of the end, as wide as the copper that close to
+// the end, with cells of `cellMm`. A side where the copper only continues past the reach gets none. Pure
+// logic.
+std::vector<RefineSuggestion> suggestCopperEnds(const Snapshot& s, const Selection& sel, double cellMm = 0.12,
+                                                double depthMm = 3.0, double reachMm = 30.0,
+                                                double groundShare = 0.6);
+
 } // namespace board

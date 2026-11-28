@@ -1,5 +1,7 @@
 #include "app/prepare.hpp"
 
+#include "board/refine_suggest.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -143,6 +145,12 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
 
   std::vector<board::RefineBox> refine =
       board::refineAroundPorts(snapshot, plan.fineCell, 2 * plan.coarseCell);
+  std::vector<std::string> endNotes;
+  if (const double endCell = settings.number("refine_copper_edges_mm"); endCell > 0)
+    for (const board::RefineSuggestion& g : board::suggestCopperEnds(snapshot, selection, endCell)) {
+      refine.push_back(g.box);
+      endNotes.push_back("refinement (refine_copper_edges_mm): " + g.reason);
+    }
   refine.insert(refine.end(), extraRefine.begin(), extraRefine.end());
   refine.insert(refine.end(), selection.refine.begin(),
                 selection.refine.end()); // the user's switched-on boxes
@@ -170,6 +178,7 @@ Prepared prepare(const board::Snapshot& original, const Settings& settings, cons
   }
   p.model = board::voxelize(snapshot, withBodies, grid, 0.5 * (plan.bandHz[0] + plan.bandHz[1]));
   p.model.notes.insert(p.model.notes.end(), pcbNotes.begin(), pcbNotes.end());
+  p.model.notes.insert(p.model.notes.end(), endNotes.begin(), endNotes.end());
 
   p.options.fMinHz = plan.sweepHz[0];
   p.options.fMaxHz = plan.sweepHz[1];
