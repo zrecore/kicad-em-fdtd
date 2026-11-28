@@ -3,9 +3,10 @@
 # tests take a slot of the CPU queue (scripts/with_cpu_lock.sh).
 #   scripts/check.sh          CPU tests only (runs anywhere)
 #   scripts/check.sh --gpu    also GPU tests, under the shared GPU lock
-#   scripts/check.sh --fast   skip the [slow] solver suite (about 6 minutes) and clang-tidy: for changes that do not touch the
-#                             solver (UI, farm, plugin, docs, CLI output). Everything else still runs. The
-#                             flags can be combined; the default, CI and releases run everything.
+#   scripts/check.sh --fast   skip the [slow] solver suite (about 6 minutes), and clang-tidy unless a C++ file under
+#                             src/ or apps/ differs from origin/main: for changes that do not touch the solver
+#                             (UI, farm, plugin, docs, CLI output). Everything else still runs. The flags can
+#                             be combined; the default, CI and releases run everything.
 set -eu
 GPU=0
 FAST=0
@@ -37,7 +38,14 @@ scripts/with_cpu_lock.sh -l "check.sh: builds and CPU tests" sh -ec '
 '
 if [ "$GPU" = 1 ]; then "$LOCK" nice -n 10 ctest --preset ci -L gpu; fi
 
-if [ "$FAST" = 1 ]; then echo "check.sh --fast: clang-tidy is skipped"; else
+# clang-tidy: always, except in --fast when no C++ file under src/ or apps/ differs from origin/main (committed,
+# uncommitted or new): a push that adds a tidy finding fails CI (the ratchet), and --fast hid it once.
+TIDY=1
+if [ "$FAST" = 1 ]; then
+  CPP_CHANGED=$( { git diff --name-only origin/main 2>/dev/null || echo src/unknown.cpp; git ls-files --others --exclude-standard; } | grep -E '^(src|apps)/.*\.(cpp|hpp|mm)$' || true)
+  if [ -z "$CPP_CHANGED" ]; then TIDY=0; echo "check.sh --fast: clang-tidy is skipped (no C++ under src/ or apps/ changed)"; fi
+fi
+if [ "$TIDY" = 1 ]; then
   scripts/with_cpu_lock.sh -l "check.sh: clang-tidy" scripts/tidy.sh # needs build/ci from the build above
 fi
 

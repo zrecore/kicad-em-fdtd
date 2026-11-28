@@ -17,7 +17,7 @@ The goal is a real-time 3D FDTD Maxwell solver on the GPU (Vulkan 1.2 baseline; 
 ```
 scripts/check.sh           # build (ci preset = debug + sanitizers + -Werror, as on GitHub), CPU tests, clang-format, ruff + pytest. Runs anywhere.
 scripts/check.sh --gpu     # also GPU tests, under the shared GPU lock
-scripts/check.sh --fast    # skip the [slow] solver suite (~6 min): only for work that does not touch the solver (UI, farm, plugin, docs); the full run stays the default and is what CI and releases use
+scripts/check.sh --fast    # skip the [slow] solver suite (~6 min): only for work that does not touch the solver (UI, farm, plugin, docs); clang-tidy still runs under `--fast` when a C++ file under `src/` or `apps/` differs from origin/main (CI fails on a new tidy finding); the full run stays the default and is what CI and releases use
 cmake --preset release && cmake --build --preset release
 /Volumes/CrucialX9/Projects/mongo/poc/gpu/tools/with_gpu_lock.sh nice -n 10 build/release/apps/bench/bench   # writes out/bench.json
 build/release/apps/emfdtd/emfdtd SNAPSHOT.json [--ui] [--ui-screenshot out.png --ui-a11y-dump tree.txt] [--profile wifi|bluetooth|zigbee|lwmesh|uwb|custom[:VARIANT]] [--set KEY=VALUE] [--dry-run|--view|--frames N] [--cpu]   # results in <project>/em-fdtd/results/run-<time>/; --list-settings shows every setting; GPU only under the lock
