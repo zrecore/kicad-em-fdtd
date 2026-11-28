@@ -86,4 +86,12 @@ more than an hour; a rule with no enforcement is a wish, so say how it is checke
     is pushed; build tests on a tiny grid like the other solver scenarios (`checkpoint_test.cpp`) and leave the real-board
     run to a release CLI check; and do not push again while the CI run you are waiting for is still going
     (a new push cancels it). *Enforced:* the CI timeouts (`docs/lessons.md` 9); the habit.
-
+18. **We called a 3 % gap "real" while our mesh was under-resolved where the field is singular (2026-11-28).** For a
+    day the patch gap to openEMS (and the stub's) was treated as converged because shrinking `fine_cell_mm` (0.5, 0.35,
+    0.25, 0.2 mm) did not move our resonance. But that setting only refines near the port; the open copper ends kept the
+    coarse cell, so every "finer" run had the same coarse ends. Refining a box of 3 to 6 mm around each open end
+    to 0.12 mm moved the patch from 4.5561 to 4.6731 GHz (openEMS 4.6899): the gap fell from 2.9 to 0.35 %. *Rule:*
+    a convergence study refines where the field varies fastest (open ends, copper edges, gaps), checked with a dry run
+    that prints the smallest cell AT those places and not only overall; a setting that does not change the result is
+    first suspected of not being applied where it matters. *Enforced:* `docs/trust.md` convergence rows must name the
+    cell size at the edges; the planned `refine_copper_edges` setting (docs/PLAN.md) puts the refinement in the product.
